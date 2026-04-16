@@ -1,0 +1,64 @@
+# 股票筛选配置
+# 所有条件为 AND 组合（同时满足）
+
+screen:
+  conditions:
+    # 市值范围（亿元）
+    - type: market_cap
+      min: 50
+      max: 2000
+
+    # 市盈率范围（排除亏损股）
+    - type: pe_range
+      min: 0
+      max: 30
+
+    # 周线MACD底背离
+    - type: weekly_macd_divergence
+      lookback_bars: 60
+
+  output:
+    sort_by: "总市值(亿)"
+    ascending: false
+    limit: 50
+
+
+# ========================
+# 可用条件类型说明
+# ========================
+#
+# 【Spot条件 - 快速过滤，无需K线数据】
+#   market_cap:      市值范围(亿元)        参数: min, max
+#   pe_range:        市盈率(动态)范围       参数: min, max
+#   pb_range:        市净率范围            参数: min, max
+#   price_range:     股价范围(元)          参数: min, max
+#   turnover_rate:   换手率范围(%)         参数: min, max
+#
+# 【OHLCV条件 - 精筛，需要逐只拉取K线】
+#   weekly_macd_divergence:  周线MACD底背离    参数: lookback_bars (默认60)
+#   daily_macd_divergence:   日线MACD底背离    参数: lookback_bars (默认120)
+#   rsi_oversold:            RSI超卖          参数: threshold (默认30), period (默认14)
+#   price_above_ma:          价格站上均线      参数: ma_period (默认20)
+#
+# ========================
+# 使用示例
+# ========================
+#
+# 示例1: 低估值+底背离
+#   conditions:
+#     - type: market_cap
+#       min: 100
+#       max: 1000
+#     - type: pe_range
+#       min: 5
+#       max: 15
+#     - type: weekly_macd_divergence
+#
+# 示例2: 超跌反弹
+#   conditions:
+#     - type: market_cap
+#       min: 50
+#     - type: rsi_oversold
+#       threshold: 25
+#     - type: price_above_ma
+#       ma_period: 5

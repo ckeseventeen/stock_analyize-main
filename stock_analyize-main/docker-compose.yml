@@ -1,0 +1,102 @@
+version: '3.9'
+
+services:
+  # ──── 主应用（量化分析） ────
+  app:
+    build: .
+    image: stock-analyize:latest
+    container_name: stock_analyize_app
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=stock_db
+      - DB_USER=stock_user
+      - DB_PASSWORD=${DB_PASSWORD:-stock_password}
+    volumes:
+      - ./config:/app/config:ro          # 配置文件（只读挂载）
+      - ./output:/app/output             # 输出结果
+      - ./logs:/app/logs                 # 日志
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "main.py", "--market", "all"]
+    networks:
+      - stock_net
+
+  # ──── 定时任务调度器 ────
+  scheduler:
+    build: .
+    image: stock-analyize:latest
+    container_name: stock_analyize_scheduler
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_HOST=db
+      - DB_PORT=3306
+      - DB_NAME=stock_db
+      - DB_USER=stock_user
+      - DB_PASSWORD=${DB_PASSWORD:-stock_password}
+      - SCHEDULER_ENABLED=true
+    volumes:
+      - ./config:/app/config:ro
+      - ./output:/app/output
+      - ./logs:/app/logs
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["python", "-m", "src.automation.scheduler"]
+    networks:
+      - stock_net
+
+  # ──── Streamlit Web GUI ────
+  webui:
+    build: .
+    image: stock-analyize:latest
+    container_name: stock_analyize_webui
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_HOST=db
+    volumes:
+      - ./config:/app/config:ro
+      - ./output:/app/output
+    command: ["streamlit", "run", "src/visualization/gui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    networks:
+      - stock_net
+
+  # ──── MySQL 数据库 ────
+  db:
+    image: mysql:8.0
+    container_name: stock_analyize_db
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: stock_db
+      MYSQL_USER: stock_user
+      MYSQL_PASSWORD: ${DB_PASSWORD:-stock_password}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_password}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./config/db_init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "3306:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "stock_user", "-p${DB_PASSWORD:-stock_password}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - stock_net
+
+volumes:
+  mysql_data:
+    driver: local
+
+networks:
+  stock_net:
+    driver: bridge

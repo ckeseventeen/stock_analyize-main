@@ -1,0 +1,48 @@
+# ========================
+# Git & Docker
+# ========================
+.git
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+
+# ========================
+# Python & Cache
+# ========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.ruff_cache/
+.cache/
+cache/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# ========================
+# Project-Specific Output (不打入镜像，避免镜像臃肿)
+# ========================
+logs/
+*.log
+output/
+
+# 敏感文件
+config/secrets.yaml
+config/.env
+
+# ========================
+# IDE & System
+# ========================
+.idea/
+.vscode/
+.claude/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,0 +1,81 @@
+# ============================================
+# 调度器配置 scheduler.yaml
+# ============================================
+# 启动命令：python -m src.automation.scheduler
+#
+# 每个 job 支持以下字段：
+#   id                 : Job 唯一标识（日志与去重）
+#   type               : price_monitor | earnings_monitor | scraper
+#   enable             : false 时跳过注册
+#   cron               : "分 时 日 月 星期"（五字段，CronTrigger）
+#   interval_minutes   : 周期性触发，单位分钟（IntervalTrigger，与 cron 二选一）
+#   timezone           : 默认 Asia/Shanghai
+#   scraper_type       : 仅对 type=scraper 有效，值：news/announcements/holdings/research/all
+#   alerts_config      : 告警通道配置路径（默认 ./config/alerts.yaml）
+#   rules_config       : 价格预警规则路径（仅 price_monitor）
+#   earnings_config    : 财报监控路径（仅 earnings_monitor）
+#   scraper_config     : 抓取配置路径（仅 scraper）
+#   output_dir         : 落盘目录
+# ============================================
+
+jobs:
+  # ---------- 价格预警 ----------
+  # 交易时段内每 5 分钟执行一次（9:30-11:30, 13:00-15:00）
+  - id: price_monitor
+    type: price_monitor
+    enable: true
+    cron: "*/5 9-11,13-15 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    rules_config: "./config/price_alerts.yaml"
+    alerts_config: "./config/alerts.yaml"
+
+  # ---------- 财报披露监控 ----------
+  # 每天 08:30 检查未来 30 天披露日历 + 业绩预告
+  - id: earnings_monitor
+    type: earnings_monitor
+    enable: true
+    cron: "30 8 * * *"
+    timezone: "Asia/Shanghai"
+    earnings_config: "./config/earnings_monitor.yaml"
+    alerts_config: "./config/alerts.yaml"
+
+  # ---------- 新闻抓取 ----------
+  # 每 30 分钟刷新财经新闻
+  - id: news_scraper
+    type: scraper
+    scraper_type: news
+    enable: true
+    interval_minutes: 30
+    scraper_config: "./config/scraper.yaml"
+    output_dir: "./output"
+
+  # ---------- 公告/持仓抓取 ----------
+  # 每天收盘后 18:00 拉取当日公告和持仓快照
+  - id: announcements_scraper
+    type: scraper
+    scraper_type: announcements
+    enable: true
+    cron: "0 18 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    scraper_config: "./config/scraper.yaml"
+    output_dir: "./output"
+
+  - id: holdings_scraper
+    type: scraper
+    scraper_type: holdings
+    enable: true
+    cron: "10 18 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    scraper_config: "./config/scraper.yaml"
+    output_dir: "./output"
+
+  # ---------- 研报抓取 ----------
+  # 每天 09:00（盘前）刷新研报
+  - id: research_scraper
+    type: scraper
+    scraper_type: research
+    enable: true
+    cron: "0 9 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    scraper_config: "./config/scraper.yaml"
+    output_dir: "./output"

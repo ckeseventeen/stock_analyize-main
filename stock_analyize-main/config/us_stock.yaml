@@ -1,0 +1,53 @@
+market_name: "美股"
+market_code: "us"
+enable: true
+output_dir: "./output/美股"
+log_dir: "./logs/美股"
+
+categories:
+  tech_giant:
+    name: "科技巨头"
+    stocks:
+      - name: "苹果公司"
+        code: "AAPL"
+        valuation: "pe"
+        pe_range: [15, 25, 35]
+        ps_range: [4, 6, 8]
+      - name: "微软"
+        code: "MSFT"
+        valuation: "pe"
+        pe_range: [25, 35, 45]
+        ps_range: [8, 12, 16]
+      - name: "英伟达"
+        code: "NVDA"
+        valuation: "pe"
+        pe_range: [40, 60, 80]
+        ps_range: [15, 25, 35]
+  consumer:
+    name: "消费"
+    stocks:
+      - name: "开市客"
+        code: "COST"
+        valuation: "pe"
+        pe_range: [30, 40, 50]
+        ps_range: [1, 1.5, 2]
+      - name: "麦当劳"
+        code: "MCD"
+        valuation: "pe"
+        pe_range: [ 20, 25, 30 ]
+        ps_range: [ 6, 8, 10 ]
+      - name: "AMD"
+        code: "AMD"
+        valuation: "pe"
+        pe_range: [ 45, 60, 75 ]
+        ps_range: [ 5, 7, 9 ]
+      - name: "Hims & Hers Health"
+        code: "HIMS"
+        valuation: "pe"
+        pe_range: [ 25, 35, 45 ]
+        ps_range: [ 1.5, 2.5, 3.5 ]
+      - name: "超微电脑"
+        code: "SMCI"
+        valuation: "pe"
+        pe_range: [ 15, 20, 25 ]
+        ps_range: [ 0.4, 0.6, 0.8 ]

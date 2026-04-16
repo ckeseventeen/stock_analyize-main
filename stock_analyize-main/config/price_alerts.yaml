@@ -1,0 +1,53 @@
+# ============================================
+# 价格预警规则 price_alerts.yaml
+# ============================================
+# 每只股票可配置多条 conditions，任一满足即触发（OR 语义）。
+# 相同事件（同股票+同规则+同日）在 cooldown_hours 内只推一次。
+#
+# 支持的规则类型：
+#   price_below        : 跌破绝对价格    value: 数字
+#   price_above        : 涨破绝对价格    value: 数字
+#   pct_change_daily   : 当日涨跌幅超    threshold: 正/负百分比
+#   pct_from_cost      : 相对成本涨跌超  threshold: 正/负百分比  cost: 成本价
+#   ma_break           : 跌破/突破均线    ma: 周期  direction: below/above
+# ============================================
+
+# 默认冷却窗口（可被 stock 级 cooldown_hours 覆盖）
+default_cooldown_hours: 24
+
+rules:
+  - code: "600519"
+    market: a
+    name: "贵州茅台"
+    conditions:
+      - type: price_below
+        value: 1500
+      - type: pct_change_daily
+        threshold: -5      # 单日跌超 5%
+    cooldown_hours: 24
+
+  - code: "000001"
+    market: a
+    name: "平安银行"
+    conditions:
+      - type: price_above
+        value: 20
+      - type: ma_break
+        ma: 60
+        direction: below
+
+  # 港股示例（代码 5 位数字，不带 .HK）
+  # - code: "00700"
+  #   market: hk
+  #   name: "腾讯控股"
+  #   conditions:
+  #     - type: pct_change_daily
+  #       threshold: -3
+
+  # 美股示例（代码为字母，大写或小写）
+  # - code: "AAPL"
+  #   market: us
+  #   name: "Apple"
+  #   conditions:
+  #     - type: price_below
+  #       value: 180

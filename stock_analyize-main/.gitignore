@@ -19,6 +19,7 @@ lib/
 lib64/
 *.manifest
 *.spec
+*.claude
 
 # Virtual environments
 .env

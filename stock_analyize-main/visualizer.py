@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
-from logger import setup_logger
+from src.utils.logger import setup_logger
 
 logger = setup_logger()
 

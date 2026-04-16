@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import re
 from abc import ABC, abstractmethod
-from logger import setup_logger
+from src.utils.logger import setup_logger
 
 logger = setup_logger()
 

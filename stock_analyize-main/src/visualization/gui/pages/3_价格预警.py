@@ -66,7 +66,7 @@ else:
 
     if flat_rows:
         df_rules = pd.DataFrame(flat_rows)
-        st.dataframe(df_rules, use_container_width=True, hide_index=True)
+        st.dataframe(df_rules, width='stretch', hide_index=True)
 
     # 删除规则
     with st.expander("🗑 删除规则"):
@@ -205,4 +205,4 @@ if trigger:
                  "内容": e.body}
                 for e in events
             ])
-            st.dataframe(df_events, use_container_width=True, hide_index=True)
+            st.dataframe(df_events, width='stretch', hide_index=True)

@@ -144,12 +144,10 @@ YAML config (config/*.yaml)
 - `src/screener/` — composable stock screening engine (two-stage: fast spot filter + deep OHLCV analysis)
 - `src/data/fetcher/` — market-specific fetchers, cache manager, earnings fetcher
 - `src/data/scraper/` — 4 类抓取器（news/announcement/holdings/research）
-- `src/data/storage/` **[stub]** — SQLAlchemy ORM（未实装）
 - `src/strategy/backtest/` — backtrader-based backtesting framework
 - `src/automation/alert/` — 4 推送通道 + 去重 state
 - `src/automation/monitor/` — price / earnings 监控器
 - `src/automation/scheduler.py` — APScheduler 长驻任务
-- `src/report/` **[stub]** — PDF/PPTX report generation（未实装）
 - `src/visualization/gui/` — Streamlit 多页面前端（6 个页面）
 
 ## Key Conventions

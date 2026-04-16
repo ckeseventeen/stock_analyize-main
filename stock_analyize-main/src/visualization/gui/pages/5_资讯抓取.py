@@ -74,7 +74,7 @@ def _show_table(df: pd.DataFrame, download_prefix: str):
     if df is None or df.empty:
         st.info("暂无数据")
         return
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    st.dataframe(df, width='stretch', hide_index=True)
     st.download_button(
         label="💾 下载 CSV",
         data=df_to_csv_bytes(df),

@@ -1,8 +1,8 @@
 import akshare as ak
 import pandas as pd
 from abc import ABC, abstractmethod
-from pytdx.hq import TdxHq_API
-from logger import setup_logger
+from src.utils.logger import setup_logger
+from src.data.fetcher.baostock_provider import BaostockProvider
 
 # 全局日志初始化
 logger = setup_logger()
@@ -56,125 +56,195 @@ class BaseDataFetcher(ABC):
         pass
 
 
-# ---------------------- A股数据子类：通达信实时行情 + akshare 财务/估值 ----------------------
+# ---------------------- A股数据子类：Baostock 为主 + 通达信 fallback ----------------------
 class AStockDataFetcher(BaseDataFetcher):
-    """A股数据获取器：实时行情走 pytdx（通达信），财务和历史估值走 akshare"""
+    """
+    A股数据获取器
+
+    数据源优先级（不使用 akshare：eastmoney/雪球 线路经常不可达）：
+      - 行情: Baostock 最新收盘 (主) → 通达信 pytdx 实时 (备用)
+      - 财务摘要: Baostock 盈利数据 (主) → 通达信 finance_info 推导 (备用)
+      - 历史估值: Baostock K线含 peTTM/pbMRQ/psTTM (唯一可靠源)
+    """
+
+    # 通达信行情服务器地址池（备用数据源）
+    TDX_SERVERS = [
+        ('119.147.212.81', 7709),
+        ('114.80.80.222', 7709),
+        ('180.153.18.170', 7709),
+    ]
 
     def __init__(self):
         super().__init__("A股")
-        # 通达信行情服务器地址池，按优先级尝试连接
-        self.servers = [
-            ('119.147.212.81', 7709),
-            ('114.80.80.222', 7709),
-            ('180.153.18.170', 7709),
-        ]
-        self.api = TdxHq_API()
-        self._connect_tdx()
-
-    def _connect_tdx(self):
-        """遍历服务器池，连接第一个可用的通达信行情服务器"""
-        connected = False
-        for ip, port in self.servers:
-            if self.api.connect(ip, port):
-                logger.info(f"通达信行情服务器连接成功: {ip}:{port}")
-                connected = True
-                break
-            else:
-                logger.debug(f"通达信服务器连接失败: {ip}:{port}，尝试下一个...")
-        if not connected:
-            raise Exception("所有通达信服务器连接失败，请检查网络或 IP 可用性")
-
-    def _get_tdx_market_code(self, code):
-        """通达信市场代码映射：0=深圳(000/002/300)，1=上海(600/688)"""
-        if str(code).startswith('6'):
-            return 1
-        return 0
+        # Baostock 按需登录，无需在 __init__ 建立持久连接
+        # 通达信仅作为末端备用，按需延迟连接
+        self._tdx_api = None
 
     def get_current_market_data(self, code: str) -> dict:
-        """[pytdx] 获取A股实时股价及总市值"""
-        market = self._get_tdx_market_code(code)
+        """
+        获取A股最新行情与市值。
 
+        优先级：Baostock 最新收盘价 + 总股本 → 通达信 pytdx 实时行情+市值
+        """
+        # 1. Baostock：最新收盘行情 + Baostock 盈利数据取总股本
         try:
-            # 1. 获取盘口实时报价
-            quotes = self.api.get_security_quotes([(market, code)])
-            if not quotes:
-                logger.warning(f"无法获取 {code} 的通达信实时报价")
-                return {"price": 0.0, "market_cap": 0.0}
-
-            price = quotes[0]['price']
-
-            # 2. 获取最新财务基本面 (取 zongguben 总股本)
-            finance_info = self.api.get_finance_info(market, code)
-            if finance_info and 'zongguben' in finance_info:
-                # pytdx 返回的 zongguben 单位是 "股"
-                total_shares = finance_info['zongguben']
-            else:
-                total_shares = 0
-
-            market_cap = price * total_shares
-
-            logger.debug(f"{code} 实时行情: 股价={price}, 总市值={market_cap:.0f}")
-            return {
-                "price": float(price),
-                "market_cap": float(market_cap)
-            }
+            with BaostockProvider() as bp:
+                data = bp.get_latest_price(code)
+                price = data.get("price", 0.0)
+                if price > 0:
+                    market_cap = 0.0
+                    profit_df = bp.get_profit_data(code)
+                    if profit_df is not None and not profit_df.empty:
+                        total_share = pd.to_numeric(
+                            profit_df.iloc[0].get("totalShare", 0), errors="coerce"
+                        ) or 0.0
+                        if total_share > 0:
+                            market_cap = price * total_share
+                    logger.debug(f"A股 {code} Baostock行情: 价格={price:.2f}, 市值={market_cap:.0f}")
+                    if market_cap > 0:
+                        return {"price": price, "market_cap": market_cap}
+                    # 市值推算失败，继续走 TDX 备用
         except Exception as e:
-            logger.error(f"通达信获取 {code} 实时行情数据失败: {e}")
-            return {"price": 0.0, "market_cap": 0.0}
+            logger.debug(f"A股 {code} Baostock行情失败: {e}")
 
-    def get_financial_abstract(self, code: str) -> pd.DataFrame:
-        """[akshare] 获取A股财务摘要"""
+        # 2. 通达信 pytdx 末端备用（实时行情+总市值）
         try:
-            df = ak.stock_financial_abstract(symbol=code)
-            logger.debug(f"{code} 财务摘要获取成功，shape={df.shape}")
-            return df
+            price, market_cap = self._try_tdx(code)
+            if price > 0:
+                return {"price": price, "market_cap": market_cap}
         except Exception as e:
-            logger.error(f"获取 {code} 财务数据失败: {e}")
-            return pd.DataFrame()
+            logger.debug(f"A股 {code} 通达信备用也失败: {e}")
 
-    def get_historical_valuation(self, code: str, val_type: str = 'pe') -> pd.DataFrame:
-        """[akshare] 获取A股历史估值走势（百度财经数据源）"""
-        # 映射估值类型到百度接口的 indicator 参数
-        # 注意：百度接口无市销率(PS)，配置 ps 时实际拉取市净率(PB) 作为替代
-        indicator_map = {
-            'pe': '市盈率(TTM)',
-            'ps': '市净率',  # 百度接口无市销率，使用市净率(PB)替代
-        }
-        indicator = indicator_map.get(val_type, '市盈率(TTM)')
+        logger.warning(f"A股 {code} 所有行情源均失败")
+        return {"price": 0.0, "market_cap": 0.0}
 
-        if val_type == 'ps':
-            logger.warning(f"{code} 百度接口不支持市销率(PS)，历史估值数据使用市净率(PB)替代")
+    def _try_tdx(self, code: str) -> tuple:
+        """
+        通达信 pytdx 备用行情获取。
+        延迟连接：首次调用时才尝试连接通达信服务器。
 
-        try:
-            df = ak.stock_zh_valuation_baidu(symbol=code, indicator=indicator, period="近五年")
-            if df is not None and not df.empty:
-                # pe 对应 pe_ttm；ps 配置时实际数据为 PB，但列名仍用 ps_ttm 保持下游兼容
-                val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
-                df = df.rename(columns={'date': 'trade_date', 'value': val_col})
-                logger.debug(f"{code} 历史估值获取成功 ({indicator})，共 {len(df)} 条")
-                return df
-            else:
-                logger.warning(f"{code} 历史估值数据为空 ({indicator})")
-                return pd.DataFrame()
-        except Exception as e:
-            logger.error(f"获取 {code} 历史估值失败: {e}")
-            return pd.DataFrame()
+        Returns:
+            (price, market_cap) 元组
+        """
+        from pytdx.hq import TdxHq_API
+
+        if self._tdx_api is None:
+            self._tdx_api = TdxHq_API()
+            connected = False
+            for ip, port in self.TDX_SERVERS:
+                if self._tdx_api.connect(ip, port):
+                    logger.info(f"通达信备用连接成功: {ip}:{port}")
+                    connected = True
+                    break
+            if not connected:
+                self._tdx_api = None
+                raise ConnectionError("所有通达信服务器连接失败")
+
+        market = 1 if str(code).startswith('6') else 0
+        quotes = self._tdx_api.get_security_quotes([(market, code)])
+        if not quotes:
+            return (0.0, 0.0)
+
+        price = float(quotes[0]['price'])
+        finance_info = self._tdx_api.get_finance_info(market, code)
+        total_shares = finance_info.get('zongguben', 0) if finance_info else 0
+        market_cap = price * total_shares
+
+        logger.debug(f"A股 {code} 通达信备用行情: 价格={price}, 总市值={market_cap:.0f}")
+        return (price, market_cap)
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """通过上下文管理器安全断开通达信连接"""
-        try:
-            self.api.disconnect()
-            logger.debug("通达信连接已安全断开")
-        except Exception:
-            pass
+        """安全断开通达信备用连接（如果建立过）"""
+        if self._tdx_api is not None:
+            try:
+                self._tdx_api.disconnect()
+            except Exception:
+                pass
         return False
 
     def __del__(self):
-        """析构兜底：若未使用 with 语句，尝试断开连接"""
+        """析构兜底"""
+        if self._tdx_api is not None:
+            try:
+                self._tdx_api.disconnect()
+            except Exception:
+                pass
+
+    def get_financial_abstract(self, code: str) -> pd.DataFrame:
+        """
+        获取A股财务摘要（Baostock 单一源）。
+
+        Baostock 返回每期一行（statDate, netProfit, MBRevenue, gpMargin, totalShare, ...）。
+        此处转换为 AStockAnalyzer 期望的"指标×日期"透视格式：
+          - index: 指标名（归母净利润 / 营业总收入 / 营业成本）
+          - 列: 指标 + 各报告期日期（YYYYMMDD 字符串）
+          - 值: 元单位数值
+        """
         try:
-            self.api.disconnect()
-        except Exception:
-            pass
+            with BaostockProvider() as bp:
+                hist = bp.get_profit_history(code, num_years=5)
+        except Exception as e:
+            logger.warning(f"A股 {code} Baostock profit_history 查询异常: {e}")
+            return pd.DataFrame()
+
+        if hist is None or hist.empty:
+            logger.warning(f"A股 {code} Baostock 财务数据为空")
+            return pd.DataFrame()
+
+        # 按日期构造列
+        date_cols: list[str] = []
+        metric_rows: dict[str, dict[str, float]] = {
+            '归母净利润': {},
+            '营业总收入': {},
+            '营业成本': {},
+        }
+        for _, row in hist.iterrows():
+            stat_date = str(row.get('statDate', '')).strip()
+            if not stat_date:
+                continue
+            # analyzer 支持 'YYYY-MM-DD' 和 'YYYYMMDD' 两种日期列名，此处用 'YYYYMMDD' 更兼容
+            date_key = stat_date.replace('-', '')
+            date_cols.append(date_key)
+
+            net_profit = float(row.get('netProfit', 0) or 0)
+            revenue = float(row.get('MBRevenue', 0) or 0)
+            gp_margin = float(row.get('gpMargin', 0) or 0)  # decimal, e.g. 0.913
+            cost = revenue * (1.0 - gp_margin) if revenue > 0 else 0.0
+
+            metric_rows['归母净利润'][date_key] = net_profit
+            metric_rows['营业总收入'][date_key] = revenue
+            metric_rows['营业成本'][date_key] = cost
+
+        if not date_cols:
+            return pd.DataFrame()
+
+        # 构造 akshare 风格的 DataFrame（列: 指标 + 日期列；分析器会 set_index('指标').T）
+        frame_rows: list[dict] = []
+        for metric, by_date in metric_rows.items():
+            entry = {'指标': metric}
+            for d in date_cols:
+                entry[d] = by_date.get(d, 0.0)
+            frame_rows.append(entry)
+        df_out = pd.DataFrame(frame_rows)
+        logger.debug(f"A股 {code} Baostock 财务摘要构造完成: {len(date_cols)} 期")
+        return df_out
+
+    def get_historical_valuation(self, code: str, val_type: str = 'pe') -> pd.DataFrame:
+        """
+        获取A股历史估值走势（Baostock 单一源）。
+        从日 K 线直接提取 peTTM / pbMRQ / psTTM。
+        """
+        try:
+            with BaostockProvider() as bp:
+                df = bp.get_valuation_history(code, val_type=val_type)
+                if df is not None and not df.empty:
+                    logger.debug(f"A股 {code} Baostock 历史估值获取成功 ({val_type})，共 {len(df)} 条")
+                    return df
+        except Exception as e:
+            logger.warning(f"A股 {code} Baostock 历史估值失败: {e}")
+
+        logger.warning(f"A股 {code} 历史估值数据获取失败")
+        return pd.DataFrame()
 
 
 # ---------------------- 港股/美股通用基类：抽取 akshare 数据获取共性逻辑 ----------------------

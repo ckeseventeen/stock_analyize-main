@@ -3,6 +3,11 @@ src/strategy/backtest/runner.py — 回测运行器
 
 封装 backtrader Cerebro，处理数据格式转换和性能统计。
 """
+# matplotlib 后端必须在 backtrader 导入前设置，
+# 否则 backtrader import 时会锁定 MacOS GUI 后端
+import matplotlib
+matplotlib.use("Agg", force=True)
+
 import backtrader as bt
 import pandas as pd
 

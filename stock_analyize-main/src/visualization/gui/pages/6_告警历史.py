@@ -77,7 +77,7 @@ else:
         if rule_filter.strip():
             df_show = df_show[df_show["规则类型"].str.contains(rule_filter.strip(), na=False)]
 
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        st.dataframe(df_show, width='stretch', hide_index=True)
 
         col_dl, col_clean = st.columns(2)
         with col_dl:

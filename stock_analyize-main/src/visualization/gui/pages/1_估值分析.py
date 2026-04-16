@@ -105,7 +105,7 @@ with st.sidebar:
     with c3:
         r_high = st.number_input("高", value=float(default_range[2]), step=0.5)
 
-    run_btn = st.button("▶️ 开始分析", type="primary", use_container_width=True)
+    run_btn = st.button("▶️ 开始分析", type="primary", width='stretch')
 
 
 # ========================
@@ -183,7 +183,7 @@ if run_btn:
                        if result.get("price") else ""}
             for level, price in target_prices.items()
         ])
-        st.dataframe(tp_df, use_container_width=True, hide_index=True)
+        st.dataframe(tp_df, width='stretch', hide_index=True)
 
     # --------- 4 格估值图（matplotlib）---------
     st.subheader("📊 4 格估值图")
@@ -191,7 +191,7 @@ if run_btn:
         from visualizer import Visualizer
         viz = Visualizer(result, stock_config)
         fig = viz.plot()
-        st.pyplot(fig, use_container_width=True)
+        st.pyplot(fig, width='stretch')
         plt.close(fig)
     except Exception as e:
         st.error(f"图表渲染失败: {e}")
@@ -200,13 +200,13 @@ if run_btn:
     # --------- 原始数据展示（可折叠）---------
     with st.expander("📋 财务数据原表"):
         if fin_df is not None and not fin_df.empty:
-            st.dataframe(fin_df, use_container_width=True)
+            st.dataframe(fin_df, width='stretch')
         else:
             st.caption("暂无财务数据")
 
     with st.expander("📉 历史估值原表"):
         if hist_val_df is not None and not hist_val_df.empty:
-            st.dataframe(hist_val_df.tail(100), use_container_width=True)
+            st.dataframe(hist_val_df.tail(100), width='stretch')
         else:
             st.caption("暂无历史估值数据")
 

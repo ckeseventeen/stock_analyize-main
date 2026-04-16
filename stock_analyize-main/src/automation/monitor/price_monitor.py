@@ -116,15 +116,31 @@ def _fetch_spot_price(code: str, market: str) -> tuple[float, Optional[float]]:
     try:
         if market == "a":
             import akshare as ak
-            df = ak.stock_zh_a_spot_em()
-            row = df[df["代码"] == code]
-            if row.empty:
-                return 0.0, None
-            price = float(row.iloc[0]["最新价"])
-            # 昨收 = 最新价 / (1 + 涨跌幅/100)
-            pct = float(row.iloc[0]["涨跌幅"])
-            prev = price / (1 + pct / 100.0) if pct != 0 else price
-            return price, prev
+            try:
+                # 尝试用大礼包全量获取
+                df = ak.stock_zh_a_spot_em()
+                row = df[df["代码"] == code]
+                if not row.empty:
+                    price = float(row.iloc[0]["最新价"])
+                    pct = float(row.iloc[0]["涨跌幅"])
+                    prev = price / (1 + pct / 100.0) if pct != 0 else price
+                    return price, prev
+            except Exception as e:
+                logger.debug(f"东财接口受限，切换为单股通道(雪球): {e}")
+                
+            # 雪球单只股票极速接口 fallback
+            prefix = "SH" if code.startswith("6") else "SZ" if code.startswith(("0", "3")) else "BJ"
+            symbol = f"{prefix}{code}"
+            df_xq = ak.stock_individual_spot_xq(symbol=symbol)
+            if df_xq is not None and not df_xq.empty:
+                price_val = df_xq.loc[df_xq['item'] == '现价', 'value'].values
+                prev_val = df_xq.loc[df_xq['item'] == '昨收', 'value'].values
+                if len(price_val) > 0 and price_val[0] is not None:
+                    price = float(price_val[0])
+                    prev = float(prev_val[0]) if len(prev_val) > 0 and prev_val[0] is not None else None
+                    if price > 0:
+                        return price, prev
+            return 0.0, None
 
         if market == "hk":
             import akshare as ak
@@ -154,7 +170,28 @@ def _fetch_spot_price(code: str, market: str) -> tuple[float, Optional[float]]:
 
 
 def _fetch_daily_ohlcv(code: str, market: str, days_back: int = 120) -> pd.DataFrame:
-    """为 MA 计算获取日线数据（仅在规则需要时才调用）"""
+    """为 MA 计算获取日线数据（仅在规则需要时才调用）
+
+    A 股优先使用 Baostock（稳定不受代理影响），其余市场走 akshare。
+    """
+    # A 股优先走 Baostock
+    if market == "a":
+        try:
+            from src.data.fetcher.baostock_provider import BaostockProvider
+            with BaostockProvider() as bp:
+                df = bp.get_k_data(code, days_back=days_back, frequency="d",
+                                   fields="date,open,high,low,close,volume")
+                if df is not None and not df.empty:
+                    # 重命名列以兼容 _RuleEvaluator（需要 "收盘" 列）
+                    df = df.rename(columns={"close": "收盘", "open": "开盘",
+                                            "high": "最高", "low": "最低",
+                                            "date": "日期", "volume": "成交量"})
+                    logger.debug(f"[a-{code}] Baostock日线获取成功，共 {len(df)} 条")
+                    return df
+        except Exception as e:
+            logger.debug(f"[a-{code}] Baostock日线失败，回退akshare: {e}")
+
+    # akshare fallback（A股）/ 港股 / 美股
     try:
         import akshare as ak
         end_date = pd.Timestamp.now().strftime("%Y%m%d")

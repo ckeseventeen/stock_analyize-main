@@ -65,6 +65,9 @@ class MarketCapCondition(BaseCondition):
         self.max_cap = max_cap
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        # 若数据源不提供总市值（如 Baostock），跳过本条件（视为通过），避免误过滤
+        if "总市值" not in spot_row.index:
+            return True
         cap = float(spot_row.get("总市值", 0) or 0) / 1e8
         return self.min_cap <= cap <= self.max_cap
 

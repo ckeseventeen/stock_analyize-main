@@ -41,7 +41,7 @@ config_path_input = st.sidebar.text_input(
 )
 config_path = Path(config_path_input)
 
-run_btn = st.sidebar.button("▶️ 开始筛选", type="primary", use_container_width=True)
+run_btn = st.sidebar.button("▶️ 开始筛选", type="primary", width='stretch')
 
 
 # ========================
@@ -101,7 +101,7 @@ if run_btn:
         st.success(f"✅ 筛选完成：共 {len(results)} 只股票符合条件")
 
         # 结果表格（支持排序/筛选）
-        st.dataframe(results, use_container_width=True, hide_index=True)
+        st.dataframe(results, width='stretch', hide_index=True)
 
         # 下载按钮
         st.download_button(

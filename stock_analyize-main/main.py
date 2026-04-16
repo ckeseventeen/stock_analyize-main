@@ -13,7 +13,7 @@ import time
 from data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
 from analyzer import AStockAnalyzer, HKStockAnalyzer, USStockAnalyzer
 from visualizer import Visualizer
-from logger import setup_logger
+from src.utils.logger import setup_logger
 
 # 全局日志初始化
 logger = setup_logger()

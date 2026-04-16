@@ -48,7 +48,7 @@ with st.sidebar:
     st.markdown("---")
     track_forecasts = st.checkbox("包含业绩预告",
                                   value=cfg.get("track_forecasts", True))
-    refresh = st.button("🔄 刷新数据", type="primary", use_container_width=True)
+    refresh = st.button("🔄 刷新数据", type="primary", width='stretch')
 
 
 # ========================
@@ -116,7 +116,7 @@ for market, tab in [("a", tab_a), ("hk", tab_hk), ("us", tab_us)]:
             )
 
         # 展示
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.dataframe(df, width='stretch', hide_index=True)
         st.download_button(
             label="💾 下载 CSV",
             data=df_to_csv_bytes(df),
@@ -136,7 +136,7 @@ with tab_all:
         merged = pd.concat(all_frames, ignore_index=True)
         if "disclose_date" in merged.columns:
             merged = merged.sort_values("disclose_date").reset_index(drop=True)
-        st.dataframe(merged, use_container_width=True, hide_index=True)
+        st.dataframe(merged, width='stretch', hide_index=True)
 
         # 按日期聚合统计
         if "disclose_date" in merged.columns:

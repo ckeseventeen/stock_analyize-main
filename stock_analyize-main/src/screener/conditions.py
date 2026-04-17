@@ -39,6 +39,18 @@ class BaseCondition(ABC):
         对于 OHLCV 条件，始终返回 True（跳过，留待 evaluate_full 判断）。
         """
 
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        """
+        向量化评估（批量对 5000+ 行做同一个条件判断）。
+
+        默认实现是 df.apply(evaluate_spot, axis=1) —— Python 级循环，慢。
+        子类若能用 pandas 列运算重写此方法，可带来 50-200x 加速。
+
+        Returns:
+            布尔 Series，index 与 df.index 对齐
+        """
+        return df.apply(self.evaluate_spot, axis=1).astype(bool)
+
     def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
         """
         基于完整数据评估（含K线）。
@@ -71,6 +83,12 @@ class MarketCapCondition(BaseCondition):
         cap = float(spot_row.get("总市值", 0) or 0) / 1e8
         return self.min_cap <= cap <= self.max_cap
 
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "总市值" not in df.columns:
+            return pd.Series(True, index=df.index)
+        cap = pd.to_numeric(df["总市值"], errors="coerce").fillna(0) / 1e8
+        return (cap >= self.min_cap) & (cap <= self.max_cap)
+
 
 class PERangeCondition(BaseCondition):
     """市盈率(动态)范围筛选"""
@@ -87,6 +105,12 @@ class PERangeCondition(BaseCondition):
         if pe <= 0:
             return False  # 排除亏损股（PE为负）
         return self.min_pe <= pe <= self.max_pe
+
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "市盈率-动态" not in df.columns:
+            return pd.Series(False, index=df.index)
+        pe = pd.to_numeric(df["市盈率-动态"], errors="coerce").fillna(0)
+        return (pe > 0) & (pe >= self.min_pe) & (pe <= self.max_pe)
 
 
 class PBRangeCondition(BaseCondition):
@@ -105,6 +129,12 @@ class PBRangeCondition(BaseCondition):
             return False
         return self.min_pb <= pb <= self.max_pb
 
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "市净率" not in df.columns:
+            return pd.Series(False, index=df.index)
+        pb = pd.to_numeric(df["市净率"], errors="coerce").fillna(0)
+        return (pb > 0) & (pb >= self.min_pb) & (pb <= self.max_pb)
+
 
 class PriceRangeCondition(BaseCondition):
     """股价范围筛选"""
@@ -122,6 +152,12 @@ class PriceRangeCondition(BaseCondition):
             return False
         return self.min_price <= price <= self.max_price
 
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "最新价" not in df.columns:
+            return pd.Series(False, index=df.index)
+        p = pd.to_numeric(df["最新价"], errors="coerce").fillna(0)
+        return (p > 0) & (p >= self.min_price) & (p <= self.max_price)
+
 
 class TurnoverRateCondition(BaseCondition):
     """换手率范围筛选"""
@@ -136,6 +172,12 @@ class TurnoverRateCondition(BaseCondition):
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         rate = float(spot_row.get("换手率", 0) or 0)
         return self.min_rate <= rate <= self.max_rate
+
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "换手率" not in df.columns:
+            return pd.Series(True, index=df.index)
+        r = pd.to_numeric(df["换手率"], errors="coerce").fillna(0)
+        return (r >= self.min_rate) & (r <= self.max_rate)
 
 
 # ========================

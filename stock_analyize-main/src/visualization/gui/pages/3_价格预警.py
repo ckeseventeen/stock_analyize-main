@@ -24,6 +24,7 @@ from src.visualization.gui.utils import (  # noqa: E402
     PATH_ALERTS,
     PATH_PRICE_ALERTS,
     load_yaml,
+    quick_add_stock_widget,
     save_yaml,
 )
 
@@ -154,9 +155,37 @@ with st.form("add_rule_form", clear_on_submit=True):
             cfg["rules"] = rules
             if save_yaml(PATH_PRICE_ALERTS, cfg):
                 st.success(f"已添加规则: {new_rule['name']} ({code})")
+                # 记下来供下方"加入关注"预填
+                st.session_state["_alert_last_code"] = new_rule["code"]
+                st.session_state["_alert_last_name"] = new_rule["name"]
+                st.session_state["_alert_last_market"] = market
                 st.rerun()
             else:
                 st.error("写入 YAML 失败（ruamel.yaml 未安装时注释可能丢失，但规则仍写入）")
+
+
+# ========================
+# 就地加入关注列表
+# ========================
+st.markdown("---")
+st.subheader("⭐ 同步加入关注列表")
+st.caption("当前规则的股票可一键加入 a_stock.yaml / hk_stock.yaml / us_stock.yaml，便于估值分析页直接选中。")
+
+_prefill_code = st.session_state.get("_alert_last_code", "")
+_prefill_name = st.session_state.get("_alert_last_name", "")
+_prefill_market = st.session_state.get("_alert_last_market", "a")
+
+if quick_add_stock_widget(
+    key_prefix="page3_alerts",
+    default_market=_prefill_market,
+    default_code=_prefill_code,
+    default_name=_prefill_name,
+    expanded=bool(_prefill_code),
+):
+    # 清掉一次性预填，避免下次进入还带旧值
+    for k in ("_alert_last_code", "_alert_last_name", "_alert_last_market"):
+        st.session_state.pop(k, None)
+    st.rerun()
 
 
 # ========================

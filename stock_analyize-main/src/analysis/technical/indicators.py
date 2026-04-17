@@ -3,8 +3,11 @@ src/analysis/technical/indicators.py — 技术指标计算器
 
 基于 ta 库封装常用技术指标，支持中英文列名自动识别。
 """
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import yaml
 from ta.momentum import RSIIndicator
 from ta.trend import MACD
 from ta.volatility import BollingerBands
@@ -12,6 +15,60 @@ from ta.volatility import BollingerBands
 from src.utils.logger import get_logger
 
 logger = get_logger("technical")
+
+
+def _default_indicator_config_path() -> Path:
+    """定位 indicators.yaml（项目根/config/indicators.yaml）"""
+    return Path(__file__).resolve().parents[3] / "config" / "indicators.yaml"
+
+
+def load_indicator_profile(profile: str | None = None,
+                           config_path: Path | str | None = None) -> dict:
+    """
+    从 indicators.yaml 读取 profile 参数；缺失时返回硬编码默认值。
+
+    返回结构（所有键都保证存在）：
+        {
+            "macd": {"fast", "slow", "signal"},
+            "rsi": {"period"},
+            "kdj": {"n", "m1", "m2"},
+            "bollinger": {"period", "std_dev"},
+            "moving_averages": {"periods": [...]},
+        }
+    """
+    defaults = {
+        "macd": {"fast": 12, "slow": 26, "signal": 9},
+        "rsi": {"period": 14},
+        "kdj": {"n": 9, "m1": 3, "m2": 3},
+        "bollinger": {"period": 20, "std_dev": 2.0},
+        "moving_averages": {"periods": [5, 10, 20, 60, 120, 250]},
+    }
+
+    path = Path(config_path) if config_path else _default_indicator_config_path()
+    if not path.exists():
+        return defaults
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    except Exception as e:
+        logger.warning(f"读取 indicators.yaml 失败: {e}，回退默认值")
+        return defaults
+
+    profiles = cfg.get("profiles") or {}
+    name = profile or cfg.get("active_profile") or "default"
+    prof = profiles.get(name)
+    if not isinstance(prof, dict):
+        return defaults
+
+    # 逐键合并；缺失的指标仍用默认值
+    out = {k: dict(v) if isinstance(v, dict) else v for k, v in defaults.items()}
+    for k, v in prof.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k].update(v)
+        else:
+            out[k] = v
+    return out
 
 # 中文列名 -> 英文标准化映射
 _CN_COL_MAP = {
@@ -147,13 +204,40 @@ class TechnicalAnalyzer:
         return self
 
     def add_all(self) -> "TechnicalAnalyzer":
-        """一次性添加全部技术指标"""
+        """一次性添加全部技术指标（使用硬编码默认值）"""
         return (
             self.add_macd()
             .add_rsi()
             .add_kdj()
             .add_bollinger()
             .add_moving_averages()
+            .add_volume_analysis()
+        )
+
+    def add_all_from_config(self, profile: str | dict | None = None) -> "TechnicalAnalyzer":
+        """
+        从 indicators.yaml 读取参数后叠加全部指标。
+
+        Args:
+            profile: 可以是 profile 名（str），也可以是完整的参数 dict
+                     （用于前端"预览未保存参数"场景）。None = 读取 active_profile。
+        """
+        if isinstance(profile, dict):
+            params = profile
+        else:
+            params = load_indicator_profile(profile)
+
+        macd_p = params.get("macd") or {}
+        rsi_p = params.get("rsi") or {}
+        kdj_p = params.get("kdj") or {}
+        bb_p = params.get("bollinger") or {}
+        ma_p = params.get("moving_averages") or {}
+        return (
+            self.add_macd(**macd_p)
+            .add_rsi(**rsi_p)
+            .add_kdj(**kdj_p)
+            .add_bollinger(**bb_p)
+            .add_moving_averages(ma_p.get("periods"))
             .add_volume_analysis()
         )
 

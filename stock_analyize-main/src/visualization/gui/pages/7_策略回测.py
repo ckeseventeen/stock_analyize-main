@@ -2,9 +2,11 @@
 pages/7_策略回测.py — 策略回测前端页面
 
 功能：
-- 提供前端参数输入（股票代码、周期、资金、均线参数）
+- 支持从 config/backtest_presets.yaml 加载命名预设
+- 根据策略类型动态渲染参数表单（由 STRATEGY_PARAM_SCHEMAS 驱动）
 - 触发 BacktestRunner 进行历史回测
 - 展示回测核心指标与收益图表
+- 将当前参数另存为新预设
 """
 from __future__ import annotations
 
@@ -27,54 +29,234 @@ matplotlib.rcParams["font.sans-serif"] = [
     "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans",
 ]
 matplotlib.rcParams["axes.unicode_minus"] = False
-import matplotlib.pyplot as plt  # noqa: E402
 
-import pandas as pd  # noqa: E402
-import streamlit as st  # noqa: E402
 import backtrader as bt  # noqa: F401, E402
+import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
+import streamlit as st  # noqa: E402
+import yaml as _yaml  # noqa: E402
 
 from src.screener.data_provider import ScreenerDataProvider
-from src.strategy.backtest.runner import BacktestRunner
-from src.strategy.backtest.ma_crossover import MACrossoverStrategy
-from src.strategy.backtest.factor_strategy import FactorRebalanceStrategy
+from src.strategy.backtest import (
+    STRATEGY_LABELS,
+    STRATEGY_PARAM_SCHEMAS,
+    STRATEGY_REGISTRY,
+    BacktestRunner,
+)
+from src.visualization.gui.utils import (
+    PATH_BACKTEST_PRESETS,
+    list_backtest_presets,
+    load_backtest_preset,
+    quick_add_stock_widget,
+    save_backtest_preset,
+)
 
 st.set_page_config(page_title="策略回测", page_icon="📈", layout="wide")
 st.title("📈 策略回测 (Backtest)")
-st.caption("基于 Backtrader 核心的量化策略验证页面。填入参数即可分析策略在历史数据上的表现。")
+st.caption("基于 Backtrader 的量化策略验证。可从配置管理页新建预设后在此加载。")
+
+
+# ========================
+# 顶部：预设加载
+# ========================
+presets = list_backtest_presets()
+col_load, col_info = st.columns([2, 3])
+with col_load:
+    loaded_name = st.selectbox(
+        "📁 加载预设",
+        options=["<不使用预设>"] + presets,
+        index=0,
+        help=f"预设来源：{PATH_BACKTEST_PRESETS}",
+    )
+
+loaded_preset: dict = {}
+if loaded_name != "<不使用预设>":
+    loaded_preset = load_backtest_preset(loaded_name)
+    with col_info:
+        if loaded_preset.get("description"):
+            st.info(f"📝 {loaded_preset['description']}")
+
+
+def _preset_default(section: str, key: str, fallback):
+    """从加载的预设中取值，否则返回 fallback"""
+    if not loaded_preset:
+        return fallback
+    return (loaded_preset.get(section) or {}).get(key, fallback)
+
 
 # ========================
 # 侧边栏：参数配置
 # ========================
 st.sidebar.markdown("**基础设置 (Data & Account)**")
-stock_code = st.sidebar.text_input("股票代码 (如 600519)", value="600519", help="输入A股纯数字代码")
-days_back = st.sidebar.number_input("回测天数 (Trading days)", min_value=100, max_value=5000, value=1000, step=100)
+stock_code = st.sidebar.text_input(
+    "股票代码 (如 600519)",
+    value=_preset_default("data", "stock_code", "600519"),
+    help="输入A股纯数字代码",
+)
+days_back = st.sidebar.number_input(
+    "回测天数 (Trading days)",
+    min_value=100, max_value=5000,
+    value=int(_preset_default("data", "days_back", 1000)),
+    step=100,
+)
 
-initial_cash = st.sidebar.number_input("初始资金 (Initial Cash)", min_value=10000, max_value=10000000, value=100000, step=10000)
-commission = st.sidebar.number_input("手续费率 (Commission)", min_value=0.0, max_value=0.01, value=0.0002, step=0.0001, format="%.4f")
+initial_cash = st.sidebar.number_input(
+    "初始资金 (Initial Cash)",
+    min_value=10000, max_value=10_000_000,
+    value=int(_preset_default("account", "initial_cash", 100000)),
+    step=10000,
+)
+commission = st.sidebar.number_input(
+    "手续费率 (Commission)",
+    min_value=0.0, max_value=0.01,
+    value=float(_preset_default("account", "commission", 0.0002)),
+    step=0.0001, format="%.4f",
+)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**策略选择 (Strategy Params)**")
+st.sidebar.markdown("**策略选择 (Strategy)**")
 
-# 提供策略选择
-strategy_type = st.sidebar.selectbox("选择策略", options=["双均线交叉 (MA Crossover)", "因子再平衡 (Factor Rebalance) (Demo)"])
+# 策略 key 来自注册表；不写死
+all_strategy_keys = list(STRATEGY_REGISTRY.keys())
+preset_strategy = loaded_preset.get("strategy") if loaded_preset else None
+default_strategy_idx = (
+    all_strategy_keys.index(preset_strategy)
+    if preset_strategy in all_strategy_keys else 0
+)
 
-if strategy_type == "双均线交叉 (MA Crossover)":
-    st.sidebar.caption("金叉全仓买入，死叉全仓卖出")
-    fast_ma = st.sidebar.slider("短期均线 (Fast MA)", min_value=3, max_value=60, value=10, step=1)
-    slow_ma = st.sidebar.slider("长期均线 (Slow MA)", min_value=10, max_value=250, value=30, step=1)
-    strategy_cls = MACrossoverStrategy
-    strat_params = {"fast_period": fast_ma, "slow_period": slow_ma}
+strategy_key = st.sidebar.selectbox(
+    "选择策略",
+    options=all_strategy_keys,
+    format_func=lambda k: STRATEGY_LABELS.get(k, k),
+    index=default_strategy_idx,
+)
+strategy_cls = STRATEGY_REGISTRY[strategy_key]
 
-else:
-    st.sidebar.caption("每隔N天判断因子，低估买入，高估卖出(使用收盘价作为因子的Demo验证)")
-    rebalance_days = st.sidebar.number_input("调仓周期 (天)", value=20, min_value=1)
-    buy_threshold = st.sidebar.number_input("买入阈值", value=15.0)
-    sell_threshold = st.sidebar.number_input("卖出阈值", value=30.0)
-    strategy_cls = FactorRebalanceStrategy
-    strat_params = {"rebalance_days": rebalance_days, "buy_threshold": buy_threshold, "sell_threshold": sell_threshold}
+# 动态渲染策略参数（由 STRATEGY_PARAM_SCHEMAS 驱动）
+st.sidebar.markdown(f"**{STRATEGY_LABELS.get(strategy_key, strategy_key)} 参数**")
+schemas = STRATEGY_PARAM_SCHEMAS.get(strategy_key, [])
+strat_params: dict = {}
+preset_params = (loaded_preset.get("params") or {}) if loaded_preset else {}
 
-run_btn = st.sidebar.button("▶️ 开始回测", type="primary", width='stretch')
+rule_yaml_error: str | None = None  # 规则 YAML 解析错误，run 前会阻塞
+
+for schema in schemas:
+    key = schema["key"]
+    default_val = preset_params.get(key, schema["default"])
+    if schema["type"] == "int":
+        val = st.sidebar.number_input(
+            schema["label"],
+            min_value=int(schema.get("min", -10**9)),
+            max_value=int(schema.get("max", 10**9)),
+            value=int(default_val),
+            step=int(schema.get("step", 1)),
+            help=schema.get("help"),
+            key=f"param_{strategy_key}_{key}",
+        )
+        strat_params[key] = int(val)
+    elif schema["type"] == "yaml":
+        # 嵌套结构（如 rule_based 的 rule_config）用 text_area 编辑
+        # 默认值：若预设里带 dict，则 dump 成 YAML；否则用 schema default 的 YAML
+        try:
+            initial_text = _yaml.safe_dump(
+                default_val, allow_unicode=True, sort_keys=False
+            )
+        except Exception:
+            initial_text = ""
+        st.sidebar.markdown(f"**{schema['label']}**")
+        if schema.get("help"):
+            st.sidebar.caption(schema["help"])
+        yaml_text = st.sidebar.text_area(
+            "YAML",
+            value=initial_text,
+            height=320,
+            key=f"param_{strategy_key}_{key}",
+            label_visibility="collapsed",
+        )
+        # 就地解析，UI 立即反馈语法错误
+        try:
+            parsed = _yaml.safe_load(yaml_text) or {}
+            if not isinstance(parsed, dict):
+                raise ValueError("顶层必须是 dict（键值对）")
+            strat_params[key] = parsed
+            st.sidebar.caption("✅ YAML 语法 OK")
+        except Exception as e:
+            rule_yaml_error = f"YAML 解析失败: {e}"
+            st.sidebar.error(rule_yaml_error)
+            strat_params[key] = None  # 阻止执行
+    else:
+        val = st.sidebar.number_input(
+            schema["label"],
+            value=float(default_val),
+            step=float(schema.get("step", 0.1)),
+            help=schema.get("help"),
+            key=f"param_{strategy_key}_{key}",
+        )
+        strat_params[key] = float(val)
+
+# rule_based 专属：规则语法帮助
+if strategy_key == "rule_based":
+    with st.sidebar.expander("📖 规则语法帮助", expanded=False):
+        st.markdown(
+            "**指标 (indicators)** — key 为自定义名字，value 指定 type + 周期\n"
+            "```yaml\n"
+            "indicators:\n"
+            "  rsi_14: {type: rsi, period: 14}\n"
+            "  ma_20:  {type: sma, period: 20}\n"
+            "  ema_60: {type: ema, period: 60}\n"
+            "  macd_l: {type: macd_line, fast: 12, slow: 26, signal: 9}\n"
+            "```\n"
+            "**支持的 type**: `rsi` / `sma`(=`ma`) / `ema` / `macd_line` / `macd_signal` / `atr`\n\n"
+            "**买卖规则** — 每行一个条件，格式 `左 运算符 右`（空格分隔）\n"
+            "```\n"
+            "rsi_14 < 30            # RSI 低于 30\n"
+            "close > ma_20          # 价格站上 MA20\n"
+            "ma_20 cross_up ma_60   # MA20 上穿 MA60（金叉）\n"
+            "ma_20 cross_down ma_60 # MA20 下穿 MA60（死叉）\n"
+            "volume > 1000000       # 成交量大于 100 万\n"
+            "```\n"
+            "运算符：`<` `<=` `>` `>=` `==` `!=` `cross_up` `cross_down`\n\n"
+            "**买入/卖出逻辑**：\n"
+            "- `buy_logic: any` — 任一条件命中即买入（OR）\n"
+            "- `buy_logic: all` — 全部命中才买入（AND）"
+        )
+
+run_btn = st.sidebar.button("▶️ 开始回测", type="primary", width="stretch")
+
+# 侧边栏底部：另存为预设
+st.sidebar.markdown("---")
+st.sidebar.markdown("**💾 保存当前配置为预设**")
+new_preset_name = st.sidebar.text_input("预设名称", placeholder="my_strategy_v1",
+                                        key="new_preset_name")
+if st.sidebar.button("保存为预设", width="stretch"):
+    if not new_preset_name.strip():
+        st.sidebar.error("请输入预设名称")
+    else:
+        preset_to_save = {
+            "strategy": strategy_key,
+            "data": {"stock_code": stock_code.strip(), "days_back": int(days_back)},
+            "account": {"initial_cash": int(initial_cash),
+                        "commission": float(commission)},
+            "params": strat_params,
+            "description": f"{STRATEGY_LABELS.get(strategy_key, strategy_key)} - {stock_code}",
+        }
+        if save_backtest_preset(new_preset_name.strip(), preset_to_save):
+            st.sidebar.success(f"已保存 {new_preset_name}")
+            st.rerun()
+        else:
+            st.sidebar.error("保存失败")
+
+# 侧边栏底部：把当前回测标的加入关注列表（目前只支持 A 股纯代码）
+st.sidebar.markdown("---")
+with st.sidebar:
+    if quick_add_stock_widget(
+        key_prefix="page7_sidebar",
+        default_market="a",
+        default_code=stock_code.strip(),
+        default_name="",
+        label="➕ 把该标的加入关注列表",
+    ):
+        st.rerun()
 
 
 # ========================
@@ -84,23 +266,32 @@ if run_btn:
     if not stock_code:
         st.error("请输入股票代码")
         st.stop()
-        
+    if rule_yaml_error:
+        st.error(f"规则 YAML 有错，请先修正：{rule_yaml_error}")
+        st.stop()
+    # rule_based 但规则为空 dict 也不能跑
+    if strategy_key == "rule_based":
+        rc = strat_params.get("rule_config")
+        if not isinstance(rc, dict) or not rc:
+            st.error("规则策略需要有效的 rule_config（至少包含 indicators / buy_when / sell_when）")
+            st.stop()
+
     with st.spinner("正在获取日线数据并运行回测引擎..."):
         try:
             provider = ScreenerDataProvider()
             df = provider.get_daily_ohlcv(stock_code, days_back=days_back)
-            
+
             if df is None or df.empty:
                 st.error(f"获取股票 {stock_code} 的数据失败，请检查代码是否正确或网络情况。")
                 st.stop()
-                
+
             runner = BacktestRunner(
                 strategy_class=strategy_cls,
                 data_df=df,
-                **strat_params
+                **strat_params,
             )
             report = runner.run(initial_cash=initial_cash, commission=commission)
-            
+
         except Exception as e:
             st.error(f"回测执行失败: {e}")
             st.exception(e)
@@ -110,12 +301,13 @@ if run_btn:
         st.warning("回测结果为空。")
     else:
         st.success(f"✅ 回测完成：{stock_code} (使用策略: {report.get('策略')})")
-        
+
         # --------- 核心指标面板 ---------
         st.subheader("📊 绩效指标摘要")
-        
+
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("最终总资产", f"¥ {report.get('最终资产'):,.2f}", f"收益: {report.get('总收益率(%)')}%")
+        c1.metric("最终总资产", f"¥ {report.get('最终资产'):,.2f}",
+                  f"收益: {report.get('总收益率(%)')}%")
         c2.metric("年化收益率", f"{report.get('年化收益率(%)')}%")
         c3.metric("最大回撤", f"{report.get('最大回撤(%)')}%", delta_color="inverse")
         c4.metric("夏普比率", f"{report.get('夏普比率'):.2f}")
@@ -125,8 +317,9 @@ if run_btn:
         c6.metric("胜率", f"{report.get('胜率(%)')}%")
         c7.metric("初始资金", f"¥ {report.get('初始资金'):,.2f}")
         c8.metric("手续费率", f"{commission*100}%")
+
         # ================================================================
-        # 📈 专业 K线图 + 成交量 + 资金曲线（Plotly 交互式三面板）
+        # 📈 K线 + 成交量 + 资金曲线
         # ================================================================
         st.subheader("📈 回测可视化")
 
@@ -139,8 +332,8 @@ if run_btn:
             # --- 提取买卖信号 ---
             buy_dates, buy_prices = [], []
             sell_dates, sell_prices = [], []
-            for order in strat._orders:
-                if hasattr(order, 'executed') and order.executed.size != 0:
+            for order in getattr(strat, "_orders", []):
+                if hasattr(order, "executed") and order.executed.size != 0:
                     exec_date = bt.num2date(order.executed.dt)
                     if order.executed.size > 0:
                         buy_dates.append(exec_date)
@@ -149,118 +342,93 @@ if run_btn:
                         sell_dates.append(exec_date)
                         sell_prices.append(order.executed.price)
 
-            # --- 计算均线 ---
-            fast_p = strat_params.get('fast_period', 10)
-            slow_p = strat_params.get('slow_period', 30)
-            ma_fast = k_df['close'].rolling(fast_p).mean()
-            ma_slow = k_df['close'].rolling(slow_p).mean()
+            # --- 均线（仅 ma_crossover 使用）---
+            show_ma = strategy_key == "ma_crossover"
+            if show_ma:
+                fast_p = strat_params.get("fast_period", 10)
+                slow_p = strat_params.get("slow_period", 30)
+                ma_fast = k_df["close"].rolling(fast_p).mean()
+                ma_slow = k_df["close"].rolling(slow_p).mean()
 
-            # --- 资金曲线（买入持有 benchmark）---
-            benchmark = k_df['close'] / k_df['close'].iloc[0] * initial_cash
+            # --- 买入持有基线 ---
+            benchmark = k_df["close"] / k_df["close"].iloc[0] * initial_cash
 
-            # --- 涨跌颜色 ---
-            vol_colors = ['#FF4444' if c >= o else '#22AB94'
-                          for c, o in zip(k_df['close'], k_df['open'])]
+            vol_colors = ["#FF4444" if c >= o else "#22AB94"
+                          for c, o in zip(k_df["close"], k_df["open"])]
 
-            # ======== 创建三面板子图 ========
             fig = make_subplots(
-                rows=3, cols=1,
-                shared_xaxes=True,
-                vertical_spacing=0.03,
+                rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03,
                 row_heights=[0.55, 0.20, 0.25],
-                subplot_titles=('', '', ''),
             )
 
-            # ---- Panel 1：K线 + 均线 + 买卖信号 ----
             fig.add_trace(go.Candlestick(
                 x=k_df.index,
-                open=k_df['open'], high=k_df['high'],
-                low=k_df['low'], close=k_df['close'],
-                increasing=dict(line=dict(color='#FF4444'), fillcolor='#FF4444'),
-                decreasing=dict(line=dict(color='#22AB94'), fillcolor='#22AB94'),
-                name='K线', showlegend=True,
+                open=k_df["open"], high=k_df["high"],
+                low=k_df["low"], close=k_df["close"],
+                increasing=dict(line=dict(color="#FF4444"), fillcolor="#FF4444"),
+                decreasing=dict(line=dict(color="#22AB94"), fillcolor="#22AB94"),
+                name="K线",
             ), row=1, col=1)
 
-            fig.add_trace(go.Scatter(
-                x=k_df.index, y=ma_fast,
-                line=dict(color='#FF9800', width=1.2),
-                name=f'MA{fast_p}', opacity=0.9,
-            ), row=1, col=1)
+            if show_ma:
+                fig.add_trace(go.Scatter(x=k_df.index, y=ma_fast,
+                                         line=dict(color="#FF9800", width=1.2),
+                                         name=f"MA{fast_p}"), row=1, col=1)
+                fig.add_trace(go.Scatter(x=k_df.index, y=ma_slow,
+                                         line=dict(color="#2196F3", width=1.2),
+                                         name=f"MA{slow_p}"), row=1, col=1)
 
-            fig.add_trace(go.Scatter(
-                x=k_df.index, y=ma_slow,
-                line=dict(color='#2196F3', width=1.2),
-                name=f'MA{slow_p}', opacity=0.9,
-            ), row=1, col=1)
-
-            # 买入标记
             if buy_dates:
                 fig.add_trace(go.Scatter(
-                    x=buy_dates, y=buy_prices,
-                    mode='markers',
-                    marker=dict(symbol='triangle-up', size=12,
-                                color='#FF4444', line=dict(color='white', width=1)),
-                    name='买入 ▲',
+                    x=buy_dates, y=buy_prices, mode="markers",
+                    marker=dict(symbol="triangle-up", size=12, color="#FF4444",
+                                line=dict(color="white", width=1)),
+                    name="买入 ▲",
                 ), row=1, col=1)
 
-            # 卖出标记
             if sell_dates:
                 fig.add_trace(go.Scatter(
-                    x=sell_dates, y=sell_prices,
-                    mode='markers',
-                    marker=dict(symbol='triangle-down', size=12,
-                                color='#2196F3', line=dict(color='white', width=1)),
-                    name='卖出 ▼',
+                    x=sell_dates, y=sell_prices, mode="markers",
+                    marker=dict(symbol="triangle-down", size=12, color="#2196F3",
+                                line=dict(color="white", width=1)),
+                    name="卖出 ▼",
                 ), row=1, col=1)
 
-            # ---- Panel 2：成交量 ----
-            if 'volume' in k_df.columns:
-                fig.add_trace(go.Bar(
-                    x=k_df.index, y=k_df['volume'],
-                    marker_color=vol_colors,
-                    name='成交量', showlegend=False,
-                    opacity=0.7,
-                ), row=2, col=1)
+            if "volume" in k_df.columns:
+                fig.add_trace(go.Bar(x=k_df.index, y=k_df["volume"],
+                                     marker_color=vol_colors, name="成交量",
+                                     showlegend=False, opacity=0.7),
+                              row=2, col=1)
 
-            # ---- Panel 3：资金曲线 ----
             fig.add_trace(go.Scatter(
                 x=k_df.index, y=benchmark,
-                line=dict(color='#9E9E9E', width=1, dash='dot'),
-                name='买入持有',
-                fill='tozeroy', fillcolor='rgba(158,158,158,0.05)',
+                line=dict(color="#9E9E9E", width=1, dash="dot"),
+                name="买入持有",
+                fill="tozeroy", fillcolor="rgba(158,158,158,0.05)",
             ), row=3, col=1)
 
-            final_v = report.get('最终资产', initial_cash)
-            ret_color = '#4CAF50' if final_v >= initial_cash else '#F44336'
-            fig.add_hline(y=initial_cash, line_dash='dash', line_color='#CCCCCC',
-                          annotation_text=f'初始 ¥{initial_cash:,.0f}', row=3, col=1)
-            fig.add_hline(y=final_v, line_dash='dash', line_color=ret_color,
-                          annotation_text=f'策略 ¥{final_v:,.0f}', row=3, col=1)
+            final_v = report.get("最终资产", initial_cash)
+            ret_color = "#4CAF50" if final_v >= initial_cash else "#F44336"
+            fig.add_hline(y=initial_cash, line_dash="dash", line_color="#CCCCCC",
+                          annotation_text=f"初始 ¥{initial_cash:,.0f}", row=3, col=1)
+            fig.add_hline(y=final_v, line_dash="dash", line_color=ret_color,
+                          annotation_text=f"策略 ¥{final_v:,.0f}", row=3, col=1)
 
-            # ======== 全局样式 ========
             fig.update_layout(
-                height=850,
-                template='plotly_white',
+                height=850, template="plotly_white",
                 xaxis_rangeslider_visible=False,
-                legend=dict(
-                    orientation='h', yanchor='bottom', y=1.01,
-                    xanchor='left', x=0, font=dict(size=11),
-                    bgcolor='rgba(255,255,255,0.8)',
-                ),
+                legend=dict(orientation="h", yanchor="bottom", y=1.01,
+                            xanchor="left", x=0, font=dict(size=11),
+                            bgcolor="rgba(255,255,255,0.8)"),
                 margin=dict(l=50, r=30, t=40, b=30),
-                hovermode='x unified',
-                plot_bgcolor='#FAFAFA',
+                hovermode="x unified",
+                plot_bgcolor="#FAFAFA",
             )
-            fig.update_yaxes(title_text='价格', row=1, col=1, gridcolor='#EEEEEE')
-            fig.update_yaxes(title_text='成交量', row=2, col=1, gridcolor='#EEEEEE')
-            fig.update_yaxes(title_text='资金 (¥)', row=3, col=1, gridcolor='#EEEEEE')
-            fig.update_xaxes(gridcolor='#EEEEEE')
-
-            # 隐藏非交易日缺口
-            fig.update_xaxes(
-                rangebreaks=[dict(bounds=['sat', 'mon'])],
-                row=3, col=1,
-            )
+            fig.update_yaxes(title_text="价格", row=1, col=1, gridcolor="#EEEEEE")
+            fig.update_yaxes(title_text="成交量", row=2, col=1, gridcolor="#EEEEEE")
+            fig.update_yaxes(title_text="资金 (¥)", row=3, col=1, gridcolor="#EEEEEE")
+            fig.update_xaxes(gridcolor="#EEEEEE")
+            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], row=3, col=1)
 
             st.plotly_chart(fig, use_container_width=True)
 
@@ -268,9 +436,8 @@ if run_btn:
             st.warning(f"图表生成异常: {e}")
             st.exception(e)
 
-        # --------- 原始数据（折叠）---------
         with st.expander("📋 查看原始 K 线数据"):
             st.dataframe(df.head(200), use_container_width=True)
 
 else:
-    st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。")
+    st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。可先在【⚙️ 配置管理】页创建预设。")

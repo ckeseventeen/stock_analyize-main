@@ -33,6 +33,7 @@ import streamlit as st  # noqa: E402
 from src.visualization.gui.utils import (  # noqa: E402
     MARKET_LABELS,
     list_stocks_from_market_config,
+    quick_add_stock_widget,
 )
 
 st.set_page_config(page_title="估值分析", page_icon="📈", layout="wide")
@@ -106,6 +107,18 @@ with st.sidebar:
         r_high = st.number_input("高", value=float(default_range[2]), step=0.5)
 
     run_btn = st.button("▶️ 开始分析", type="primary", width='stretch')
+
+    # --------- 就地加入关注列表 ---------
+    st.markdown("---")
+    if quick_add_stock_widget(
+        key_prefix="page1_sidebar",
+        default_market=market,
+        default_code=code,
+        default_name=name,
+        default_valuation=val_type,
+        default_range=[r_low, r_mid, r_high],
+    ):
+        st.rerun()
 
 
 # ========================

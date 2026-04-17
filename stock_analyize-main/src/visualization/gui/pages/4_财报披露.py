@@ -22,9 +22,12 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.visualization.gui.utils import (  # noqa: E402
+    MARKET_LABELS,
     PATH_EARNINGS,
     df_to_csv_bytes,
     load_yaml,
+    quick_add_earnings_widget,
+    remove_code_from_earnings_watchlist,
 )
 
 st.set_page_config(page_title="财报披露", page_icon="📅", layout="wide")
@@ -89,10 +92,38 @@ tab_a, tab_hk, tab_us, tab_all = st.tabs(["🇨🇳 A 股", "🇭🇰 港股", "
 all_frames: list[pd.DataFrame] = []
 
 for market, tab in [("a", tab_a), ("hk", tab_hk), ("us", tab_us)]:
-    codes = tuple(watchlist.get(market, []) or [])
+    # 强制 str 化：YAML 里若写了无引号数字（如 `- 600519`），会被解析成 int/float；
+    # 后续 `, '.join(codes)` 会崩 "expected str instance, float found"。
+    _raw_codes = watchlist.get(market, []) or []
+    codes = tuple(str(c).strip() for c in _raw_codes if c not in (None, ""))
     with tab:
+        # ---- 就地添加/删除关注（所有 tab 顶部都有）----
+        if quick_add_earnings_widget(
+            key_prefix=f"page4_{market}",
+            default_market=market,
+            expanded=not codes,  # 空列表时默认展开，促使用户添加
+        ):
+            _fetch_calendar.clear()
+            st.rerun()
+
+        if codes:
+            with st.expander("🗑 从关注列表移除", expanded=False):
+                to_remove = st.selectbox(
+                    f"选择要移除的代码（{MARKET_LABELS.get(market, market)}）",
+                    options=list(codes),
+                    key=f"rm_earn_{market}",
+                )
+                if st.button("确认移除", key=f"rm_earn_btn_{market}"):
+                    ok, msg = remove_code_from_earnings_watchlist(market, to_remove)
+                    if ok:
+                        st.success(f"已移除 {to_remove}")
+                        _fetch_calendar.clear()
+                        st.rerun()
+                    else:
+                        st.error(msg)
+
         if not codes:
-            st.info(f"{market.upper()} 市场 watchlist 为空，请在 earnings_monitor.yaml 添加")
+            st.info(f"{market.upper()} 市场 watchlist 为空，请在上方「➕ 加入财报关注列表」添加")
             continue
 
         st.caption(f"关注：{', '.join(codes)}")

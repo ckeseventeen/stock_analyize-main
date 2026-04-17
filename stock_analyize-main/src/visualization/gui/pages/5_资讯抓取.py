@@ -25,6 +25,7 @@ from src.visualization.gui.utils import (  # noqa: E402
     PATH_SCRAPER,
     df_to_csv_bytes,
     load_yaml,
+    quick_edit_list_widget,
 )
 
 st.set_page_config(page_title="资讯抓取", page_icon="🌐", layout="wide")
@@ -95,6 +96,28 @@ with tab1:
     news_cfg = cfg.get("news", {}) or {}
     st.caption(f"关键词过滤：{news_cfg.get('keywords', [])}")
     st.caption(f"个股列表：{news_cfg.get('watchlist_codes', []) or '无'}")
+
+    # ---- 就地 CRUD（无需手动编辑 scraper.yaml）----
+    _rerun = False
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="news.keywords",
+        key_prefix="news_kw",
+        label="✏️ 管理关键词过滤",
+        placeholder="如：降息、关税",
+        help_text="命中任一关键词即保留（空列表=不过滤）",
+    ):
+        _rerun = True
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="news.watchlist_codes",
+        key_prefix="news_wl",
+        label="✏️ 管理个股列表",
+        placeholder="6 位 A 股代码，如 600519",
+        help_text="只针对这些个股抓新闻（为空则按关键词泛抓）",
+    ):
+        _rerun = True
+    if _rerun:
+        st.rerun()
+
     if st.button("🔄 抓取最新新闻", key="run_news", type="primary"):
         with st.spinner("拉取中..."):
             _fetch_news.clear()
@@ -113,6 +136,26 @@ with tab2:
     ann_cfg = cfg.get("announcements", {}) or {}
     st.caption(f"关注股票：{ann_cfg.get('watchlist', [])}")
     st.caption(f"类型过滤：{ann_cfg.get('types', [])}")
+
+    _rerun = False
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="announcements.watchlist",
+        key_prefix="ann_wl",
+        label="✏️ 管理关注股票",
+        placeholder="6 位 A 股代码，如 600519",
+    ):
+        _rerun = True
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="announcements.types",
+        key_prefix="ann_types",
+        label="✏️ 管理公告类型过滤",
+        placeholder="如：财务报告、重大事项",
+        help_text="模糊子串匹配；空 = 不过滤",
+    ):
+        _rerun = True
+    if _rerun:
+        st.rerun()
+
     if st.button("🔄 抓取最新公告", key="run_ann", type="primary"):
         with st.spinner("拉取中..."):
             _fetch_announcements.clear()
@@ -131,6 +174,15 @@ with tab3:
     hold_cfg = cfg.get("holdings", {}) or {}
     st.caption(f"关注股票：{hold_cfg.get('watchlist', [])}")
     st.caption(f"变动阈值：±{hold_cfg.get('delta_pct_threshold', 5)}%")
+
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="holdings.watchlist",
+        key_prefix="hold_wl",
+        label="✏️ 管理关注股票",
+        placeholder="6 位 A 股代码，如 600519",
+    ):
+        st.rerun()
+
     if st.button("🔄 抓取股东/北向持仓", key="run_hold", type="primary"):
         with st.spinner("拉取中..."):
             _fetch_holdings.clear()
@@ -146,6 +198,26 @@ with tab4:
     res_cfg = cfg.get("research", {}) or {}
     st.caption(f"关注股票：{res_cfg.get('watchlist', [])}")
     st.caption(f"评级过滤：{res_cfg.get('rating_filter', []) or '不过滤'}")
+
+    _rerun = False
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="research.watchlist",
+        key_prefix="res_wl",
+        label="✏️ 管理关注股票",
+        placeholder="6 位 A 股代码，如 600519",
+    ):
+        _rerun = True
+    if quick_edit_list_widget(
+        path=PATH_SCRAPER, dotted_key="research.rating_filter",
+        key_prefix="res_rating",
+        label="✏️ 管理评级过滤",
+        placeholder="如：买入、增持",
+        help_text="模糊子串匹配；空 = 不过滤",
+    ):
+        _rerun = True
+    if _rerun:
+        st.rerun()
+
     if st.button("🔄 抓取最新研报", key="run_res", type="primary"):
         with st.spinner("拉取中..."):
             _fetch_research.clear()

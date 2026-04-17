@@ -1,0 +1,61 @@
+# 回测预设
+#
+# 每个 preset 完整记录一次回测的所有参数，供 "7_策略回测" 页一键加载/保存。
+#
+# 结构：
+#   strategy: 策略 key（对应 STRATEGY_REGISTRY）
+#   data:    数据参数（code / days_back）
+#   account: 账户参数（initial_cash / commission）
+#   params:  策略专属参数（由 STRATEGY_PARAM_SCHEMAS 定义）
+
+presets:
+  ma_茅台_10_30:
+    strategy: ma_crossover
+    data: {stock_code: "600519", days_back: 1000}
+    account: {initial_cash: 100000, commission: 0.0002}
+    params: {fast_period: 10, slow_period: 30}
+    description: "贵州茅台 双均线 10/30"
+
+  factor_五粮液_demo:
+    strategy: factor_rebalance
+    data: {stock_code: "000858", days_back: 2000}
+    account: {initial_cash: 100000, commission: 0.0002}
+    params: {rebalance_days: 20, buy_threshold: 15.0, sell_threshold: 30.0}
+    description: "五粮液 因子再平衡 Demo"
+
+  # ---- 规则策略示例：RSI 超卖反弹 + 超买离场 ----
+  rule_rsi反弹_茅台:
+    strategy: rule_based
+    data: {stock_code: "600519", days_back: 1000}
+    account: {initial_cash: 100000, commission: 0.0002}
+    params:
+      rule_config:
+        indicators:
+          rsi_14: {type: rsi, period: 14}
+        buy_when:
+          - "rsi_14 < 30"
+        sell_when:
+          - "rsi_14 > 70"
+        buy_logic: any
+        sell_logic: any
+        position_size: 0.95
+    description: "贵州茅台 RSI<30 买入 / RSI>70 卖出"
+
+  # ---- 规则策略示例：均线金叉 + 死叉离场（MA 策略的规则版）----
+  rule_金叉_五粮液:
+    strategy: rule_based
+    data: {stock_code: "000858", days_back: 1500}
+    account: {initial_cash: 100000, commission: 0.0002}
+    params:
+      rule_config:
+        indicators:
+          ma_20: {type: sma, period: 20}
+          ma_60: {type: sma, period: 60}
+        buy_when:
+          - "ma_20 cross_up ma_60"
+        sell_when:
+          - "ma_20 cross_down ma_60"
+        buy_logic: all
+        sell_logic: all
+        position_size: 0.95
+    description: "五粮液 MA20/60 金叉买入，死叉卖出（规则 DSL）"

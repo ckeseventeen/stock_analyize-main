@@ -15,6 +15,7 @@ src/data/fetcher/baostock_provider.py — Baostock 统一封装层
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from typing import Optional
@@ -23,6 +24,11 @@ import baostock as bs
 import pandas as pd
 
 logger = logging.getLogger("stock_analyzer")
+
+# Baostock 库内部使用单一全局 TCP socket，非线程安全。
+# 所有 bs.* 调用（login / logout / query_*）必须在此锁保护下串行执行，
+# 否则多线程并发会导致 socket 数据交叉读取、Bad file descriptor 等致命错误。
+_bs_lock = threading.Lock()
 
 
 # ========================
@@ -58,13 +64,25 @@ def from_bs_code(bs_code: str) -> str:
 # ========================
 
 def _rs_to_df(rs) -> pd.DataFrame:
-    """将 Baostock ResultData 对象转换为 pandas DataFrame。"""
+    """将 Baostock ResultData 对象转换为 pandas DataFrame。
+
+    注意：本函数通常在 _bs_lock 持有期间调用（rs 对象内部仍会走 socket 读取）。
+    """
     rows = []
     while rs.error_code == "0" and rs.next():
         rows.append(rs.get_row_data())
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows, columns=rs.fields)
+
+
+# ========================
+# 各频率支持的字段常量
+# ========================
+# 日线支持估值指标 (peTTM/pbMRQ/psTTM/isST)
+_DAILY_FIELDS = "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ,psTTM,isST"
+# 周线/月线仅支持基础 OHLCV + turn + pctChg
+_WEEKLY_MONTHLY_FIELDS = "date,open,high,low,close,volume,amount,turn,pctChg"
 
 
 # ========================
@@ -84,9 +102,10 @@ class BaostockProvider:
         self._logged_in = False
 
     def login(self) -> "BaostockProvider":
-        """登录 Baostock 服务器。"""
+        """登录 Baostock 服务器（线程安全）。"""
         if not self._logged_in:
-            lg = bs.login()
+            with _bs_lock:
+                lg = bs.login()
             if lg.error_code != "0":
                 logger.warning(f"Baostock 登录失败: {lg.error_msg}")
             else:
@@ -95,9 +114,10 @@ class BaostockProvider:
         return self
 
     def logout(self) -> None:
-        """登出 Baostock 服务器。"""
+        """登出 Baostock 服务器（线程安全）。"""
         if self._logged_in:
-            bs.logout()
+            with _bs_lock:
+                bs.logout()
             self._logged_in = False
             logger.debug("Baostock 登出成功")
 
@@ -118,7 +138,7 @@ class BaostockProvider:
         days_back: int = 120,
         frequency: str = "d",
         adjust: str = "2",
-        fields: str = "date,open,high,low,close,volume,amount,turn,peTTM,pbMRQ,psTTM,isST",
+        fields: str | None = None,
         start_date: Optional[str] = None,
         end_date: Optional[str] = None,
     ) -> pd.DataFrame:
@@ -130,7 +150,8 @@ class BaostockProvider:
             days_back: 向前获取的天数
             frequency: 'd'=日K, 'w'=周K, 'm'=月K, '5'/'15'/'30'/'60'=分钟K
             adjust: '1'=后复权, '2'=前复权, '3'=不复权
-            fields: 查询字段（Baostock 字段名）
+            fields: 查询字段（Baostock 字段名）。None 时自动根据 frequency 选取，
+                    周线/月线 **不支持** peTTM/pbMRQ/psTTM/isST。
             start_date: 起始日期 (YYYY-MM-DD)，优先于 days_back
             end_date: 结束日期 (YYYY-MM-DD)，默认今天
 
@@ -143,16 +164,21 @@ class BaostockProvider:
         if start_date is None:
             start_date = (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d")
 
+        # 自动选择合法字段：周线/月线不支持 peTTM/pbMRQ/psTTM/isST
+        if fields is None:
+            fields = _DAILY_FIELDS if frequency == "d" else _WEEKLY_MONTHLY_FIELDS
+
         try:
-            rs = bs.query_history_k_data_plus(
-                bs_code,
-                fields=fields,
-                start_date=start_date,
-                end_date=end_date,
-                frequency=frequency,
-                adjustflag=adjust,
-            )
-            df = _rs_to_df(rs)
+            with _bs_lock:
+                rs = bs.query_history_k_data_plus(
+                    bs_code,
+                    fields=fields,
+                    start_date=start_date,
+                    end_date=end_date,
+                    frequency=frequency,
+                    adjustflag=adjust,
+                )
+                df = _rs_to_df(rs)
             if df.empty:
                 logger.debug(f"Baostock K线数据为空: {code} ({start_date} ~ {end_date})")
                 return df
@@ -188,14 +214,16 @@ class BaostockProvider:
             date = datetime.now().strftime("%Y-%m-%d")
 
         try:
-            rs = bs.query_all_stock(day=date)
-            df = _rs_to_df(rs)
+            with _bs_lock:
+                rs = bs.query_all_stock(day=date)
+                df = _rs_to_df(rs)
             if df.empty:
                 # 可能是非交易日，往前推 7 天再试
                 for delta in range(1, 8):
                     alt_date = (datetime.now() - timedelta(days=delta)).strftime("%Y-%m-%d")
-                    rs = bs.query_all_stock(day=alt_date)
-                    df = _rs_to_df(rs)
+                    with _bs_lock:
+                        rs = bs.query_all_stock(day=alt_date)
+                        df = _rs_to_df(rs)
                     if not df.empty:
                         break
 
@@ -301,8 +329,9 @@ class BaostockProvider:
         # 尝试当前季度，失败则向前回退
         for attempt in range(4):
             try:
-                rs = bs.query_profit_data(code=bs_code, year=year, quarter=quarter)
-                df = _rs_to_df(rs)
+                with _bs_lock:
+                    rs = bs.query_profit_data(code=bs_code, year=year, quarter=quarter)
+                    df = _rs_to_df(rs)
                 if not df.empty:
                     logger.debug(f"Baostock 盈利数据获取成功: {code} {year}Q{quarter} 共 {len(df)} 期")
                     return df
@@ -354,8 +383,9 @@ class BaostockProvider:
         if current_quarter != 4:
             for attempt in range(3):
                 try:
-                    rs = bs.query_profit_data(code=bs_code, year=current_year, quarter=current_quarter)
-                    df_cur = _rs_to_df(rs)
+                    with _bs_lock:
+                        rs = bs.query_profit_data(code=bs_code, year=current_year, quarter=current_quarter)
+                        df_cur = _rs_to_df(rs)
                     if not df_cur.empty:
                         fields = list(df_cur.columns)
                         rows.extend(df_cur.values.tolist())
@@ -371,8 +401,9 @@ class BaostockProvider:
         for delta in range(num_years):
             y = year - 1 - delta
             try:
-                rs = bs.query_profit_data(code=bs_code, year=y, quarter=4)
-                df_y = _rs_to_df(rs)
+                with _bs_lock:
+                    rs = bs.query_profit_data(code=bs_code, year=y, quarter=4)
+                    df_y = _rs_to_df(rs)
                 if not df_y.empty:
                     if not fields:
                         fields = list(df_y.columns)
@@ -404,8 +435,10 @@ class BaostockProvider:
         """获取季度成长能力数据 (营收增长率、净利润增长率等)"""
         bs_code = to_bs_code(code)
         try:
-            rs = bs.query_growth_data(code=bs_code, year=year, quarter=quarter)
-            return _rs_to_df(rs)
+            with _bs_lock:
+                rs = bs.query_growth_data(code=bs_code, year=year, quarter=quarter)
+                df = _rs_to_df(rs)
+            return df
         except Exception as e:
             logger.warning(f"Baostock 成长数据查询失败 [{code}]: {e}")
             return pd.DataFrame()

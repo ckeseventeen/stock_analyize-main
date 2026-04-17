@@ -504,6 +504,19 @@ with tab_backtest:
                     key=f"bt_{key}",
                 )
                 strat_params[key] = int(val)
+            elif s["type"] == "yaml":
+                import yaml
+                default_str = yaml.dump(s["default"], allow_unicode=True, sort_keys=False)
+                val_str = st.text_area(
+                    s["label"], value=default_str,
+                    height=200, help=s.get("help"),
+                    key=f"bt_{key}",
+                )
+                try:
+                    strat_params[key] = yaml.safe_load(val_str)
+                except Exception as e:
+                    st.error(f"YAML 解析失败: {e}")
+                    strat_params[key] = s["default"]
             else:
                 val = st.number_input(
                     s["label"], value=float(s["default"]),

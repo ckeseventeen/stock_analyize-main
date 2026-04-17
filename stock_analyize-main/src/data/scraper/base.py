@@ -19,6 +19,7 @@ import requests
 
 from src.data.fetcher.cache_manager import CacheManager
 from src.utils.logger import get_logger
+from src.utils.name_resolver import StockNameResolver
 
 logger = get_logger("scraper")
 
@@ -174,14 +175,36 @@ class BaseScraper(ABC):
             return df
 
         # 拼接文本便于一次正则匹配
-        combined = df[text_cols].astype(str).agg(" ".join, axis=1)
+        combined = df[text_cols].astype(str).agg(" ".join, axis=1).str.lower()
+        lower_keywords = [k.lower() for k in keywords if k]
 
         # 记录每行命中的关键词
         def _match(text: str) -> str:
-            hits = [k for k in keywords if k and k in text]
+            hits = [k for k in keywords if k and k.lower() in text]
             return ",".join(hits)
 
         matched = combined.map(_match)
         out = df[matched != ""].copy()
         out["matched_keyword"] = matched[matched != ""].values
         return out
+
+    def _inject_names(self, df: pd.DataFrame, market: str = "a") -> pd.DataFrame:
+        """为 DataFrame 注入 'name' 列（基于 'code' 列）"""
+        if df is None or df.empty or "code" not in df.columns:
+            return df
+        
+        resolver = StockNameResolver()
+        df = df.copy()
+        
+        # 如果列中已经有非空的 name，则不覆盖；否则尝试填充
+        if "name" not in df.columns:
+            df.insert(1, "name", "") # 插在 code 后面
+        
+        def _get_name(row):
+            current = str(row.get("name", "")).strip()
+            if current and current != row["code"]:
+                return current
+            return resolver.get_name(row["code"], market=market)
+
+        df["name"] = df.apply(_get_name, axis=1)
+        return df

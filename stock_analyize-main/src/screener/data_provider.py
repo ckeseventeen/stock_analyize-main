@@ -65,6 +65,8 @@ class ScreenerDataProvider:
         # 可选的常驻 Baostock session；用 session() 上下文开启。
         # 一旦开启，get_weekly_ohlcv/get_daily_ohlcv 会复用而不再 login/logout。
         self._bp_session: BaostockProvider | None = None
+        # Baostock session 级锁，保护 _bp_session 的并发访问
+        self._bp_session_lock = Lock()
 
     @contextlib.contextmanager
     def session(self):
@@ -127,7 +129,7 @@ class ScreenerDataProvider:
                             start_date=week_ago,
                             end_date=today,
                             frequency="d",
-                            fields="date,close,volume,amount,turn,peTTM,pbMRQ,psTTM,isST",
+                            fields="date,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,isST",
                         )
                         if df_k is not None and not df_k.empty:
                             latest = df_k.iloc[-1]
@@ -147,10 +149,23 @@ class ScreenerDataProvider:
                             except (ValueError, TypeError):
                                 est_mv = 0.0
 
+                            # 涨跌幅：直接取 Baostock 的 pctChg
+                            pct_chg = float(latest.get("pctChg", 0) or 0)
+                            # 振幅 = (最高 - 最低) / 昨收 × 100
+                            try:
+                                high = float(latest.get("high", 0) or 0)
+                                low = float(latest.get("low", 0) or 0)
+                                preclose = float(latest.get("preclose", 0) or 0)
+                                amplitude = (high - low) / preclose * 100 if preclose > 0 else 0.0
+                            except (ValueError, TypeError, ZeroDivisionError):
+                                amplitude = 0.0
+
                             rows.append({
                                 "代码": pure_code,
                                 "名称": name,
                                 "最新价": latest.get("close", 0),
+                                "涨跌幅": pct_chg,
+                                "振幅": amplitude,
                                 "总市值": est_mv,       # 推算值（元），供 market_cap 条件使用
                                 "流通市值": est_mv,     # 同值
                                 "市盈率-动态": latest.get("peTTM", 0),
@@ -246,11 +261,13 @@ class ScreenerDataProvider:
         """
         Baostock 拉 K 线。优先复用常驻 session，否则临时登录。
 
-        注意：Baostock 客户端非线程安全，多线程并发调用需要外部锁。
+        所有 Baostock 调用已在 baostock_provider 层面通过 _bs_lock 串行化，
+        此处额外用 _bp_session_lock 保护 session 对象本身的并发访问。
         """
         try:
             if self._bp_session is not None:
-                df = self._bp_session.get_k_data(code, days_back=days_back, frequency=frequency)
+                with self._bp_session_lock:
+                    df = self._bp_session.get_k_data(code, days_back=days_back, frequency=frequency)
             else:
                 with BaostockProvider() as bp:
                     df = bp.get_k_data(code, days_back=days_back, frequency=frequency)
@@ -281,7 +298,7 @@ class ScreenerDataProvider:
         with _no_proxy():
             return self._fetch_k_akshare(code, days_back, frequency)
 
-    def get_weekly_ohlcv(self, code: str, days_back: int = 365,
+    def get_weekly_ohlcv(self, code: str, days_back: int = 365 * 3,
                          prefer: str = "akshare") -> pd.DataFrame:
         cache_key = f"weekly_{code}_{days_back}"
         return self._cache.get_or_fetch(
@@ -329,7 +346,7 @@ class ScreenerDataProvider:
             {"hit": int, "miss": int, "fail": int, "elapsed": float}
         """
         if days_back is None:
-            days_back = 365 if period == "weekly" else 120
+            days_back = 365 * 3 if period == "weekly" else 120
         frequency = "w" if period == "weekly" else "d"
 
         total = len(codes)

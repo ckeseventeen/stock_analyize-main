@@ -1,4 +1,14 @@
+# 因子配置
+#
+# profiles 下每个 profile 定义一组因子组合：
+#   - type: 对应 FACTOR_REGISTRY 的 key
+#   - enabled: 是否启用
+#   - params: （可选）传给因子构造函数的参数
+#
+# 代码端：build_engine_from_config() 读取 active_profile 实例化启用的因子
+
 active_profile: default
+
 profiles:
   default:
     factors:
@@ -22,20 +32,17 @@ profiles:
         enabled: false
       - type: return_nd
         enabled: false
-        params:
-          period: 20
+        params: {period: 20}
       - type: rsi
         enabled: true
-        params:
-          period: 14
+        params: {period: 14}
       - type: macd_bottom_divergence
         enabled: true
-        params:
-          lookback_bars: 60
+        params: {lookback_bars: 60}
       - type: price_above_ma
         enabled: false
-        params:
-          ma_period: 20
+        params: {ma_period: 20}
+
   value_oriented:
     factors:
       - type: pe_ttm

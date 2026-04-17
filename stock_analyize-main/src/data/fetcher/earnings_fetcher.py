@@ -42,6 +42,8 @@ class EarningsFetcher:
     def __init__(self, cache_dir: str = ".cache/earnings", ttl_hours: int = 12):
         # 披露日历变动不频繁，TTL 默认 12 小时
         self._cache = CacheManager(cache_dir=cache_dir, ttl_hours=ttl_hours)
+        self._name_map: dict[str, str] = {}
+        self._config_loaded = False
 
     # ------------------------------------------------------------------ #
     # A 股
@@ -67,7 +69,7 @@ class EarningsFetcher:
                     ("yjyg", self._safe_yjyg, "业绩预告", "预告日期"),
                     ("yjkb", self._safe_yjkb, "业绩快报", "公告日期"),
                     ("yjbb", self._safe_yjbb, "业绩报告", "最新公告日期"),
-                    ("yysj", self._safe_yysj, "预约披露", "预约披露日期"),
+                    ("yysj", self._safe_yysj, "预约披露", "时间"),
                 ):
                     df = loader(period)
                     if df is None or df.empty:
@@ -132,55 +134,66 @@ class EarningsFetcher:
     # 港股 —— 通过财报历史推导下次披露时间窗
     # ------------------------------------------------------------------ #
     def get_hk_upcoming(self, codes: Iterable[str], days_ahead: int = 30) -> pd.DataFrame:
-        """
-        港股官方披露日历 akshare 未直接提供，
-        这里用策略：读取最近年报/中报，推导下一个披露窗口。
-        港股披露规则（简化）：
-          - 中报（12 月财年）：次年 3 月底前发年报；9 月底前发中报
-          - 实际以公司历史平均间隔估算
-        """
+        """通过 yfinance 读取港股 Earnings Date（优于之前的推导法）"""
         today = datetime.now().date()
         cutoff = today + timedelta(days=days_ahead)
         records: list[dict] = []
 
+        try:
+            import yfinance as yf
+        except ImportError:
+            return pd.DataFrame(columns=COLUMNS)
+
         for code in codes:
-            cache_key = f"hk_hist_fin_{code}"
+            yf_code = self._to_yf_symbol(code, "hk")
+            cache_key = f"hk_calendar_{yf_code}"
 
-            def _fetch_hist(c=code):
+            def _fetch_cal(c=yf_code):
                 try:
-                    import akshare as ak
-                    return ak.stock_financial_hk_analysis_indicator_em(
-                        symbol=c, indicator="年度"
-                    )
-                except Exception as e:
-                    logger.debug(f"HK 财报历史获取失败 {c}: {e}")
-                    return pd.DataFrame()
+                    tk = yf.Ticker(c)
+                    cal = tk.calendar
+                    return cal if cal else None
+                except Exception:
+                    return None
 
-            hist = self._cache.get_or_fetch(cache_key, _fetch_hist)
-            if hist is None or hist.empty:
+            cal = self._cache.get_or_fetch(cache_key, _fetch_cal)
+            if not cal:
                 continue
 
-            # 取最近报告期 + 6 个月作为下次披露窗口估计
-            date_cols = [c for c in hist.columns if "报告" in str(c) or "日期" in str(c)]
-            if not date_cols:
-                continue
-            dates = pd.to_datetime(hist[date_cols[0]], errors="coerce").dropna()
-            if dates.empty:
-                continue
-            last_report = dates.max()
-            # 港股通常每半年发一次财报
-            estimated = last_report + pd.DateOffset(months=6)
-            est_date = estimated.date()
+            # 提取日期逻辑与美股一致
+            ed = None
+            try:
+                dates = cal.get("Earnings Date") if isinstance(cal, dict) else None
+                if isinstance(dates, (list, tuple)) and dates:
+                    dt_val = pd.to_datetime(dates[0])
+                elif dates is not None:
+                    dt_val = pd.to_datetime(dates)
+                else:
+                    continue
 
-            if today <= est_date <= cutoff:
+                # 稳健获取 date 对象
+                if hasattr(dt_val, "date"):
+                    if isinstance(dt_val, pd.DatetimeIndex):
+                        ed = dt_val[0].date()
+                    else:
+                        ed = dt_val.date()
+                else:
+                    ed = dt_val
+            except Exception:
+                continue
+
+            if ed is None:
+                continue
+
+            if today <= ed <= cutoff:
                 records.append({
                     "code": code,
-                    "name": code,
+                    "name": self._get_friendly_name(code, "hk", yf_code=yf_code),
                     "market": "hk",
-                    "event_type": "推导披露",
-                    "disclose_date": pd.Timestamp(est_date),
-                    "report_period": last_report.strftime("%Y-%m-%d"),
-                    "extra": "基于历史报告期 + 6 个月估算",
+                    "event_type": "财报日",
+                    "disclose_date": pd.Timestamp(ed),
+                    "report_period": "",
+                    "extra": "via yfinance",
                 })
 
         df = pd.DataFrame(records, columns=COLUMNS)
@@ -203,20 +216,19 @@ class EarningsFetcher:
             return pd.DataFrame(columns=COLUMNS)
 
         for code in codes:
-            cache_key = f"us_calendar_{code}"
+            yf_code = self._to_yf_symbol(code, "us")
+            cache_key = f"us_calendar_{yf_code}"
 
-            def _fetch_cal(c=code):
+            def _fetch_cal(c=yf_code):
                 try:
                     tk = yf.Ticker(c)
                     cal = tk.calendar
-                    # calendar 可能为 dict 或 DataFrame（新旧版本差异）
                     if isinstance(cal, dict):
                         return cal
                     if isinstance(cal, pd.DataFrame) and not cal.empty:
                         return cal.to_dict()
                     return None
-                except Exception as e:
-                    logger.debug(f"yfinance calendar {c} 失败: {e}")
+                except Exception:
                     return None
 
             cal = self._cache.get_or_fetch(cache_key, _fetch_cal)
@@ -241,7 +253,7 @@ class EarningsFetcher:
             if today <= ed <= cutoff:
                 records.append({
                     "code": code,
-                    "name": code,
+                    "name": self._get_friendly_name(code, "us", yf_code=yf_code),
                     "market": "us",
                     "event_type": "财报日",
                     "disclose_date": pd.Timestamp(ed),
@@ -253,12 +265,82 @@ class EarningsFetcher:
         logger.info(f"美股披露日历：未来 {days_ahead} 天共 {len(df)} 条事件")
         return df
 
+    def _to_yf_symbol(self, code: str, market: str) -> str:
+        """统一转换为 yfinance 符号"""
+        code_str = str(code).strip()
+        if market == "hk":
+            # 00700 -> 0700.HK
+            pure = code_str.split(".")[0].lstrip("0")
+            return f"{pure.zfill(4)}.HK"
+        if market == "a":
+            # 600519 -> 600519.SS / 000001 -> 000001.SZ
+            pure = code_str.split(".")[0]
+            suffix = ".SS" if pure.startswith("6") else ".SZ"
+            return f"{pure}{suffix}"
+        return code_str  # 美股直接用原始代码
+
+    def _get_friendly_name(self, code: str, market: str, yf_code: str = None) -> str:
+        """获取可读名称：优先本地配置 -> 其次 yfinance -> 最后返回 code"""
+        code_str = str(code).strip()
+        cache_key = f"{market}:{code_str}"
+        
+        if cache_key in self._name_map:
+            return self._name_map[cache_key]
+
+        # 1. 尝试从本地配置加载 (仅加载一次)
+        if not self._config_loaded:
+            self._load_local_stock_configs()
+            self._config_loaded = True
+            if cache_key in self._name_map:
+                return self._name_map[cache_key]
+
+        # 2. 如果提供了 yf_code 且本地没找到，尝试从 yf 获取
+        if yf_code:
+            try:
+                import yfinance as yf
+                tk = yf.Ticker(yf_code)
+                name = tk.info.get("shortName") or tk.info.get("longName")
+                if name:
+                    self._name_map[cache_key] = name
+                    return name
+            except Exception:
+                pass
+
+        return code_str
+
+    def _load_local_stock_configs(self):
+        """将 a_stock, hk_stock, us_stock 中的名称存入内存映射"""
+        import yaml
+        from pathlib import Path
+        
+        # 寻找 config 目录 (假设在项目根目录)
+        # EarningsFetcher 在 src/data/fetcher/
+        root = Path(__file__).resolve().parents[3]
+        config_dir = root / "config"
+        
+        for m, filename in [("a", "a_stock.yaml"), ("hk", "hk_stock.yaml"), ("us", "us_stock.yaml")]:
+            p = config_dir / filename
+            if not p.exists():
+                continue
+            try:
+                with open(p, encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    if data and "categories" in data:
+                        for cat in data["categories"].values():
+                            for stock in cat.get("stocks", []):
+                                c = str(stock.get("code", "")).strip()
+                                n = str(stock.get("name", "")).strip()
+                                if c and n:
+                                    self._name_map[f"{m}:{c}"] = n
+            except Exception as e:
+                logger.debug(f"加载 {filename} 映射失败: {e}")
+
 
 # ========================
 # 内部工具
 # ========================
 
-def _recent_quarter_codes(n: int = 2) -> list[str]:
+def _recent_quarter_codes(n: int = 4) -> list[str]:
     """
     生成最近 n 个季度的字符串代码，格式 'YYYYMMDD'（季末日）。
     akshare 相关接口参数是季末日：0331 / 0630 / 0930 / 1231。
@@ -291,16 +373,18 @@ def _parse_ashare_df(
     if df is None or df.empty:
         return pd.DataFrame(columns=COLUMNS)
 
-    def _pick(columns_upper: str) -> str:
-        """从 df.columns 里找包含 columns_upper 关键字的列"""
-        for c in df.columns:
-            if columns_upper in str(c):
-                return c
+    def _pick(keywords: list[str]) -> str:
+        """从 df.columns 里按优先级找包含关键字的列"""
+        for k in keywords:
+            for c in df.columns:
+                if k in str(c):
+                    return c
         return ""
 
-    code_col = _pick("代码")
-    name_col = _pick("名称") or _pick("简称")
-    actual_date_col = date_col if date_col in df.columns else _pick(date_col) or _pick("日期")
+    code_col = _pick(["代码"])
+    name_col = _pick(["名称", "简称"])
+    # 优先匹配传入的 date_col，其次是通俗的日期/时间列
+    actual_date_col = _pick([date_col, "实际披露时间", "日期", "时间"])
 
     if not code_col or not actual_date_col:
         logger.debug(f"[{event_type}] 缺失关键列，跳过：{df.columns.tolist()}")

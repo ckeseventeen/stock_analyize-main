@@ -51,9 +51,12 @@ class HoldingsScraper(BaseScraper):
             logger.info("持仓抓取：watchlist 为空，跳过")
             return pd.DataFrame()
 
-        # 拉北向资金 + 十大流通股东
+        # 1. 拉北向资金 + 十大流通股东
         north_df = self._fetch_northbound()
         top10_frames = [self._fetch_top10(code) for code in self.watchlist]
+
+        # 2. 拉取近期增减持公告 (解决用户反馈的"减持字段缺失")
+        reduction_df = self._fetch_reduction_notices()
 
         all_frames: list[pd.DataFrame] = []
         if north_df is not None and not north_df.empty:
@@ -61,11 +64,16 @@ class HoldingsScraper(BaseScraper):
         for df in top10_frames:
             if df is not None and not df.empty:
                 all_frames.append(df)
+        if reduction_df is not None and not reduction_df.empty:
+            all_frames.append(reduction_df)
 
         if not all_frames:
-            return pd.DataFrame(columns=["time", "code", "holder", "shares", "pct", "source", "key"])
+            return pd.DataFrame(columns=["time", "name", "code", "holder", "shares", "pct", "source", "key"])
 
         merged = pd.concat(all_frames, ignore_index=True)
+        # 注入名称
+        merged = self._inject_names(merged)
+        
         # 添加 key 列（用于 fetch_new）
         merged["key"] = (
             merged.get("code", "").astype(str)
@@ -75,6 +83,25 @@ class HoldingsScraper(BaseScraper):
             + merged.get("time", "").astype(str)
         )
         return merged
+
+    def _fetch_reduction_notices(self) -> Optional[pd.DataFrame]:
+        """从公告中提取近期增减持事件"""
+        from src.data.scraper.announcement_scraper import AnnouncementScraper
+        # 抓取最近 30 天关于增减持的公告
+        s = AnnouncementScraper(watchlist=self.watchlist, types=["减持", "增持", "增持计划", "减持计划"])
+        df = s.fetch()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        
+        # 转换为 holdings 格式
+        return pd.DataFrame({
+            "time": df["time"],
+            "code": df["code"],
+            "holder": "增减持公告: " + df["title"].str[:20] + "...",
+            "shares": 0,
+            "pct": 0,
+            "source": "官方披露",
+        })
 
     def _fetch_northbound(self) -> Optional[pd.DataFrame]:
         """北向资金持仓（全市场，按 watchlist 过滤）"""

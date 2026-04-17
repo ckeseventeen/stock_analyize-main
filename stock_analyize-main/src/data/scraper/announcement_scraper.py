@@ -60,20 +60,24 @@ class AnnouncementScraper(BaseScraper):
 
         non_empty = [df for df in frames if df is not None and not df.empty]
         if not non_empty:
-            return pd.DataFrame(columns=["time", "code", "title", "type", "url"])
+            return pd.DataFrame(columns=["time", "name", "code", "title", "type", "url"])
 
         merged = pd.concat(non_empty, ignore_index=True)
 
-        # 按公告类型过滤（模糊匹配）
+        # 按公告类型过滤（模糊匹配，不区分大小写）
         if self.types and "type" in merged.columns:
-            mask = merged["type"].astype(str).apply(
-                lambda t: any(k in t for k in self.types)
+            lower_types = [str(k).lower().strip() for k in self.types if k]
+            mask = merged["type"].astype(str).str.lower().apply(
+                lambda t: any(k in t for k in lower_types)
             )
             merged = merged[mask]
 
         merged = merged.drop_duplicates(subset=["title"])
         if "time" in merged.columns:
             merged = merged.sort_values("time", ascending=False, na_position="last").reset_index(drop=True)
+        
+        # 注入名称
+        merged = self._inject_names(merged)
         return merged
 
     def _fetch_stock(self, code: str, today: str) -> pd.DataFrame:

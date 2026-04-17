@@ -324,7 +324,7 @@ class AkshareDataFetcher(BaseDataFetcher):
             return pd.DataFrame()
 
     def get_historical_valuation(self, code: str, val_type: str = 'pe') -> pd.DataFrame:
-        """获取历史估值走势（百度接口）
+        """获取历史估值走势（百度接口 → yfinance fallback）
         注意：百度接口无市销率(PS)，ps 配置时拉取市净率(PB)替代
         """
         symbol = self._normalize_code(code)
@@ -334,20 +334,60 @@ class AkshareDataFetcher(BaseDataFetcher):
 
         try:
             df = self._fetch_valuation_api(symbol, indicator, "近五年")
-            if df is None or df.empty:
-                logger.warning(f"{self.market_name} {code} 历史估值数据为空")
-                return pd.DataFrame()
-
-            val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
-            df = df.rename(columns={'date': 'trade_date', 'value': val_col})
-            logger.debug(f"{self.market_name} {code} 历史估值获取成功 ({indicator})，共 {len(df)} 条")
-            return df
+            if df is not None and not df.empty:
+                val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
+                df = df.rename(columns={'date': 'trade_date', 'value': val_col})
+                logger.debug(f"{self.market_name} {code} 历史估值获取成功 ({indicator})，共 {len(df)} 条")
+                return df
         except Exception as e:
-            logger.error(f"获取{self.market_name} {code} 历史估值失败: {e}")
-            return pd.DataFrame()
+            logger.debug(f"{self.market_name} {code} 百度估值接口失败: {e}")
+
+        # yfinance fallback：用 Close / trailingEps 计算历史 PE
+        try:
+            yf_symbol = self._to_yfinance_symbol(code)
+            import yfinance as yf
+            ticker = yf.Ticker(yf_symbol)
+            info = ticker.info or {}
+            
+            # 策略：优先取 trailingEps，若无则尝试用 regularMarketPrice / trailingPE 反推
+            eps = float(info.get('trailingEps', 0) or 0)
+            if eps <= 0:
+                price = float(info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0)
+                pe = float(info.get('trailingPE', 0) or 0)
+                if price > 0 and pe > 0:
+                    eps = price / pe
+            
+            # 若仍无 EPS，尝试从已抓取的财务摘要中获取最新一期 BASIC_EPS
+            if eps <= 0:
+                fin_df = self.get_financial_abstract(code)
+                if not fin_df.empty and 'BASIC_EPS' in fin_df.columns:
+                    eps = float(fin_df.iloc[0]['BASIC_EPS'] or 0)
+
+            if eps > 0:
+                hist = ticker.history(period='5y')
+                if hist is not None and not hist.empty:
+                    val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
+                    result = pd.DataFrame({
+                        'trade_date': hist.index.strftime('%Y-%m-%d'),
+                        val_col: hist['Close'].values / eps,
+                    })
+                    # 过滤无效值
+                    result[val_col] = pd.to_numeric(result[val_col], errors='coerce')
+                    result = result.dropna(subset=[val_col])
+                    result = result[result[val_col] > 0]
+                    if not result.empty:
+                        logger.info(f"{self.market_name} {code} yfinance 历史PE获取成功 (Symbol={yf_symbol}, EPS={eps:.2f})，共 {len(result)} 条")
+                        return result
+            else:
+                logger.debug(f"{self.market_name} {code} yfinance 无法获取有效 EPS (Symbol={yf_symbol})")
+        except Exception as e:
+            logger.debug(f"{self.market_name} {code} yfinance 历史估值也失败: {e}")
+
+        logger.warning(f"{self.market_name} {code} 所有历史估值源均失败")
+        return pd.DataFrame()
 
     def get_current_market_data(self, code: str) -> dict:
-        """获取实时行情：价格取日线收盘价，市值从财务数据推算"""
+        """获取实时行情：价格取日线收盘价，市值从财务数据推算（akshare → yfinance fallback）"""
         symbol = self._normalize_code(code)
         price = 0.0
         market_cap = 0.0
@@ -362,7 +402,7 @@ class AkshareDataFetcher(BaseDataFetcher):
         except Exception as e:
             logger.debug(f"{self.market_name} {code} akshare 日线获取失败: {e}")
 
-        # 2. 价格兜底：通过 PE * EPS 反推
+        # 2. 价格兜底 A：通过 PE * EPS 反推
         if price == 0.0:
             try:
                 val_df = self._fetch_valuation_api(symbol, '市盈率(TTM)', "近一年")
@@ -377,13 +417,31 @@ class AkshareDataFetcher(BaseDataFetcher):
             except Exception as e:
                 logger.debug(f"{self.market_name} {code} 价格兜底失败: {e}")
 
-        # 3. 市值 = 股价 × 总股本
+        # 3. 价格兜底 B：yfinance
+        if price == 0.0:
+            try:
+                yf_symbol = self._to_yfinance_symbol(code)
+                import yfinance as yf
+                info = yf.Ticker(yf_symbol).info or {}
+                price = float(info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0)
+                market_cap = float(info.get('marketCap', 0) or 0)
+                if price > 0:
+                    logger.info(f"{self.market_name} {code} akshare 不可用，yfinance 行情获取成功: 价格={price:.2f}, 市值={market_cap:.0f}")
+                    return {"price": price, "market_cap": market_cap}
+            except Exception as e:
+                logger.debug(f"{self.market_name} {code} yfinance 行情也失败: {e}")
+
+        # 4. 市值 = 股价 × 总股本
         total_shares = self._get_total_shares(code)
         if price > 0 and total_shares > 0:
             market_cap = price * total_shares
 
         logger.debug(f"{self.market_name} {code} 实时行情: 股价={price:.2f}, 总市值={market_cap:.0f}")
         return {"price": price, "market_cap": market_cap}
+
+    def _to_yfinance_symbol(self, code: str) -> str:
+        """将代码转换为 yfinance 格式。子类可覆盖。"""
+        return code
 
     # ---- 以下为子类必须实现的钩子方法 ----
 
@@ -402,7 +460,7 @@ class AkshareDataFetcher(BaseDataFetcher):
 
 # ---------------------- 港股数据子类 ----------------------
 class HKStockDataFetcher(AkshareDataFetcher):
-    """港股数据获取器，使用 akshare（东方财富+百度）数据源"""
+    """港股数据获取器，使用 akshare（东方财富+百度）数据源，yfinance 兜底"""
 
     def __init__(self):
         super().__init__("港股")
@@ -410,6 +468,14 @@ class HKStockDataFetcher(AkshareDataFetcher):
     def _normalize_code(self, code: str) -> str:
         """去除港股代码后缀：00700.HK -> 00700"""
         return code.split('.')[0]
+
+    def _to_yfinance_symbol(self, code: str) -> str:
+        """港股 yfinance 格式：保证至少 4 位数字
+        00700.HK -> 0700.HK
+        09988.HK -> 9988.HK
+        """
+        pure = self._normalize_code(code).lstrip('0') or '0'
+        return f"{pure.zfill(4)}.HK"
 
     def _fetch_financial_api(self, symbol: str) -> pd.DataFrame:
         """调用东方财富港股财务分析指标接口"""
@@ -429,7 +495,7 @@ class HKStockDataFetcher(AkshareDataFetcher):
 
 # ---------------------- 美股数据子类 ----------------------
 class USStockDataFetcher(AkshareDataFetcher):
-    """美股数据获取器，使用 akshare（东方财富+百度）数据源"""
+    """美股数据获取器，使用 akshare（东方财富+百度）数据源，yfinance 兜底"""
 
     def __init__(self):
         super().__init__("美股")
@@ -437,6 +503,10 @@ class USStockDataFetcher(AkshareDataFetcher):
     def _get_net_profit_col(self, df: pd.DataFrame) -> str:
         """美股归母净利润列名可能为 PARENT_HOLDER_NETPROFIT 或 HOLDER_PROFIT"""
         return 'PARENT_HOLDER_NETPROFIT' if 'PARENT_HOLDER_NETPROFIT' in df.columns else 'HOLDER_PROFIT'
+
+    def _to_yfinance_symbol(self, code: str) -> str:
+        """美股 yfinance 格式与原始代码相同"""
+        return code
 
     def _fetch_financial_api(self, symbol: str) -> pd.DataFrame:
         """调用东方财富美股财务分析指标接口"""

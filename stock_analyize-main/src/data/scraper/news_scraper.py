@@ -77,7 +77,7 @@ class NewsScraper(BaseScraper):
 
         frames = [df for df in [global_df, *stock_frames] if df is not None and not df.empty]
         if not frames:
-            return pd.DataFrame(columns=["time", "title", "summary", "url", "source", "code", "matched_keyword"])
+            return pd.DataFrame(columns=["time", "name", "code", "title", "summary", "url", "source", "matched_keyword"])
 
         merged = pd.concat(frames, ignore_index=True)
         merged = merged.drop_duplicates(subset=["title"], keep="first")
@@ -91,6 +91,9 @@ class NewsScraper(BaseScraper):
         # 按时间倒序
         if "time" in merged.columns:
             merged = merged.sort_values("time", ascending=False, na_position="last").reset_index(drop=True)
+        
+        # 注入名称
+        merged = self._inject_names(merged)
         return merged
 
     def _fetch_stock_news(self, code: str) -> pd.DataFrame:

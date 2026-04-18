@@ -430,14 +430,14 @@ if run_btn:
             fig.update_xaxes(gridcolor="#EEEEEE")
             fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])], row=3, col=1)
 
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
 
         except Exception as e:
             st.warning(f"图表生成异常: {e}")
             st.exception(e)
 
         with st.expander("📋 查看原始 K 线数据"):
-            st.dataframe(df.head(200), use_container_width=True)
+            st.dataframe(df.head(200), width='stretch')
 
 else:
     st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。可先在【⚙️ 配置管理】页创建预设。")

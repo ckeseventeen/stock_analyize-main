@@ -98,10 +98,7 @@ def _build_earnings_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
         channels = build_channels(alerts_cfg)
         store = AlertStateStore()
         monitor = EarningsMonitor(
-            watchlist=earnings_cfg.get("watchlist", {}) or {},
-            days_ahead=int(earnings_cfg.get("days_ahead", 30)),
-            remind_days_ahead=int(earnings_cfg.get("remind_days_ahead", 3)),
-            track_forecasts=bool(earnings_cfg.get("track_forecasts", True)),
+            config=earnings_cfg,
             channels=channels,
             state_store=store,
             cooldown_hours=int(earnings_cfg.get("cooldown_hours", 72)),

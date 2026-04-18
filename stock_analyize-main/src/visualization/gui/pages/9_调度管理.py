@@ -51,11 +51,11 @@ ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 4])
 
 with ctrl_col1:
     if running:
-        if st.button("⏹ 停止调度器", type="secondary", use_container_width=True):
+        if st.button("⏹ 停止调度器", type="secondary", width='stretch'):
             stop()
             st.rerun()
     else:
-        if st.button("▶️ 启动调度器", type="primary", use_container_width=True):
+        if st.button("▶️ 启动调度器", type="primary", width='stretch'):
             ok = start()
             if ok:
                 st.toast("✅ 调度器已启动", icon="🚀")
@@ -64,7 +64,7 @@ with ctrl_col1:
             st.rerun()
 
 with ctrl_col2:
-    if st.button("🔄 刷新状态", use_container_width=True):
+    if st.button("🔄 刷新状态", width='stretch'):
         st.rerun()
 
 
@@ -90,7 +90,7 @@ if status["jobs"]:
             with jcol4:
                 btn_col_a, btn_col_b = st.columns(2)
                 with btn_col_a:
-                    if st.button("▶ 触发", key=f"trigger_{job['id']}", use_container_width=True):
+                    if st.button("▶ 触发", key=f"trigger_{job['id']}", width='stretch'):
                         if trigger_job(job["id"]):
                             st.toast(f"✅ 已触发: {job['id']}", icon="🚀")
                         else:
@@ -99,11 +99,11 @@ if status["jobs"]:
                 with btn_col_b:
                     paused = job["next_run"] == "暂停中"
                     if paused:
-                        if st.button("▶ 恢复", key=f"resume_{job['id']}", use_container_width=True):
+                        if st.button("▶ 恢复", key=f"resume_{job['id']}", width='stretch'):
                             resume_job(job["id"])
                             st.rerun()
                     else:
-                        if st.button("⏸ 暂停", key=f"pause_{job['id']}", use_container_width=True):
+                        if st.button("⏸ 暂停", key=f"pause_{job['id']}", width='stretch'):
                             pause_job(job["id"])
                             st.rerun()
             st.divider()
@@ -145,7 +145,7 @@ if history:
     st.dataframe(
         df.style.applymap(_color_status, subset=["status"]),
         column_config=col_config,
-        use_container_width=True,
+        width='stretch',
         hide_index=True,
         height=min(len(df) * 40 + 50, 600),
     )

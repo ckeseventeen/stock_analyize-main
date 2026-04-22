@@ -1,0 +1,44 @@
+active_profile: default
+profiles:
+  default:
+    macd:
+      fast: 12
+      slow: 26
+      signal: 9
+    rsi:
+      period: 14
+    kdj:
+      n: 9
+      m1: 3
+      m2: 3
+    bollinger:
+      period: 20
+      std_dev: 2.0
+    moving_averages:
+      periods:
+        - 5
+        - 10
+        - 20
+        - 60
+        - 120
+        - 250
+  short_term:
+    macd:
+      fast: 5
+      slow: 13
+      signal: 5
+    rsi:
+      period: 6
+    kdj:
+      n: 9
+      m1: 3
+      m2: 3
+    bollinger:
+      period: 10
+      std_dev: 2.0
+    moving_averages:
+      periods:
+        - 3
+        - 5
+        - 10
+        - 20

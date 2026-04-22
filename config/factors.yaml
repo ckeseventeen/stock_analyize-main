@@ -1,0 +1,50 @@
+active_profile: default
+profiles:
+  default:
+    factors:
+      - type: pe_ttm
+        enabled: true
+      - type: pb
+        enabled: false
+      - type: ps
+        enabled: false
+      - type: market_cap
+        enabled: true
+      - type: turnover_rate
+        enabled: false
+      - type: roe
+        enabled: false
+      - type: gross_margin
+        enabled: false
+      - type: revenue_growth
+        enabled: false
+      - type: amplitude
+        enabled: false
+      - type: return_nd
+        enabled: false
+        params:
+          period: 20
+      - type: rsi
+        enabled: true
+        params:
+          period: 14
+      - type: macd_bottom_divergence
+        enabled: true
+        params:
+          lookback_bars: 60
+      - type: price_above_ma
+        enabled: false
+        params:
+          ma_period: 20
+  value_oriented:
+    factors:
+      - type: pe_ttm
+        enabled: true
+      - type: pb
+        enabled: true
+      - type: market_cap
+        enabled: true
+      - type: roe
+        enabled: true
+      - type: gross_margin
+        enabled: true

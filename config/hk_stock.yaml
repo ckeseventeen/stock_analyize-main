@@ -1,0 +1,52 @@
+market_name: "港股"
+market_code: "hk"
+enable: true
+output_dir: "./output/港股"
+log_dir: "./logs/港股"
+
+categories:
+  tech_giant:
+    name: "科技巨头"
+    stocks:
+      - name: "腾讯控股"
+        code: "00700.HK"
+        valuation: "pe"
+        pe_range: [ 15, 25, 35 ]
+        ps_range: [ 3, 5, 8 ]
+
+      - name: "阿里巴巴"
+        code: "09988.HK"
+        valuation: "pe"
+        pe_range: [ 10, 18, 25 ]
+        ps_range: [ 1, 2, 3 ]
+
+      - name: "美团-W"
+        code: "03690.HK"
+        valuation: "ps"
+        pe_range: [ 30, 50, 80 ]
+        ps_range: [ 3, 5, 8 ]
+
+      - name: "金山软件"
+        code: "03888.HK"
+        valuation: "pe"
+        pe_range: [ 20, 30, 45 ]
+        ps_range: [ 3, 5, 8 ]
+
+      - name: "金山云"
+        code: "03896.HK"
+        valuation: "ps"
+        pe_range: [ 50, 100, 200 ]
+        ps_range: [ 2, 4, 7 ]
+  consumer:
+    name: "消费"
+    stocks:
+      - name: "农夫山泉"
+        code: "09633.HK"
+        valuation: "pe"
+        pe_range: [20, 30, 40]
+        ps_range: [5, 8, 12]
+      - name: "华润啤酒"
+        code: "00291.HK"
+        valuation: "pe"
+        pe_range: [20, 30, 40]
+        ps_range: [3, 5, 7]

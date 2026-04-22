@@ -1,0 +1,46 @@
+# ============================================
+# 告警通道配置 alerts.yaml
+# ============================================
+# 全部通道默认关闭，按需启用。
+# 敏感字段（sendkey/key/token）建议用环境变量覆盖：
+#   SERVERCHAN_KEY / BARK_KEY / PUSHPLUS_TOKEN
+# ============================================
+
+channels:
+  # Server酱（微信模板消息，推荐国内用户）
+  # 获取 sendkey：https://sct.ftqq.com/
+  serverchan:
+    enable: false
+    sendkey: ""        # 也可通过环境变量 SERVERCHAN_KEY 注入
+
+  # Bark（iOS 原生推送）
+  # 获取 key：App Store 下载 Bark 应用
+  bark:
+    enable: false
+    key: ""            # 也可通过环境变量 BARK_KEY 注入
+    server: "https://api.day.app"
+    group: "股票预警"
+    sound: "bell"
+    level: "active"    # active / timeSensitive / passive
+
+  # PushPlus（微信公众号推送）
+  # 获取 token：https://www.pushplus.plus/
+  pushplus:
+    enable: false
+    token: ""          # 也可通过环境变量 PUSHPLUS_TOKEN 注入
+    template: "html"   # html / txt / json / markdown
+    topic: ""          # 群发编码（可选）
+
+  # 控制台 + 本地日志（零配置，兜底）
+  # 推送到 stdout 和 logs/alerts.log
+  console:
+    enable: true
+
+# 全局选项
+options:
+  # 默认冷却窗口（小时），同事件 N 小时内不重复推送
+  default_cooldown_hours: 24
+  # 告警状态文件路径
+  state_path: "./cache/alert_state.json"
+  # 历史记录保留天数（超过自动清理）
+  state_retention_days: 30

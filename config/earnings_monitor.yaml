@@ -1,0 +1,16 @@
+watchlist:
+  a:
+    - '600519'
+    - '000001'
+    - '002156'
+  hk:
+    - '00700'
+    - '09988'
+  us:
+    - AAPL
+    - TSLA
+    - NVDA
+days_ahead: 30
+remind_days_ahead: 3
+track_forecasts: true
+cooldown_hours: 72

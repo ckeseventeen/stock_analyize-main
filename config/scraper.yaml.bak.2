@@ -1,0 +1,63 @@
+# ============================================
+# 数据抓取配置 scraper.yaml
+# ============================================
+# 支持 4 类抓取器，单独开关：
+#   news           : 财经新闻 / 实时热点
+#   announcements  : 公司公告
+#   holdings       : 股东 / 机构持仓变动
+#   research       : 研报 / 机构评级
+# ============================================
+
+# 财经新闻
+news:
+  enable: true
+  # 关键词过滤（OR 语义，命中任一即保留；空列表 = 不过滤）
+  keywords:
+    - "降息"
+    - "加息"
+    - "关税"
+    - "减持"
+    - "增持"
+    - "监管"
+  # 个股新闻列表（可选）
+  watchlist_codes:
+    - "600519"
+    - "000001"
+  cache_ttl_hours: 1
+
+# 公司公告
+announcements:
+  enable: true
+  watchlist:
+    - "600519"
+    - "000001"
+    - "002156"
+  # 公告类型过滤（模糊子串匹配）
+  types:
+    - "财务报告"
+    - "重大事项"
+    - "资产重组"
+    - "股权激励"
+  cache_ttl_hours: 2
+
+# 股东 / 机构持仓变动
+holdings:
+  enable: true
+  watchlist:
+    - "600519"
+    - "000001"
+  # 北向资金单日变动超此阈值（百分比）才告警
+  delta_pct_threshold: 5
+  cache_ttl_hours: 6
+
+# 研报 / 机构评级
+research:
+  enable: true
+  watchlist:
+    - "600519"
+    - "000001"
+  # 评级过滤（模糊子串匹配；空 = 不过滤）
+  rating_filter:
+    - "买入"
+    - "增持"
+  cache_ttl_hours: 4

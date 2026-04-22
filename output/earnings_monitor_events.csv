@@ -1,0 +1,5 @@
+﻿timestamp,event_type,stock_code,stock_name,title,body,event_key,status,channels
+2026-04-21T08:30:20,earnings_reminder,TSLA,"Tesla, Inc.","📅 披露提醒: Tesla, Inc. (TSLA)","市场: US
+事件: 财报日
+披露日: 2026-04-23
+详情: via yfinance",us:TSLA:财报日:20260423,sent,console=ok

@@ -159,3 +159,58 @@ docs/_build/
 docs/_static/
 docs/_templates/
 site/
+# ========================
+# Data & Large Files
+# ========================
+# Data files (通常数据量大或包含敏感信息，不建议提交)
+*.csv
+*.tsv
+*.json
+*.xml
+*.xls
+*.xlsx
+*.xlsm
+*.ods
+
+# Database exports
+*.sql
+*.db
+*.sqlite
+*.sqlite3
+
+# Jupyter Notebook outputs (保留 .ipynb 代码，忽略输出结果)
+# 如果想忽略整个 notebook，请取消下行注释
+# *.ipynb
+
+# Pickle files (序列化对象)
+*.pkl
+*.pickle
+
+# Parquet/Feather/Arrow (高效数据格式)
+*.parquet
+*.feather
+*.arrow
+
+# HDF5
+*.h5
+*.hdf5
+*.he5
+
+# Large binary assets
+*.bin
+*.dat
+
+# Model files (机器学习模型通常很大)
+*.pth
+*.pt
+*.onnx
+*.pb
+*.h5
+*.joblib
+*.model
+*.weights
+
+# Logs and Temp files
+*.log
+tmp/
+temp/

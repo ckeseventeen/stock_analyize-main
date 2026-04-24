@@ -44,7 +44,7 @@ jobs:
   - id: news_scraper
     type: scraper
     scraper_type: news
-    enable: true
+    enable: false
     interval_minutes: 30
     scraper_config: "./config/scraper.yaml"
     output_dir: "./output"

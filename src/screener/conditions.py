@@ -196,8 +196,10 @@ class WeeklyMACDBottomDivergenceCondition(BaseCondition):
     requires_ohlcv = True
     ohlcv_period = "weekly"
 
-    def __init__(self, lookback_bars: int = 60):
+    def __init__(self, lookback_bars: int = 60, zero_axis_filter: bool = False, multi_level_check: bool = False):
         self.lookback_bars = lookback_bars
+        self.zero_axis_filter = zero_axis_filter
+        self.multi_level_check = multi_level_check
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         return True  # Spot阶段无法判断，放行到OHLCV阶段
@@ -209,7 +211,14 @@ class WeeklyMACDBottomDivergenceCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_macd()
             detector = MACDDivergenceDetector(ta.get_dataframe())
-            return detector.detect_bottom_divergence(lookback_bars=self.lookback_bars)
+            # 对于周线，order=2 即可（前后2周没有更低点即为底），且背离必须发生在最近2周内
+            return detector.detect_bottom_divergence(
+                lookback_bars=self.lookback_bars, 
+                order=2, 
+                max_bars_since_trough=2,
+                zero_axis_filter=self.zero_axis_filter,
+                multi_level_check=self.multi_level_check
+            )
         except Exception as e:
             logger.debug(f"底背离检测异常: {e}")
             return False
@@ -222,8 +231,10 @@ class DailyMACDBottomDivergenceCondition(BaseCondition):
     requires_ohlcv = True
     ohlcv_period = "daily"
 
-    def __init__(self, lookback_bars: int = 120):
+    def __init__(self, lookback_bars: int = 120, zero_axis_filter: bool = False, multi_level_check: bool = False):
         self.lookback_bars = lookback_bars
+        self.zero_axis_filter = zero_axis_filter
+        self.multi_level_check = multi_level_check
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         return True
@@ -235,7 +246,14 @@ class DailyMACDBottomDivergenceCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_macd()
             detector = MACDDivergenceDetector(ta.get_dataframe())
-            return detector.detect_bottom_divergence(lookback_bars=self.lookback_bars)
+            # 对于日线，order=5（前后1周没有更低点即为底），背离必须发生在最近5个交易日内
+            return detector.detect_bottom_divergence(
+                lookback_bars=self.lookback_bars,
+                order=5,
+                max_bars_since_trough=5,
+                zero_axis_filter=self.zero_axis_filter,
+                multi_level_check=self.multi_level_check
+            )
         except Exception as e:
             logger.debug(f"日线底背离检测异常: {e}")
             return False
@@ -461,6 +479,185 @@ class DowntrendBreakoutCondition(BaseCondition):
 
 
 # ========================
+# 新增条件（为了支持 yaml 中新增的方案）
+# ========================
+
+class ExcludeSTCondition(BaseCondition):
+    name = "exclude_st"
+    requires_ohlcv = False
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        name = str(spot_row.get("名称", ""))
+        return "ST" not in name and "退" not in name
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "名称" not in df.columns: return pd.Series(True, index=df.index)
+        return ~df["名称"].astype(str).str.contains("ST|退", na=False)
+
+class ExcludeDelistingRiskCondition(BaseCondition):
+    name = "exclude_delisting_risk"
+    requires_ohlcv = False
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        name = str(spot_row.get("名称", ""))
+        return "*ST" not in name and "退" not in name
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "名称" not in df.columns: return pd.Series(True, index=df.index)
+        return ~df["名称"].astype(str).str.contains("\*ST|退", na=False)
+
+class ExcludeRecentUnlockCondition(BaseCondition):
+    name = "exclude_recent_unlock"
+    requires_ohlcv = False
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True # 占位，需接入额外解禁数据源才能真正实现
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(True, index=df.index)
+
+class ROEFilterCondition(BaseCondition):
+    name = "roe_filter"
+    requires_ohlcv = False
+    def __init__(self, min_roe: float = 10):
+        self.min_roe = min_roe
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        if "ROE" not in spot_row.index and "净资产收益率" not in spot_row.index:
+            return True
+        val = spot_row.get("ROE", spot_row.get("净资产收益率", 0))
+        return float(val or 0) >= self.min_roe
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        col = "ROE" if "ROE" in df.columns else ("净资产收益率" if "净资产收益率" in df.columns else None)
+        if not col: return pd.Series(True, index=df.index)
+        val = pd.to_numeric(df[col], errors="coerce").fillna(0)
+        return val >= self.min_roe
+
+class MultiMABullCondition(BaseCondition):
+    name = "multi_ma_bull"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+    def __init__(self, ma_list: list = None, require_all_above: bool = True, require_up_trend: bool = True):
+        self.ma_list = ma_list or [5, 10, 20, 60, 250]
+        self.require_all_above = require_all_above
+        self.require_up_trend = require_up_trend
+    def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < max(self.ma_list): return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages(self.ma_list)
+            df = ta.get_dataframe()
+            if len(df) < 2: return False
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+            
+            # 判断多头排列 MA5 > MA10 > MA20...
+            sorted_mas = sorted(self.ma_list)
+            for i in range(len(sorted_mas) - 1):
+                if float(last_row[f"ma_{sorted_mas[i]}"]) < float(last_row[f"ma_{sorted_mas[i+1]}"]): 
+                    return False
+                    
+            # 收盘价在所有均线之上
+            if self.require_all_above:
+                for ma in self.ma_list:
+                    if float(last_row["close"]) < float(last_row[f"ma_{ma}"]): return False
+                    
+            # 均线发散向上（当前值大于上一个值）
+            if self.require_up_trend:
+                for ma in self.ma_list:
+                    if float(last_row[f"ma_{ma}"]) < float(prev_row[f"ma_{ma}"]): return False
+            return True
+        except Exception:
+            return False
+
+class VolumeBreakCondition(BaseCondition):
+    name = "volume_break"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+    def __init__(self, lookback_bars: int = 20, vol_multiple: float = 1.5):
+        self.lookback_bars = lookback_bars
+        self.vol_multiple = vol_multiple
+    def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.lookback_bars + 1: return False
+        try:
+            vol_col = "成交量" if "成交量" in ohlcv_df.columns else "volume"
+            if vol_col not in ohlcv_df.columns: return False
+            vols = pd.to_numeric(ohlcv_df[vol_col], errors="coerce").fillna(0).values
+            current_vol = vols[-1]
+            avg_vol = vols[-(self.lookback_bars+1):-1].mean()
+            if avg_vol <= 0: return False
+            return current_vol > avg_vol * self.vol_multiple
+        except Exception: return False
+
+class WeeklyMACDGoldCrossCondition(BaseCondition):
+    name = "weekly_macd_gold_cross"
+    requires_ohlcv = True
+    ohlcv_period = "weekly"
+    def __init__(self, require_zero_near: bool = True):
+        self.require_zero_near = require_zero_near
+    def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < 30: return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_macd()
+            df = ta.get_dataframe()
+            macd = df["macd"].values
+            signal = df["macd_signal"].values
+            if len(macd) < 2 or pd.isna(macd[-1]) or pd.isna(signal[-1]): return False
+            is_cross = (macd[-2] < signal[-2]) and (macd[-1] >= signal[-1])
+            if not is_cross: return False
+            return True
+        except Exception: return False
+
+class VolumeShrinkCondition(BaseCondition):
+    name = "volume_shrink"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+    def __init__(self, lookback_bars: int = 10, shrink_ratio: float = 0.6):
+        self.lookback_bars = lookback_bars
+        self.shrink_ratio = shrink_ratio
+    def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.lookback_bars + 1: return False
+        try:
+            vol_col = "成交量" if "成交量" in ohlcv_df.columns else "volume"
+            if vol_col not in ohlcv_df.columns: return False
+            vols = pd.to_numeric(ohlcv_df[vol_col], errors="coerce").fillna(0).values
+            current_vol = vols[-1]
+            avg_vol = vols[-(self.lookback_bars+1):-1].mean()
+            if avg_vol <= 0: return False
+            return current_vol < avg_vol * self.shrink_ratio
+        except Exception: return False
+
+class SupportMACondition(BaseCondition):
+    name = "support_ma"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+    def __init__(self, ma_period: int = 20, close_touch: bool = True):
+        self.ma_period = ma_period
+        self.close_touch = close_touch
+    def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.ma_period: return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages([self.ma_period])
+            df = ta.get_dataframe()
+            if len(df) < 1: return False
+            
+            # 判断是否包含需要的列（统一大小写兼容）
+            cols = [c.lower() for c in df.columns]
+            if "low" not in cols or "close" not in cols: return False
+            
+            last_row = df.iloc[-1]
+            ma_val = float(last_row[f"ma_{self.ma_period}"])
+            close_val = float(last_row.get("close", last_row.get("收盘", 0)))
+            low_val = float(last_row.get("low", last_row.get("最低", 0)))
+            
+            if self.close_touch:
+                # 最低价触及或击穿均线（允许1%误差），且收盘价在均线之上（企稳）
+                return low_val <= ma_val * 1.01 and close_val >= ma_val * 0.99
+            else:
+                return low_val <= ma_val * 1.02
+        except Exception: return False
+
+# ========================
 # 条件注册表（用于YAML配置解析）
 # ========================
 
@@ -476,4 +673,14 @@ CONDITION_REGISTRY: dict[str, type] = {
     "price_above_ma": PriceAboveMACondition,
     "box_breakout": BoxBreakoutCondition,
     "downtrend_breakout": DowntrendBreakoutCondition,
+    "exclude_st": ExcludeSTCondition,
+    "exclude_delisting_risk": ExcludeDelistingRiskCondition,
+    "exclude_recent_unlock": ExcludeRecentUnlockCondition,
+    "exclude_recent_large_unlock": ExcludeRecentUnlockCondition,
+    "roe_filter": ROEFilterCondition,
+    "multi_ma_bull": MultiMABullCondition,
+    "volume_break": VolumeBreakCondition,
+    "weekly_macd_gold_cross": WeeklyMACDGoldCrossCondition,
+    "volume_shrink": VolumeShrinkCondition,
+    "support_ma": SupportMACondition,
 }

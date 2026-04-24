@@ -3,6 +3,7 @@ from src.strategy.backtest.factor_strategy import FactorRebalanceStrategy
 from src.strategy.backtest.ma_crossover import MACrossoverStrategy
 from src.strategy.backtest.report import BacktestReport
 from src.strategy.backtest.rule_based import RuleBasedStrategy
+from src.strategy.backtest.screener_rule import ScreenerRuleStrategy
 from src.strategy.backtest.runner import BacktestRunner
 
 # ========================
@@ -17,12 +18,14 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "ma_crossover": MACrossoverStrategy,
     "factor_rebalance": FactorRebalanceStrategy,
     "rule_based": RuleBasedStrategy,
+    "screener_rule": ScreenerRuleStrategy,
 }
 
 STRATEGY_LABELS: dict[str, str] = {
     "ma_crossover": "双均线交叉 (MA Crossover)",
     "factor_rebalance": "因子再平衡 (Factor Rebalance)",
     "rule_based": "自定义规则 (YAML DSL)",
+    "screener_rule": "筛选器组件桥接 (Screener Logic)",
 }
 
 # 每项 schema: {key, label, type, default, min?, max?, step?, help?}
@@ -65,6 +68,23 @@ STRATEGY_PARAM_SCHEMAS: dict[str, list[dict]] = {
              "position_size": 0.95,
          },
          "help": "在此 YAML 中自定义指标与买卖规则，无需编辑 Python"},
+    ],
+    "screener_rule": [
+        {"key": "buy_conditions", "label": "买入条件 (筛选器格式)", "type": "yaml",
+         "default": [
+             {"type": "rsi_oversold", "threshold": 30, "period": 14},
+             {"type": "price_above_ma", "ma_period": 20},
+         ],
+         "help": "直接使用 screen_config.yaml 中的条件定义"},
+        {"key": "sell_conditions", "label": "卖出条件 (筛选器格式)", "type": "yaml",
+         "default": [
+             {"type": "rsi_oversold", "threshold": 70, "period": 14},
+         ],
+         "help": "例如 RSI 超过 70 卖出"},
+        {"key": "buy_logic", "label": "买入逻辑", "type": "str", "default": "all",
+         "help": "all=全部满足时买入; any=任一满足时买入"},
+        {"key": "sell_logic", "label": "卖出逻辑", "type": "str", "default": "any"},
+        {"key": "position_size", "label": "仓位比例", "type": "float", "default": 0.95},
     ],
 }
 

@@ -40,11 +40,18 @@ def _no_proxy():
     keys = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
             "ALL_PROXY", "all_proxy")
     saved = {k: os.environ.pop(k, None) for k in keys}
+    saved["NO_PROXY"] = os.environ.get("NO_PROXY")
+    os.environ["NO_PROXY"] = "*"
     try:
         yield
     finally:
         for k, v in saved.items():
-            if v is not None:
+            if k == "NO_PROXY":
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            elif v is not None:
                 os.environ[k] = v
 
 
@@ -247,14 +254,124 @@ class ScreenerDataProvider:
         start_date = (pd.Timestamp.now() - pd.Timedelta(days=days_back)).strftime("%Y%m%d")
         ak_period = {"d": "daily", "w": "weekly", "m": "monthly"}.get(frequency, "daily")
         try:
-            df = ak.stock_zh_a_hist(
-                symbol=code, period=ak_period,
-                start_date=start_date, end_date=end_date, adjust="qfq",
-            )
+            if frequency == "d":
+                df = ak.stock_zh_a_hist(
+                    symbol=code, period="daily",
+                    start_date=start_date, end_date=end_date, adjust="qfq",
+                )
+            elif frequency == "w":
+                df = ak.stock_zh_a_hist(
+                    symbol=code, period="weekly",
+                    start_date=start_date, end_date=end_date, adjust="qfq",
+                )
+            else:
+                df = ak.stock_zh_a_hist(
+                    symbol=code, period="monthly",
+                    start_date=start_date, end_date=end_date, adjust="qfq",
+                )
             if df is not None and not df.empty:
                 return df
         except Exception as e:
             logger.debug(f"{code} akshare {frequency} 失败: {e}")
+        return pd.DataFrame()
+
+    def _fetch_k_hk_akshare(self, code: str, days_back: int, frequency: str) -> pd.DataFrame:
+        """akshare 港股历史行情"""
+        ak_period = {"d": "daily", "w": "weekly", "m": "monthly"}.get(frequency, "daily")
+        end_date = pd.Timestamp.now().strftime("%Y%m%d")
+        start_date = (pd.Timestamp.now() - pd.Timedelta(days=days_back)).strftime("%Y%m%d")
+
+        # 1. 尝试 Sina (支持日线，全量获取后可重采样为周线/月线)
+        try:
+            df = ak.stock_hk_daily(symbol=code, adjust="qfq")
+            if df is not None and not df.empty:
+                df.rename(columns={"date": "日期", "open": "开盘", "high": "最高",
+                                  "low": "最低", "close": "收盘", "volume": "成交量"}, inplace=True)
+                df["日期"] = pd.to_datetime(df["日期"])
+                df.sort_values("日期", inplace=True)
+
+                # 如果需要周线或月线，进行重采样
+                if frequency in ("w", "m"):
+                    df.set_index("日期", inplace=True)
+                    resample_freq = "W-FRI" if frequency == "w" else "ME"
+                    df = df.resample(resample_freq).agg({
+                        "开盘": "first",
+                        "最高": "max",
+                        "最低": "min",
+                        "收盘": "last",
+                        "成交量": "sum"
+                    }).dropna()
+                    df.reset_index(inplace=True)
+
+                # 手动日期切片
+                mask = (df["日期"] >= pd.to_datetime(start_date)) & (df["日期"] <= pd.to_datetime(end_date))
+                res = df.loc[mask]
+                if not res.empty:
+                    return res
+        except Exception as e:
+            logger.debug(f"HK {code} Sina {frequency} 失败: {e}")
+
+        # 2. 尝试 Eastmoney
+        try:
+            # akshare 港股接口：stock_hk_hist
+            df = ak.stock_hk_hist(symbol=code, period=ak_period, 
+                                  start_date=start_date, end_date=end_date, adjust="qfq")
+            if df is not None and not df.empty:
+                # 转换列名以匹配 A 股统一格式
+                df.rename(columns={"日期": "日期", "开盘": "开盘", "最高": "最高",
+                                  "最低": "最低", "收盘": "收盘", "成交量": "成交量"}, inplace=True)
+                return df
+        except Exception as e:
+            logger.debug(f"HK {code} akshare {frequency} 失败: {e}")
+        return pd.DataFrame()
+
+    def _fetch_k_us_akshare(self, code: str, days_back: int, frequency: str) -> pd.DataFrame:
+        """akshare 美股历史行情"""
+        ak_period = {"d": "daily", "w": "weekly", "m": "monthly"}.get(frequency, "daily")
+        end_date = pd.Timestamp.now().strftime("%Y%m%d")
+        start_date = (pd.Timestamp.now() - pd.Timedelta(days=days_back)).strftime("%Y%m%d")
+
+        # 1. 尝试 Sina (支持日线，全量获取后可重采样为周线/月线)
+        try:
+            df = ak.stock_us_daily(symbol=code, adjust="qfq")
+            if df is not None and not df.empty:
+                df.rename(columns={"date": "日期", "open": "开盘", "high": "最高",
+                                  "low": "最低", "close": "收盘", "volume": "成交量"}, inplace=True)
+                df["日期"] = pd.to_datetime(df["日期"])
+                df.sort_values("日期", inplace=True)
+
+                # 如果需要周线或月线，进行重采样
+                if frequency in ("w", "m"):
+                    df.set_index("日期", inplace=True)
+                    resample_freq = "W-FRI" if frequency == "w" else "ME"
+                    df = df.resample(resample_freq).agg({
+                        "开盘": "first",
+                        "最高": "max",
+                        "最低": "min",
+                        "收盘": "last",
+                        "成交量": "sum"
+                    }).dropna()
+                    df.reset_index(inplace=True)
+
+                # 手动日期切片
+                mask = (df["日期"] >= pd.to_datetime(start_date)) & (df["日期"] <= pd.to_datetime(end_date))
+                res = df.loc[mask]
+                if not res.empty:
+                    return res
+        except Exception as e:
+            logger.debug(f"US {code} Sina {frequency} 失败: {e}")
+
+        # 2. 尝试 Eastmoney (需要市场前缀：105=纳斯达克, 106=纽交所, 107=美交所)
+        for prefix in ["105.", "106.", "107.", ""]:
+            try:
+                df = ak.stock_us_hist(symbol=f"{prefix}{code}", period=ak_period, 
+                                      start_date=start_date, end_date=end_date, adjust="qfq")
+                if df is not None and not df.empty:
+                    df.rename(columns={"日期": "日期", "开盘": "开盘", "最高": "最高",
+                                      "最低": "最低", "收盘": "收盘", "成交量": "成交量"}, inplace=True)
+                    return df
+            except Exception:
+                continue
         return pd.DataFrame()
 
     def _fetch_k_baostock(self, code: str, days_back: int, frequency: str) -> pd.DataFrame:
@@ -278,13 +395,28 @@ class ScreenerDataProvider:
         return pd.DataFrame()
 
     def _fetch_k(self, code: str, days_back: int, frequency: str,
-                prefer: str = "akshare") -> pd.DataFrame:
+                prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
         """
-        按优先级拉单只 K 线：默认 akshare → Baostock。
+        按优先级拉单只 K 线：默认 akshare → Baostock (仅A股支持)。
 
         Args:
-            prefer: "akshare" | "baostock"  —  决定主路径
+            prefer: "akshare" | "baostock"
+            market: "a" | "hk" | "us"
         """
+        # 归一化代码：移除常见后缀如 .HK, .US, .SS, .SZ
+        code = str(code).strip().upper()
+        for suffix in (".HK", ".US", ".SS", ".SZ"):
+            if code.endswith(suffix):
+                code = code[:-len(suffix)]
+        
+        if market == "hk":
+            with _no_proxy():
+                return self._fetch_k_hk_akshare(code, days_back, frequency)
+        if market == "us":
+            with _no_proxy():
+                return self._fetch_k_us_akshare(code, days_back, frequency)
+
+        # A 股路径
         if prefer == "akshare":
             with _no_proxy():
                 df = self._fetch_k_akshare(code, days_back, frequency)
@@ -299,22 +431,68 @@ class ScreenerDataProvider:
             return self._fetch_k_akshare(code, days_back, frequency)
 
     def get_weekly_ohlcv(self, code: str, days_back: int = 365 * 3,
-                         prefer: str = "akshare") -> pd.DataFrame:
-        cache_key = f"weekly_{code}_{days_back}"
-        return self._cache.get_or_fetch(
+                         prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
+        cache_key = f"weekly_{market}_{code}_{days_back}"
+        df = self._cache.get_or_fetch(
             cache_key,
-            lambda: self._fetch_k(code, days_back, "w", prefer=prefer),
+            lambda: self._fetch_k(code, days_back, "w", prefer=prefer, market=market),
             ttl_hours=self._ohlcv_ttl,
         )
+        return df
+
+    def get_monthly_ohlcv(self, code: str, days_back: int = 365 * 5,
+                          prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
+        cache_key = f"monthly_{market}_{code}_{days_back}"
+        df = self._cache.get_or_fetch(
+            cache_key,
+            lambda: self._fetch_k(code, days_back, "m", prefer=prefer, market=market),
+            ttl_hours=self._ohlcv_ttl,
+        )
+        return df
+
+    def get_yearly_ohlcv(self, code: str, days_back: int = 365 * 10,
+                         prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
+        """获取年线数据（通过月线重采样）"""
+        cache_key = f"yearly_{market}_{code}_{days_back}"
+        
+        def _fetch_yearly():
+            m_df = self._fetch_k(code, days_back, "m", prefer=prefer, market=market)
+            if m_df is None or m_df.empty:
+                return pd.DataFrame()
+            
+            # 重采样逻辑
+            m_df["日期"] = pd.to_datetime(m_df["日期"])
+            m_df.set_index("日期", inplace=True)
+            y_df = m_df.resample("YE").agg({
+                "开盘": "first",
+                "最高": "max",
+                "最低": "min",
+                "收盘": "last",
+                "成交量": "sum",
+                "成交额": "sum"
+            }).dropna()
+            y_df.reset_index(inplace=True)
+            return y_df
+
+        df = self._cache.get_or_fetch(
+            cache_key,
+            _fetch_yearly,
+            ttl_hours=self._ohlcv_ttl,
+        )
+        return df
 
     def get_daily_ohlcv(self, code: str, days_back: int = 120,
-                        prefer: str = "akshare") -> pd.DataFrame:
-        cache_key = f"daily_{code}_{days_back}"
-        return self._cache.get_or_fetch(
+                        prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
+        cache_key = f"daily_{market}_{code}_{days_back}"
+        df = self._cache.get_or_fetch(
             cache_key,
-            lambda: self._fetch_k(code, days_back, "d", prefer=prefer),
+            lambda: self._fetch_k(code, days_back, "d", prefer=prefer, market=market),
             ttl_hours=self._ohlcv_ttl,
         )
+        if df is not None and not df.empty:
+            # 确保返回长度不超过 days_back（考虑到美股 Sina 获取全量的情况）
+            return df.tail(days_back)
+        return df
 
     # ========================
     # 批量并发预取：真正的加速来源
@@ -328,6 +506,7 @@ class ScreenerDataProvider:
         days_back: int | None = None,
         max_workers: int = 8,
         progress_callback=None,   # callable(done, total, code)
+        market: str = "a",
     ) -> dict:
         """
         并发预取一批股票的 K 线，写入本地磁盘缓存。
@@ -357,7 +536,7 @@ class ScreenerDataProvider:
         pending: list[str] = []
         hit = 0
         for code in codes:
-            cache_key = f"{period}_{code}_{days_back}"
+            cache_key = f"{period}_{market}_{code}_{days_back}"
             if self._cache.get(cache_key) is not None:
                 hit += 1
                 continue
@@ -372,7 +551,7 @@ class ScreenerDataProvider:
         ak_failed_lock = Lock()
 
         def _worker(code: str):
-            cache_key = f"{period}_{code}_{days_back}"
+            cache_key = f"{period}_{market}_{code}_{days_back}"
             # akshare 线程安全：直接并发调用
             with _no_proxy():
                 df = self._fetch_k_akshare(code, days_back, frequency)
@@ -401,7 +580,7 @@ class ScreenerDataProvider:
             logger.info(f"akshare 失败 {len(ak_failed)} 只，用 Baostock 串行补拉...")
             with self.session():
                 for code in ak_failed:
-                    cache_key = f"{period}_{code}_{days_back}"
+                    cache_key = f"{period}_{market}_{code}_{days_back}"
                     df = self._fetch_k_baostock(code, days_back, frequency)
                     if df is not None and not df.empty:
                         self._cache.set(cache_key, df)
@@ -410,7 +589,7 @@ class ScreenerDataProvider:
         miss = total - hit
         real_hit_after = sum(
             1 for c in codes
-            if self._cache.get(f"{period}_{c}_{days_back}") is not None
+            if self._cache.get(f"{period}_{market}_{c}_{days_back}") is not None
         )
         final_fail = total - real_hit_after
         rate = (miss - final_fail) / elapsed if elapsed > 0 and miss > 0 else 0

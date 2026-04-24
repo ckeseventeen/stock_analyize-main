@@ -196,15 +196,19 @@ def process_single_market(market_code: str):
         logger.info(f"【{market_name}】全量板块处理完成，所有结果已保存至: {output_dir}")
 
 
-def run_screener(args):
-    """运行股票筛选模式"""
+def run_screener(args, strategy_ids: list[str] | None = None):
+    """
+    运行股票筛选模式
+    :param args: argparse 命名空间
+    :param strategy_ids: 可选，指定要运行的策略 ID 列表
+    """
     from src.screener import StockScreener
 
     config_path = args.screen_config
-    logger.info(f"========== 股票筛选系统启动，配置文件: {config_path} ==========")
+    logger.info(f"========== 股票筛选系统启动，配置文件: {config_path}，策略: {strategy_ids} ==========")
 
     screener = StockScreener()
-    results = screener.run_from_config(config_path)
+    results = screener.run_from_config(config_path, strategy_ids=strategy_ids)
 
     if results.empty:
         logger.info("筛选结果为空，未找到符合条件的股票")
@@ -376,29 +380,32 @@ def main():
     # 分发：优先级  监控 > 抓取 > 筛选 > 估值分析
     if args.monitor_type:
         run_monitor(args)
-        return
 
     if args.scrape_type:
         run_scrape(args)
-        return
 
     if args.screen:
-        run_screener(args)
-        return
+        # 如果是命令行运行，目前只支持传一个策略 ID（可选）
+        strategy_ids = None
+        if hasattr(args, "strategy_id") and args.strategy_id:
+            strategy_ids = [args.strategy_id]
+        run_screener(args, strategy_ids=strategy_ids)
 
-    # 估值分析模式（默认）
-    if args.market == "all":
-        run_markets = list(MARKET_MAPPING.keys())
-    else:
-        run_markets = [args.market]
+    # 如果没有任何特殊模式，则执行默认的估值分析模式
+    if not (args.monitor_type or args.scrape_type or args.screen):
+        # 估值分析模式（默认）
+        if args.market == "all":
+            run_markets = list(MARKET_MAPPING.keys())
+        else:
+            run_markets = [args.market]
 
-    logger.info(f"========== 估值分析系统启动，待运行市场: {run_markets} ==========")
+        logger.info(f"========== 估值分析系统启动，待运行市场: {run_markets} ==========")
 
-    for market_code in run_markets:
-        process_single_market(market_code)
-        time.sleep(3)
+        for market_code in run_markets:
+            process_single_market(market_code)
+            time.sleep(3)
 
-    logger.info("========== 估值分析系统全部任务执行完成 ==========")
+        logger.info("========== 估值分析系统全部任务执行完成 ==========")
 
 
 if __name__ == "__main__":

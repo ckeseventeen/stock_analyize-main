@@ -41,7 +41,14 @@ class MACDDivergenceDetector:
         self._valid = price_col in df.columns and macd_hist_col in df.columns
         self._details: dict = {}
 
-    def detect_bottom_divergence(self, lookback_bars: int = 60) -> bool:
+    def detect_bottom_divergence(
+        self, 
+        lookback_bars: int = 60, 
+        order: int = 5, 
+        max_bars_since_trough: int | None = None,
+        zero_axis_filter: bool = False,
+        multi_level_check: bool = False
+    ) -> bool:
         """
         检测底背离：价格创新低，但 MACD 柱状图未创新低（更高的低点）
 
@@ -66,33 +73,47 @@ class MACDDivergenceDetector:
         price = price[valid_mask]
         macd_hist = macd_hist[valid_mask]
 
-        # 找价格局部最低点
-        price_troughs = self._find_troughs(price, order=5)
-        if len(price_troughs) < 2:
-            return False
+        # 多级检测：尝试多种 order 敏感度
+        orders_to_try = [1, 2, 3] if multi_level_check else [order]
+        
+        for cur_order in orders_to_try:
+            # 找价格局部最低点
+            price_troughs = self._find_troughs(price, order=cur_order)
+            if len(price_troughs) < 2:
+                continue
 
-        # 取最近两个低点
-        t2_idx = price_troughs[-1]  # 最近的低点
-        t1_idx = price_troughs[-2]  # 前一个低点
+            # 取最近两个低点
+            t2_idx = price_troughs[-1]  # 最近的低点
+            t1_idx = price_troughs[-2]  # 前一个低点
 
-        # 两个低点间距需 >= _MIN_TROUGH_DISTANCE
-        if t2_idx - t1_idx < _MIN_TROUGH_DISTANCE:
-            return False
+            # 检查底背离是否是最近发生的
+            if max_bars_since_trough is not None:
+                if len(price) - 1 - t2_idx > max_bars_since_trough:
+                    continue
 
-        # 判断底背离条件：价格创新低，MACD柱状图未创新低
-        price_lower_low = price[t2_idx] <= price[t1_idx]
-        macd_higher_low = self._get_min_macd_near(macd_hist, t2_idx) > self._get_min_macd_near(macd_hist, t1_idx)
+            # 两个低点间距需 >= _MIN_TROUGH_DISTANCE
+            if t2_idx - t1_idx < _MIN_TROUGH_DISTANCE:
+                continue
+                
+            # 零轴过滤：两次低点之间，MACD柱必须要穿过零轴（即存在正的柱子）
+            if zero_axis_filter:
+                if np.max(macd_hist[t1_idx:t2_idx+1]) <= 0:
+                    continue
 
-        if price_lower_low and macd_higher_low:
-            self._details = {
-                "type": "bottom_divergence",
-                "price_trough_1": float(price[t1_idx]),
-                "price_trough_2": float(price[t2_idx]),
-                "macd_trough_1": float(self._get_min_macd_near(macd_hist, t1_idx)),
-                "macd_trough_2": float(self._get_min_macd_near(macd_hist, t2_idx)),
-                "bars_between": int(t2_idx - t1_idx),
-            }
-            return True
+            # 判断底背离条件：价格创新低，MACD柱状图未创新低
+            price_lower_low = price[t2_idx] <= price[t1_idx]
+            macd_higher_low = self._get_min_macd_near(macd_hist, t2_idx) > self._get_min_macd_near(macd_hist, t1_idx)
+
+            if price_lower_low and macd_higher_low:
+                self._details = {
+                    "type": "bottom_divergence",
+                    "price_trough_1": float(price[t1_idx]),
+                    "price_trough_2": float(price[t2_idx]),
+                    "macd_trough_1": float(self._get_min_macd_near(macd_hist, t1_idx)),
+                    "macd_trough_2": float(self._get_min_macd_near(macd_hist, t2_idx)),
+                    "bars_between": int(t2_idx - t1_idx),
+                }
+                return True
 
         return False
 

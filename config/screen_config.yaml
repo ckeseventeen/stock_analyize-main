@@ -1,90 +1,225 @@
-# 股票筛选配置
-# 所有条件为 AND 组合（同时满足）
+# 股票筛选策略配置文件
+# 所有策略存放在 strategies 键下，支持多方案并行或勾选
+strategies:
+  # ========== 原有策略 ==========
+  bottom_divergence:
+    name: "周线底背离方案(优化版)"
+    conditions:
+      - type: exclude_st               # 排除ST股
+      - type: exclude_delisting_risk   # 排除退市风险
+      - type: exclude_recent_large_unlock    # 排除近期大额解禁
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 30
+      - type: weekly_macd_divergence
+        lookback_bars: 60
+        zero_axis_filter: true  # 新增：零轴过滤，剔除弱势深度背离
+        multi_level_check: true # 新增：多级背离检测，不漏早期筑底信号
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 50
 
-#周线底背离
-screen:
-  conditions:
-    # 市值范围（亿元）
-    - type: market_cap
-      min: 50
-      max: 2000
+  double_breakout:
+    name: "双突破方案"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: box_breakout
+        lookback_bars: 20
+        breakout_pct: 0.02
+        consolidation_pct: 0.10
+      - type: downtrend_breakout
+        lookback_bars: 60
+        min_touches: 2
+        breakout_pct: 0.01
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 50
 
-    # 市盈率范围（排除亏损股）
-    - type: pe_range
-      min: 0
-      max: 30
+  value_investing:
+    name: "白马价值筛选"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 500
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 20
+      - type: price_above_ma
+        ma_period: 250
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 20
 
-    # 周线MACD底背离
-    - type: weekly_macd_divergence
-      lookback_bars: 60
+  # ========== 新增高胜率策略 ==========
+  ma_long_bull:
+    name: "均线全多头共振策略"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 40
+      - type: multi_ma_bull
+        ma_list: [5,10,20,60,250]
+        require_all_above: true
+        require_up_trend: true
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 30
 
-  output:
-    sort_by: "总市值(亿)"
-    ascending: false
-    limit: 50
+  break_250_vol:
+    name: "放量突破年线策略"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 35
+      - type: price_above_ma
+        ma_period: 250
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.5
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 30
 
-#双突破
-screen:
-  conditions:
-    # 市值范围（可按需调整）
-    - type: market_cap
-      min: 50
-      max: 2000
+  weekly_macd_resonance:
+    name: "周线底背离+金叉共振"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 30
+      - type: weekly_macd_divergence
+        lookback_bars: 60
+      - type: weekly_macd_gold_cross
+        require_zero_near: true
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 40
 
-    # 箱体突破：近N根K线震荡后向上突破
-    - type: box_breakout
-      lookback_bars: 20        # 箱体识别回看周期（根K线）
-      breakout_pct: 0.02       # 突破幅度阈值（收盘价超过箱体上沿2%才算有效）
-      consolidation_pct: 0.10  # 箱体高度上限（箱体振幅不超过10%才算震荡箱体）
+  pullback_stabilize:
+    name: "趋势股缩量回踩企稳"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 40
+      - type: price_above_ma
+        ma_period: 60
+      - type: volume_shrink
+        lookback_bars: 10
+        shrink_ratio: 0.6
+      - type: support_ma
+        ma_period: 20
+        close_touch: true
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 30
 
-    # 下降趋势线突破：长期下跌后向上突破趋势线
-    - type: downtrend_breakout
-      lookback_bars: 60        # 趋势线识别回看周期
-      min_touches: 2           # 趋势线至少触碰N个高点才有效
-      breakout_pct: 0.01       # 突破趋势线幅度阈值
+  value_growth:
+    name: "低估值高ROE成长策略"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 200
+        max: 10000
+      - type: pe_range
+        min: 5
+        max: 25
+      - type: roe_filter
+        min_roe: 10
+      - type: price_above_ma
+        ma_period: 250
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 25
 
-  output:
-    sort_by: "总市值(亿)"
-    ascending: false
-    limit: 50
+  triple_breakout:
+    name: "三重突破最强趋势策略"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 35
+      - type: box_breakout
+        lookback_bars: 20
+        breakout_pct: 0.02
+        consolidation_pct: 0.10
+      - type: downtrend_breakout
+        lookback_bars: 60
+        min_touches: 2
+        breakout_pct: 0.01
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.4
+    output:
+      sort_by: "总市值(亿)"
+      ascending: false
+      limit: 30
 
-
-# ========================
-# 可用条件类型说明
-# ========================
-#
-# 【Spot条件 - 快速过滤，无需K线数据】
-#   market_cap:      市值范围(亿元)        参数: min, max
-#   pe_range:        市盈率(动态)范围       参数: min, max
-#   pb_range:        市净率范围            参数: min, max
-#   price_range:     股价范围(元)          参数: min, max
-#   turnover_rate:   换手率范围(%)         参数: min, max
-#
-# 【OHLCV条件 - 精筛，需要逐只拉取K线】
-#   weekly_macd_divergence:  周线MACD底背离    参数: lookback_bars (默认60)
-#   daily_macd_divergence:   日线MACD底背离    参数: lookback_bars (默认120)
-#   rsi_oversold:            RSI超卖          参数: threshold (默认30), period (默认14)
-#   price_above_ma:          价格站上均线      参数: ma_period (默认20)
-#
-# ========================
-# 使用示例
-# ========================
-#
-# 示例1: 低估值+底背离
-#   conditions:
-#     - type: market_cap
-#       min: 100
-#       max: 1000
-#     - type: pe_range
-#       min: 5
-#       max: 15
-#     - type: weekly_macd_divergence
-#
-# 示例2: 超跌反弹
-#   conditions:
-#     - type: market_cap
-#       min: 50
-#     - type: rsi_oversold
-#       threshold: 25
-#     - type: price_above_ma
-#       ma_period: 5
+  # ========== 科技/半导体股专属策略 ==========
+  tech_breakout:
+    name: "科技股箱体放量突破"
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30          # 科技小盘也纳入
+        max: 3000
+      - type: box_breakout
+        lookback_bars: 20
+        breakout_pct: 0.02      # 收盘须突破箱顶2%以上
+        consolidation_pct: 0.25  # 箱体振幅放宽到25%，适配高弹性科技股
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.3       # 放量1.3倍即可（科技股经常情绪化放量）
+    output:
+      sort_by: "总市值(亿)"
+      ascending: true           # 从小市值开始排，弹性更大
+      limit: 30

@@ -59,3 +59,27 @@ presets:
         sell_logic: all
         position_size: 0.95
     description: "五粮液 MA20/60 金叉买入，死叉卖出（规则 DSL）"
+
+  # ---- 筛选器桥接示例：使用刚才新增的均线多头策略 ----
+  screener_多头共振_平安银行:
+    strategy: screener_rule
+    data: {stock_code: "000001", days_back: 1500}
+    account: {initial_cash: 100000, commission: 0.0002}
+    params:
+      buy_conditions:
+        - type: multi_ma_bull
+          ma_list: [5, 10, 20, 60]
+          require_all_above: true
+          require_up_trend: true
+      sell_conditions:
+        - type: price_above_ma
+          ma_period: 20
+        # 这里用反向思维，如果是 price_above_ma=False 时卖出比较麻烦，
+        # 为了演示，可以配一个简单的 rsi 超买，或者用内置的 rule_based 做复杂退出
+        - type: rsi_oversold
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+    description: "平安银行：均线全多头时买入，RSI>75超买时卖出（调用筛选器条件）"

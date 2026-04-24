@@ -80,38 +80,43 @@ if not config_path.exists():
     st.error(f"配置文件不存在: {config_path}")
     st.stop()
 
-cfg = load_yaml(config_path)
-if not cfg:
-    st.error("配置加载失败或为空")
+# 策略选择
+from src.screener.config_schema import list_strategies
+available_strategies = list_strategies(str(config_path))
+
+if not available_strategies:
+    st.error("配置加载失败或未定义策略 (strategies 键)")
     st.stop()
 
-# 用 YAML 源码展示（保留用户视角）
-try:
-    with open(config_path, encoding="utf-8") as f:
-        raw = f.read()
-    with st.expander("🔧 查看完整 YAML", expanded=False):
-        st.code(raw, language="yaml")
-except Exception:
-    pass
+st.subheader("🎯 选择筛选方案")
+selected_ids = st.multiselect(
+    "可以勾选多个方案进行组合（取交集）",
+    options=list(available_strategies.keys()),
+    default=[list(available_strategies.keys())[0]],
+    format_func=lambda sid: available_strategies[sid],
+    help="勾选多个方案时，系统会合并所有方案的筛选条件（AND 逻辑）"
+)
+
+if not selected_ids:
+    st.warning("请至少选择一个方案")
+    st.stop()
+
+# 加载预览用的配置
+from src.screener.config_schema import parse_screen_config
+conditions, output_cfg = parse_screen_config(str(config_path), strategy_ids=selected_ids)
 
 # 关键信息摘要
 col1, col2, col3 = st.columns(3)
 with col1:
-    conditions = cfg.get("conditions", []) or []
-    st.metric("启用的条件数", len([c for c in conditions if c.get("enable", True)]))
+    st.metric("方案数", len(selected_ids))
 with col2:
-    filters = cfg.get("filters", []) or []
-    st.metric("启用的过滤器数", len([f for f in filters if f.get("enable", True)]))
+    st.metric("总条件数", len(conditions))
 with col3:
-    st.metric("最多返回股票", cfg.get("limit", "无限制"))
+    st.metric("结果上限", output_cfg.get("limit", "无限制"))
 
-
-# ========================
 # 运行筛选
-# ========================
-
 if run_btn:
-    with st.spinner(f"正在执行筛选（workers={max_workers}，delay={request_delay}s）..."):
+    with st.spinner(f"正在执行筛选（方案: {selected_ids}）..."):
         try:
             from src.screener import ScreenerDataProvider, StockScreener
             provider = ScreenerDataProvider()
@@ -124,7 +129,7 @@ if run_btn:
                 max_workers=int(max_workers),
             )
             t0 = pd.Timestamp.now()
-            results = screener.run_from_config(str(config_path))
+            results = screener.run_from_config(str(config_path), strategy_ids=selected_ids)
             elapsed = (pd.Timestamp.now() - t0).total_seconds()
             st.caption(f"⏱ 本次筛选总耗时 **{elapsed:.1f}s**")
         except Exception as e:
@@ -151,6 +156,43 @@ if run_btn:
 
         # 缓存结果给下方"加入关注"组件使用
         st.session_state["_screen_last_results"] = results
+
+# ========================
+# 策略管理：直接编辑 YAML
+# ========================
+st.markdown("---")
+st.subheader("🛠️ 策略方案管理")
+st.caption("你可以在这里直接修改 YAML 配置，添加新方案或修改参数。修改后点击“保存并应用”。")
+
+with st.expander("📝 编辑 screen_config.yaml", expanded=False):
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            yaml_content = f.read()
+        
+        new_yaml = st.text_area(
+            "YAML 内容",
+            value=yaml_content,
+            height=400,
+            key="yaml_editor"
+        )
+        
+        c1, c2 = st.columns([1, 4])
+        if c1.button("💾 保存并应用", type="primary"):
+            try:
+                # 校验语法
+                import yaml
+                test_cfg = yaml.safe_load(new_yaml)
+                if not isinstance(test_cfg, dict) or "strategies" not in test_cfg:
+                    st.error("格式错误：必须包含 strategies 顶级键")
+                else:
+                    with open(config_path, "w", encoding="utf-8") as f:
+                        f.write(new_yaml)
+                    st.success("✅ 配置已更新")
+                    st.rerun()
+            except Exception as e:
+                st.error(f"保存失败：{e}")
+    except Exception as e:
+        st.error(f"读取配置失败: {e}")
 
 # ========================
 # 从筛选结果加入关注列表（任何时候都可用）

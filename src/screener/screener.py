@@ -113,9 +113,15 @@ class StockScreener:
         logger.info(f"筛选完成，共 {len(result)} 只股票符合条件")
         return result
 
-    def run_from_config(self, config_path: str, **kwargs) -> pd.DataFrame:
-        """从YAML配置文件加载条件并运行"""
-        conditions, output_config = parse_screen_config(config_path)
+    def run_from_config(self, config_path: str, strategy_ids: list[str] | None = None) -> pd.DataFrame:
+        """
+        从配置文件加载条件并运行完整筛选。
+        
+        Args:
+            config_path: YAML路径
+            strategy_ids: 可选，指定要运行的策略 ID 列表
+        """
+        conditions, output_config = parse_screen_config(config_path, strategy_ids=strategy_ids)
         for cond in conditions:
             self.add_condition(cond)
 
@@ -123,7 +129,7 @@ class StockScreener:
         limit = output_config.get("limit", 100)
         ascending = output_config.get("ascending", False)
 
-        return self.run(sort_by=sort_by, ascending=ascending, limit=limit, **kwargs)
+        return self.run(sort_by=sort_by, ascending=ascending, limit=limit)
 
     def _pass1_spot_filter(self, all_stocks: pd.DataFrame) -> pd.DataFrame:
         """

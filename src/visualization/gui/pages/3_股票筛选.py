@@ -1,10 +1,11 @@
 """
-pages/2_股票筛选.py — 股票筛选页
+pages/3_股票筛选.py — 股票筛选执行页
 
 功能：
-  - 加载 screen_config.yaml 的条件配置（只读展示，方便用户查看）
+  - 加载 screen_config.yaml 的条件配置（只读展示）
   - 触发 StockScreener.run_from_config()
   - 表格展示结果 + 下载 CSV
+  - 策略编辑请前往「策略配置」页
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ from src.visualization.gui.utils import (  # noqa: E402
 
 st.set_page_config(page_title="股票筛选", page_icon="🔍", layout="wide")
 st.title("🔍 股票筛选")
-st.caption("基于 screen_config.yaml 配置的条件组合进行 A 股筛选")
+st.caption("执行筛选策略并查看结果  |  编辑策略请前往「⚙️ 策略配置」页")
 
 
 # ========================
@@ -158,41 +159,20 @@ if run_btn:
         st.session_state["_screen_last_results"] = results
 
 # ========================
-# 策略管理：直接编辑 YAML
+# 策略条件详情预览（只读）
 # ========================
 st.markdown("---")
-st.subheader("🛠️ 策略方案管理")
-st.caption("你可以在这里直接修改 YAML 配置，添加新方案或修改参数。修改后点击“保存并应用”。")
+st.subheader("📋 当前选中策略的条件详情")
+st.caption("编辑策略请前往侧边栏「⚙️ 策略配置」页面。")
 
-with st.expander("📝 编辑 screen_config.yaml", expanded=False):
-    try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            yaml_content = f.read()
-        
-        new_yaml = st.text_area(
-            "YAML 内容",
-            value=yaml_content,
-            height=400,
-            key="yaml_editor"
-        )
-        
-        c1, c2 = st.columns([1, 4])
-        if c1.button("💾 保存并应用", type="primary"):
-            try:
-                # 校验语法
-                import yaml
-                test_cfg = yaml.safe_load(new_yaml)
-                if not isinstance(test_cfg, dict) or "strategies" not in test_cfg:
-                    st.error("格式错误：必须包含 strategies 顶级键")
-                else:
-                    with open(config_path, "w", encoding="utf-8") as f:
-                        f.write(new_yaml)
-                    st.success("✅ 配置已更新")
-                    st.rerun()
-            except Exception as e:
-                st.error(f"保存失败：{e}")
-    except Exception as e:
-        st.error(f"读取配置失败: {e}")
+from src.screener.conditions import CONDITION_LABELS as _CL  # noqa: E402
+
+for cond in conditions:
+    ctype = getattr(cond, "name", type(cond).__name__)
+    clabel = _CL.get(ctype, ctype)
+    attrs = {k: v for k, v in vars(cond).items() if not k.startswith("_")}
+    attrs_str = ", ".join(f"{k}={v}" for k, v in attrs.items()) if attrs else "（无参数）"
+    st.markdown(f"- **{clabel}** `{ctype}` — {attrs_str}")
 
 # ========================
 # 从筛选结果加入关注列表（任何时候都可用）

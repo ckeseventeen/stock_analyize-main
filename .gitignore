@@ -62,6 +62,9 @@ output/*.pptx
 data_cache/
 *.pkl
 *.parquet
+*.bak.*
+.ruff_cache/
+scratch/
 
 # Sensitive config (含 API Key 的配置不提交)
 config/secrets.yaml

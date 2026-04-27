@@ -1,225 +1,376 @@
-# 股票筛选策略配置文件
-# 所有策略存放在 strategies 键下，支持多方案并行或勾选
 strategies:
-  # ========== 原有策略 ==========
   bottom_divergence:
-    name: "周线底背离方案(优化版)"
-    conditions:
-      - type: exclude_st               # 排除ST股
-      - type: exclude_delisting_risk   # 排除退市风险
-      - type: exclude_recent_large_unlock    # 排除近期大额解禁
-      - type: market_cap
-        min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 30
-      - type: weekly_macd_divergence
-        lookback_bars: 60
-        zero_axis_filter: true  # 新增：零轴过滤，剔除弱势深度背离
-        multi_level_check: true # 新增：多级背离检测，不漏早期筑底信号
-    output:
-      sort_by: "总市值(亿)"
-      ascending: false
-      limit: 50
-
-  double_breakout:
-    name: "双突破方案"
+    name: 周线底背离(宽松版)
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 50
-        max: 2000
+        min: 30
+        max: 5000
+      - type: pe_range
+        min: 0
+        max: 60
+      - type: weekly_macd_divergence
+        lookback_bars: 90
+        zero_axis_filter: false
+        multi_level_check: true
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.5
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 70
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1000
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 80
+  box_breakout_only:
+    name: 箱体突破(独立)
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30
+        max: 5000
       - type: box_breakout
         lookback_bars: 20
-        breakout_pct: 0.02
-        consolidation_pct: 0.10
+        breakout_pct: 0.01
+        consolidation_pct: 0.15
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '000858'
+      days_back: 1500
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 60
+  downtrend_break_only:
+    name: 下降趋势线突破(独立)
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30
+        max: 5000
       - type: downtrend_breakout
         lookback_bars: 60
         min_touches: 2
-        breakout_pct: 0.01
+        breakout_pct: 0.005
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 50
-
-  value_investing:
-    name: "白马价值筛选"
+      limit: 60
+  double_breakout:
+    name: 双突破方案(放宽版)
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 500
+        min: 30
+        max: 5000
+      - type: box_breakout
+        lookback_bars: 25
+        breakout_pct: 0.01
+        consolidation_pct: 0.2
+      - type: downtrend_breakout
+        lookback_bars: 60
+        min_touches: 2
+        breakout_pct: 0.005
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '000858'
+      days_back: 1500
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 50
+  value_investing:
+    name: 白马价值筛选
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 200
         max: 50000
       - type: pe_range
         min: 0
-        max: 20
+        max: 30
       - type: price_above_ma
-        ma_period: 250
+        ma_period: 120
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 70
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 2000
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 20
-
-  # ========== 新增高胜率策略 ==========
+      limit: 50
   ma_long_bull:
-    name: "均线全多头共振策略"
+    name: 均线多头共振(放宽版)
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 40
+        min: 30
+        max: 5000
       - type: multi_ma_bull
-        ma_list: [5,10,20,60,250]
+        ma_list:
+          - 5
+          - 10
+          - 20
+          - 60
         require_all_above: true
         require_up_trend: true
+        tolerance: 0.01
+    backtest:
+      sell_conditions:
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '000001'
+      days_back: 1500
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 30
-
-  break_250_vol:
-    name: "放量突破年线策略"
+      limit: 60
+  ma_gold_cross_rsi:
+    name: 均线金叉+RSI低位
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
+      - type: market_cap
+        min: 30
+        max: 5000
+      - type: ma_gold_cross
+        fast_period: 5
+        slow_period: 20
+      - type: rsi_oversold
+        threshold: 55
+        period: 14
+    backtest:
+      sell_conditions:
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1500
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 50
+  bollinger_lower_touch:
+    name: 布林带下轨反弹
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
       - type: market_cap
         min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 35
+        max: 5000
+      - type: bollinger_breakout
+        period: 20
+        std_dev: 2.0
+        direction: lower
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 70
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+      default_stock: '000858'
+      days_back: 1500
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 50
+  kdj_gold_cross:
+    name: KDJ低位金叉
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30
+        max: 5000
+      - type: kdj_gold_cross
+        n: 9
+        m1: 3
+        m2: 3
+        j_threshold: 100
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1000
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 60
+  macd_hist_flip:
+    name: MACD柱状图翻红
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30
+        max: 5000
+      - type: macd_hist_positive
+        consecutive: 1
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1000
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 80
+  break_250_vol:
+    name: 放量突破年线
+    conditions:
+      - type: exclude_st
+      - type: exclude_delisting_risk
+      - type: market_cap
+        min: 30
+        max: 5000
       - type: price_above_ma
         ma_period: 250
       - type: volume_break
         lookback_bars: 20
-        vol_multiple: 1.5
+        vol_multiple: 1.3
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 70
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1500
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 30
-
-  weekly_macd_resonance:
-    name: "周线底背离+金叉共振"
-    conditions:
-      - type: exclude_st
-      - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
-      - type: market_cap
-        min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 30
-      - type: weekly_macd_divergence
-        lookback_bars: 60
-      - type: weekly_macd_gold_cross
-        require_zero_near: true
-    output:
-      sort_by: "总市值(亿)"
-      ascending: false
-      limit: 40
-
+      limit: 60
   pullback_stabilize:
-    name: "趋势股缩量回踩企稳"
+    name: 趋势股回踩企稳(放宽版)
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 40
+        min: 30
+        max: 5000
       - type: price_above_ma
         ma_period: 60
-      - type: volume_shrink
-        lookback_bars: 10
-        shrink_ratio: 0.6
       - type: support_ma
         ma_period: 20
         close_touch: true
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 30
-
+      limit: 50
   value_growth:
-    name: "低估值高ROE成长策略"
+    name: 低估值成长策略
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 200
-        max: 10000
+        min: 100
+        max: 20000
       - type: pe_range
-        min: 5
-        max: 25
-      - type: roe_filter
-        min_roe: 10
+        min: 3
+        max: 30
       - type: price_above_ma
-        ma_period: 250
+        ma_period: 120
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 25
-
-  triple_breakout:
-    name: "三重突破最强趋势策略"
+      limit: 50
+  rsi_oversold_bounce:
+    name: RSI超卖反弹
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
-      - type: exclude_recent_unlock
       - type: market_cap
-        min: 50
-        max: 2000
-      - type: pe_range
-        min: 0
-        max: 35
-      - type: box_breakout
-        lookback_bars: 20
-        breakout_pct: 0.02
-        consolidation_pct: 0.10
-      - type: downtrend_breakout
-        lookback_bars: 60
-        min_touches: 2
-        breakout_pct: 0.01
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.4
+        min: 30
+        max: 5000
+      - type: rsi_oversold
+        threshold: 35
+        period: 14
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 70
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1000
     output:
-      sort_by: "总市值(亿)"
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 30
-
-  # ========== 科技/半导体股专属策略 ==========
+      limit: 80
   tech_breakout:
-    name: "科技股箱体放量突破"
+    name: 科技股箱体放量突破
     conditions:
       - type: exclude_st
       - type: exclude_delisting_risk
       - type: market_cap
-        min: 30          # 科技小盘也纳入
+        min: 20
         max: 3000
       - type: box_breakout
         lookback_bars: 20
-        breakout_pct: 0.02      # 收盘须突破箱顶2%以上
-        consolidation_pct: 0.25  # 箱体振幅放宽到25%，适配高弹性科技股
+        breakout_pct: 0.01
+        consolidation_pct: 0.25
       - type: volume_break
         lookback_bars: 20
-        vol_multiple: 1.3       # 放量1.3倍即可（科技股经常情绪化放量）
+        vol_multiple: 1.2
     output:
-      sort_by: "总市值(亿)"
-      ascending: true           # 从小市值开始排，弹性更大
-      limit: 30
+      sort_by: 总市值(亿)
+      ascending: true
+      limit: 40

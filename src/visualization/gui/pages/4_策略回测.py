@@ -1,8 +1,9 @@
 """
-pages/7_策略回测.py — 策略回测前端页面
+pages/4_策略回测.py — 策略回测前端页面
 
 功能：
 - 支持从 config/backtest_presets.yaml 加载命名预设
+- 支持从筛选策略（screen_config.yaml）一键导入回测配置
 - 根据策略类型动态渲染参数表单（由 STRATEGY_PARAM_SCHEMAS 驱动）
 - 触发 BacktestRunner 进行历史回测
 - 展示回测核心指标与收益图表
@@ -54,7 +55,7 @@ from src.visualization.gui.utils import (
 
 st.set_page_config(page_title="策略回测", page_icon="📈", layout="wide")
 st.title("📈 策略回测 (Backtest)")
-st.caption("基于 Backtrader 的量化策略验证。可从配置管理页新建预设后在此加载。")
+st.caption("基于 Backtrader 的量化策略验证。可从「策略配置」页编辑策略后一键回测，也可从预设加载。")
 
 
 # ========================
@@ -180,58 +181,75 @@ strategy_key = st.sidebar.selectbox(
 )
 strategy_cls = STRATEGY_REGISTRY[strategy_key]
 
-# 如果是筛选器桥接策略，提供一键导入功能
+# 如果是筛选器桥接策略，提供一键导入功能（使用统一的配置体系）
 if strategy_key == "screener_rule":
     import yaml as _yaml
-    from src.screener.config_schema import list_strategies
+    from src.screener.config_schema import (
+        list_strategies,
+        parse_backtest_from_strategy,
+        SPOT_ONLY_TYPES as _SPOT_ONLY,
+    )
     from src.visualization.gui.utils import PATH_SCREEN
     
     screen_strats = list_strategies(str(PATH_SCREEN))
     if screen_strats:
         st.sidebar.markdown("---")
-        st.sidebar.markdown("**🪄 快捷导入筛选策略**")
+        st.sidebar.markdown("**🪄 从筛选策略导入**")
+
+        # 标记哪些策略已配置 backtest 段
+        _bt_ready = {}
+        for sid in screen_strats:
+            bt_info = parse_backtest_from_strategy(str(PATH_SCREEN), sid)
+            _bt_ready[sid] = bt_info.get("has_backtest", False)
+
         options = ["-- 手动输入 YAML --"] + list(screen_strats.keys())
         
         def on_scheme_change():
             sel = st.session_state.get("_screener_scheme_sel")
             if sel and sel != "-- 手动输入 YAML --":
                 try:
-                    with open(PATH_SCREEN, encoding="utf-8") as f:
-                        scfg = _yaml.safe_load(f) or {}
-                    conds = scfg.get("strategies", {}).get(sel, {}).get("conditions", [])
-                    
-                    # 过滤掉不适合回测的基本面/排除类条件
-                    # 这些条件依赖实时 spot 数据（市值、PE、名称等），历史K线中没有
-                    _SPOT_ONLY_TYPES = {
-                        "exclude_st", "exclude_delisting_risk",
-                        "exclude_recent_unlock", "exclude_recent_large_unlock",
-                        "market_cap", "pe_range", "pb_range",
-                        "price_range", "turnover_rate", "roe_filter",
-                    }
-                    tech_conds = [c for c in conds if c.get("type") not in _SPOT_ONLY_TYPES]
-                    removed = [c.get("type") for c in conds if c.get("type") in _SPOT_ONLY_TYPES]
+                    bt_cfg = parse_backtest_from_strategy(str(PATH_SCREEN), sel)
+                    buy_conds = bt_cfg.get("buy_conditions", [])
+                    sell_conds = bt_cfg.get("sell_conditions", [])
                     
                     st.session_state[f"param_{strategy_key}_buy_conditions"] = _yaml.safe_dump(
-                        tech_conds, allow_unicode=True, sort_keys=False
+                        buy_conds, allow_unicode=True, sort_keys=False
                     )
-                    # 记录过滤掉了哪些条件，供后面展示提示
+                    if sell_conds:
+                        st.session_state[f"param_{strategy_key}_sell_conditions"] = _yaml.safe_dump(
+                            sell_conds, allow_unicode=True, sort_keys=False
+                        )
+                    # 记录从 conditions 中过滤的基本面条件
+                    with open(PATH_SCREEN, encoding="utf-8") as f:
+                        scfg = _yaml.safe_load(f) or {}
+                    all_conds = scfg.get("strategies", {}).get(sel, {}).get("conditions", [])
+                    removed = [c.get("type") for c in all_conds if c.get("type") in _SPOT_ONLY]
                     st.session_state["_screener_import_removed"] = removed
+                    st.session_state["_screener_import_has_bt"] = bt_cfg.get("has_backtest", False)
                 except Exception:
                     pass
 
+        def _format_strat(x):
+            if x == "-- 手动输入 YAML --":
+                return x
+            label = screen_strats.get(x, x)
+            return f"{'✅' if _bt_ready.get(x) else '⚠️'} {label}"
+
         st.sidebar.selectbox(
-            "选择股票筛选中的方案", 
+            "选择筛选策略", 
             options=options,
-            format_func=lambda x: screen_strats.get(x, x),
+            format_func=_format_strat,
             key="_screener_scheme_sel",
             on_change=on_scheme_change,
-            help="选择后，会自动将该筛选方案的技术条件填入下方的「买入条件」输入框！基本面条件（市值/PE/ROE等）会自动过滤，因为历史K线数据中没有这些信息。"
+            help="✅ = 策略已配置回测参数（在策略配置页设置）\n⚠️ = 仅有筛选条件，卖出条件需手动配置",
         )
         removed = st.session_state.get("_screener_import_removed")
+        has_bt = st.session_state.get("_screener_import_has_bt", False)
         if removed:
             st.sidebar.info(
-                f"ℹ️ 已自动过滤 {len(removed)} 个不适合回测的基本面条件：`{'`, `'.join(removed)}`\n\n"
-                "这些条件依赖实时市值/PE数据，在历史回测中无效。"
+                f"ℹ️ 已过滤 {len(removed)} 个基本面条件\n\n"
+                + ("✅ 已导入策略的回测配置（含卖出条件）" if has_bt
+                   else "⚠️ 该策略未配置回测段，请手动设置卖出条件，或去「策略配置」页添加")
             )
 
 # 动态渲染策略参数（由 STRATEGY_PARAM_SCHEMAS 驱动）
@@ -681,4 +699,5 @@ if run_btn:
             st.dataframe(df.head(200), width='stretch')
 
 else:
-    st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。可先在【⚙️ 配置管理】页创建预设。")
+    st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。\n\n"
+            "💡 **推荐工作流**：在「⚙️ 策略配置」页编辑策略 → 启用回测配置 → 在此页选择 screener_rule 策略一键导入。")

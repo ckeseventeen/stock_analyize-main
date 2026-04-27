@@ -211,11 +211,11 @@ class WeeklyMACDBottomDivergenceCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_macd()
             detector = MACDDivergenceDetector(ta.get_dataframe())
-            # 对于周线，order=2 即可（前后2周没有更低点即为底），且背离必须发生在最近2周内
+            # 对于周线，order=2 即可（前后2周没有更低点即为底），且背离必须发生在最近4周内
             return detector.detect_bottom_divergence(
                 lookback_bars=self.lookback_bars, 
                 order=2, 
-                max_bars_since_trough=2,
+                max_bars_since_trough=4,
                 zero_axis_filter=self.zero_axis_filter,
                 multi_level_check=self.multi_level_check
             )
@@ -500,7 +500,7 @@ class ExcludeDelistingRiskCondition(BaseCondition):
         return "*ST" not in name and "退" not in name
     def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
         if "名称" not in df.columns: return pd.Series(True, index=df.index)
-        return ~df["名称"].astype(str).str.contains("\*ST|退", na=False)
+        return ~df["名称"].astype(str).str.contains(r"\*ST|退", na=False)
 
 class ExcludeRecentUnlockCondition(BaseCondition):
     name = "exclude_recent_unlock"
@@ -530,10 +530,12 @@ class MultiMABullCondition(BaseCondition):
     name = "multi_ma_bull"
     requires_ohlcv = True
     ohlcv_period = "daily"
-    def __init__(self, ma_list: list = None, require_all_above: bool = True, require_up_trend: bool = True):
+    def __init__(self, ma_list: list = None, require_all_above: bool = True,
+                 require_up_trend: bool = True, tolerance: float = 0.005):
         self.ma_list = ma_list or [5, 10, 20, 60, 250]
         self.require_all_above = require_all_above
         self.require_up_trend = require_up_trend
+        self.tolerance = tolerance  # 均线值接近时允许的容差比例
     def evaluate_spot(self, spot_row: pd.Series) -> bool: return True
     def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
         if ohlcv_df is None or len(ohlcv_df) < max(self.ma_list): return False
@@ -541,25 +543,34 @@ class MultiMABullCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_moving_averages(self.ma_list)
             df = ta.get_dataframe()
-            if len(df) < 2: return False
+            if len(df) < 3: return False
             last_row = df.iloc[-1]
-            prev_row = df.iloc[-2]
             
-            # 判断多头排列 MA5 > MA10 > MA20...
+            # 判断多头排列 MA5 > MA10 > MA20...（允许 tolerance 容差）
             sorted_mas = sorted(self.ma_list)
             for i in range(len(sorted_mas) - 1):
-                if float(last_row[f"ma_{sorted_mas[i]}"]) < float(last_row[f"ma_{sorted_mas[i+1]}"]): 
+                fast_val = float(last_row[f"ma_{sorted_mas[i]}"])
+                slow_val = float(last_row[f"ma_{sorted_mas[i+1]}"])
+                if fast_val < slow_val * (1 - self.tolerance):
                     return False
                     
-            # 收盘价在所有均线之上
+            # 收盘价在所有均线之上（允许容差）
             if self.require_all_above:
+                close_val = float(last_row["close"])
                 for ma in self.ma_list:
-                    if float(last_row["close"]) < float(last_row[f"ma_{ma}"]): return False
+                    if close_val < float(last_row[f"ma_{ma}"]) * (1 - self.tolerance):
+                        return False
                     
-            # 均线发散向上（当前值大于上一个值）
+            # 均线发散向上：检查最近3日趋势，允许多数均线上行即可
             if self.require_up_trend:
+                up_count = 0
                 for ma in self.ma_list:
-                    if float(last_row[f"ma_{ma}"]) < float(prev_row[f"ma_{ma}"]): return False
+                    vals = [float(df.iloc[j][f"ma_{ma}"]) for j in range(-3, 0)]
+                    if vals[-1] >= vals[0]:  # 3日前 vs 最新
+                        up_count += 1
+                # 至少 60% 的均线在上行
+                if up_count < len(self.ma_list) * 0.6:
+                    return False
             return True
         except Exception:
             return False
@@ -599,10 +610,15 @@ class WeeklyMACDGoldCrossCondition(BaseCondition):
             df = ta.get_dataframe()
             macd = df["macd"].values
             signal = df["macd_signal"].values
-            if len(macd) < 2 or pd.isna(macd[-1]) or pd.isna(signal[-1]): return False
-            is_cross = (macd[-2] < signal[-2]) and (macd[-1] >= signal[-1])
-            if not is_cross: return False
-            return True
+            if len(macd) < 3 or pd.isna(macd[-1]) or pd.isna(signal[-1]): return False
+            # 允许最近2根K线内出现金叉（不要求恰好是最后一根）
+            for offset in range(2):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(macd):
+                    if macd[prev_idx] < signal[prev_idx] and macd[idx] >= signal[idx]:
+                        return True
+            return False
         except Exception: return False
 
 class VolumeShrinkCondition(BaseCondition):
@@ -651,11 +667,284 @@ class SupportMACondition(BaseCondition):
             low_val = float(last_row.get("low", last_row.get("最低", 0)))
             
             if self.close_touch:
-                # 最低价触及或击穿均线（允许1%误差），且收盘价在均线之上（企稳）
-                return low_val <= ma_val * 1.01 and close_val >= ma_val * 0.99
+                # 最低价触及或击穿均线（允许2%误差），且收盘价在均线附近或之上（企稳）
+                return low_val <= ma_val * 1.02 and close_val >= ma_val * 0.97
             else:
-                return low_val <= ma_val * 1.02
+                return low_val <= ma_val * 1.03
         except Exception: return False
+
+# ========================
+# 新增条件（Phase 3 扩展）
+# ========================
+
+class BollingerBreakoutCondition(BaseCondition):
+    """
+    布林带突破筛选（日线）
+
+    逻辑：
+      - direction="upper": 收盘价突破上轨 → 看多突破
+      - direction="lower": 收盘价跌破下轨 → 超卖反弹机会
+    """
+    name = "bollinger_breakout"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, period: int = 20, std_dev: float = 2.0, direction: str = "upper"):
+        self.period = period
+        self.std_dev = std_dev
+        self.direction = direction  # "upper" or "lower"
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.period:
+            return False
+        try:
+            close_col = "close" if "close" in ohlcv_df.columns else "收盘"
+            if close_col not in ohlcv_df.columns:
+                return False
+            closes = pd.to_numeric(ohlcv_df[close_col], errors="coerce")
+            ma = closes.rolling(self.period).mean()
+            std = closes.rolling(self.period).std()
+            upper = ma + self.std_dev * std
+            lower = ma - self.std_dev * std
+            last_close = float(closes.iloc[-1])
+            if self.direction == "upper":
+                return last_close > float(upper.iloc[-1])
+            else:
+                return last_close < float(lower.iloc[-1])
+        except Exception:
+            return False
+
+
+class KDJGoldCrossCondition(BaseCondition):
+    """
+    KDJ 金叉筛选（日线）
+
+    K 线上穿 D 线，且 J 值 < j_threshold 时视为有效（避免高位金叉假信号）
+    """
+    name = "kdj_gold_cross"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, n: int = 9, m1: int = 3, m2: int = 3, j_threshold: float = 80):
+        self.n = n
+        self.m1 = m1
+        self.m2 = m2
+        self.j_threshold = j_threshold
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.n + 5:
+            return False
+        try:
+            df = ohlcv_df.copy()
+            rename = {"最高": "high", "最低": "low", "收盘": "close"}
+            df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+            if not all(c in df.columns for c in ("high", "low", "close")):
+                return False
+
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            close = pd.to_numeric(df["close"], errors="coerce")
+
+            low_n = low.rolling(self.n).min()
+            high_n = high.rolling(self.n).max()
+            rsv = (close - low_n) / (high_n - low_n) * 100
+            rsv = rsv.fillna(50)
+
+            k = rsv.ewm(alpha=1.0 / self.m1, adjust=False).mean()
+            d = k.ewm(alpha=1.0 / self.m2, adjust=False).mean()
+            j = 3 * k - 2 * d
+
+            if len(k) < 4:
+                return False
+
+            # K 上穿 D（允许最近3根K线内出现金叉），且 J 不在超买区
+            for offset in range(3):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(k):
+                    k_prev, d_prev = float(k.iloc[prev_idx]), float(d.iloc[prev_idx])
+                    k_curr, d_curr = float(k.iloc[idx]), float(d.iloc[idx])
+                    j_curr = float(j.iloc[idx])
+                    if k_prev <= d_prev and k_curr > d_curr and j_curr < self.j_threshold:
+                        return True
+            return False
+        except Exception:
+            return False
+
+
+class MAGoldCrossCondition(BaseCondition):
+    """均线金叉筛选：短期均线上穿长期均线"""
+    name = "ma_gold_cross"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, fast_period: int = 5, slow_period: int = 20):
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.slow_period + 4:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages([self.fast_period, self.slow_period])
+            df = ta.get_dataframe()
+            if len(df) < 4:
+                return False
+            fast_col = f"ma_{self.fast_period}"
+            slow_col = f"ma_{self.slow_period}"
+            # 允许最近3根K线内出现金叉
+            for offset in range(3):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(df):
+                    prev_fast = float(df[fast_col].iloc[prev_idx])
+                    prev_slow = float(df[slow_col].iloc[prev_idx])
+                    curr_fast = float(df[fast_col].iloc[idx])
+                    curr_slow = float(df[slow_col].iloc[idx])
+                    if prev_fast <= prev_slow and curr_fast > curr_slow:
+                        return True
+            return False
+        except Exception:
+            return False
+
+
+class MADeathCrossCondition(BaseCondition):
+    """均线死叉筛选：短期均线下穿长期均线"""
+    name = "ma_death_cross"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, fast_period: int = 5, slow_period: int = 20):
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.slow_period + 4:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages([self.fast_period, self.slow_period])
+            df = ta.get_dataframe()
+            if len(df) < 4:
+                return False
+            fast_col = f"ma_{self.fast_period}"
+            slow_col = f"ma_{self.slow_period}"
+            # 允许最近3根K线内出现死叉
+            for offset in range(3):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(df):
+                    prev_fast = float(df[fast_col].iloc[prev_idx])
+                    prev_slow = float(df[slow_col].iloc[prev_idx])
+                    curr_fast = float(df[fast_col].iloc[idx])
+                    curr_slow = float(df[slow_col].iloc[idx])
+                    if prev_fast >= prev_slow and curr_fast < curr_slow:
+                        return True
+            return False
+        except Exception:
+            return False
+
+
+class PriceChangeCondition(BaseCondition):
+    """当日涨跌幅范围筛选（Spot条件）"""
+    name = "price_change"
+    requires_ohlcv = False
+
+    def __init__(self, min_change: float = -100, max_change: float = 100):
+        self.min_change = min_change
+        self.max_change = max_change
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        change = float(spot_row.get("涨跌幅", 0) or 0)
+        return self.min_change <= change <= self.max_change
+
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "涨跌幅" not in df.columns:
+            return pd.Series(True, index=df.index)
+        c = pd.to_numeric(df["涨跌幅"], errors="coerce").fillna(0)
+        return (c >= self.min_change) & (c <= self.max_change)
+
+
+class MACDHistPositiveCondition(BaseCondition):
+    """
+    MACD 柱状图翻红筛选（日线）
+
+    检测 MACD 柱状图（MACD-Signal）从负值转为正值（或连续 n 根为正）。
+    """
+    name = "macd_hist_positive"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, consecutive: int = 1):
+        self.consecutive = max(1, consecutive)
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < 30:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_macd()
+            df = ta.get_dataframe()
+            hist = df["macd_hist"].dropna()
+            if len(hist) < self.consecutive + 1:
+                return False
+            # 最近 consecutive 根都为正，且最近5根内存在由负转正
+            recent = hist.iloc[-self.consecutive:]
+            if not all(float(v) > 0 for v in recent):
+                return False
+            # 检查最近5根K线内是否有从负值翻正的转折点
+            lookback = min(5 + self.consecutive, len(hist))
+            check_range = hist.iloc[-lookback:]
+            for i in range(1, len(check_range)):
+                if float(check_range.iloc[i-1]) <= 0 and float(check_range.iloc[i]) > 0:
+                    return True
+            return False
+        except Exception:
+            return False
+
+
+class RSIOverboughtCondition(BaseCondition):
+    """RSI 超买筛选（日线 RSI 高于阈值）— 可作为卖出信号"""
+    name = "rsi_overbought"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, threshold: float = 70, period: int = 14):
+        self.threshold = threshold
+        self.period = period
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.period + 1:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_rsi(self.period)
+            df = ta.get_dataframe()
+            rsi_col = f"rsi_{self.period}"
+            rsi_val = df[rsi_col].dropna().iloc[-1]
+            return bool(rsi_val > self.threshold)
+        except Exception:
+            return False
+
 
 # ========================
 # 条件注册表（用于YAML配置解析）
@@ -670,6 +959,7 @@ CONDITION_REGISTRY: dict[str, type] = {
     "weekly_macd_divergence": WeeklyMACDBottomDivergenceCondition,
     "daily_macd_divergence": DailyMACDBottomDivergenceCondition,
     "rsi_oversold": RSIOversoldCondition,
+    "rsi_overbought": RSIOverboughtCondition,
     "price_above_ma": PriceAboveMACondition,
     "box_breakout": BoxBreakoutCondition,
     "downtrend_breakout": DowntrendBreakoutCondition,
@@ -683,4 +973,77 @@ CONDITION_REGISTRY: dict[str, type] = {
     "weekly_macd_gold_cross": WeeklyMACDGoldCrossCondition,
     "volume_shrink": VolumeShrinkCondition,
     "support_ma": SupportMACondition,
+    "bollinger_breakout": BollingerBreakoutCondition,
+    "kdj_gold_cross": KDJGoldCrossCondition,
+    "ma_gold_cross": MAGoldCrossCondition,
+    "ma_death_cross": MADeathCrossCondition,
+    "price_change": PriceChangeCondition,
+    "macd_hist_positive": MACDHistPositiveCondition,
+}
+
+
+# ========================
+# 条件元数据（用于前端渲染表单）
+# ========================
+
+# 条件分类，供前端分组展示
+CONDITION_CATEGORIES = {
+    "基本面/排除": [
+        "exclude_st", "exclude_delisting_risk", "exclude_recent_unlock",
+        "exclude_recent_large_unlock", "roe_filter",
+    ],
+    "估值/财务": [
+        "market_cap", "pe_range", "pb_range", "price_range",
+        "turnover_rate", "price_change",
+    ],
+    "均线": [
+        "price_above_ma", "multi_ma_bull", "ma_gold_cross",
+        "ma_death_cross", "support_ma",
+    ],
+    "MACD": [
+        "weekly_macd_divergence", "daily_macd_divergence",
+        "weekly_macd_gold_cross", "macd_hist_positive",
+    ],
+    "RSI": [
+        "rsi_oversold", "rsi_overbought",
+    ],
+    "量价/突破": [
+        "volume_break", "volume_shrink", "box_breakout",
+        "downtrend_breakout", "bollinger_breakout",
+    ],
+    "KDJ": [
+        "kdj_gold_cross",
+    ],
+}
+
+# 条件的中文标签
+CONDITION_LABELS: dict[str, str] = {
+    "market_cap": "市值范围",
+    "pe_range": "市盈率(PE)范围",
+    "pb_range": "市净率(PB)范围",
+    "price_range": "股价范围",
+    "turnover_rate": "换手率范围",
+    "price_change": "涨跌幅范围",
+    "weekly_macd_divergence": "周线MACD底背离",
+    "daily_macd_divergence": "日线MACD底背离",
+    "weekly_macd_gold_cross": "周线MACD金叉",
+    "macd_hist_positive": "MACD柱状图翻红",
+    "rsi_oversold": "RSI超卖",
+    "rsi_overbought": "RSI超买",
+    "price_above_ma": "价格站上均线",
+    "multi_ma_bull": "均线多头排列",
+    "ma_gold_cross": "均线金叉",
+    "ma_death_cross": "均线死叉",
+    "support_ma": "均线支撑",
+    "volume_break": "放量突破",
+    "volume_shrink": "缩量",
+    "box_breakout": "箱体突破",
+    "downtrend_breakout": "下降趋势线突破",
+    "bollinger_breakout": "布林带突破",
+    "kdj_gold_cross": "KDJ金叉",
+    "exclude_st": "排除ST股",
+    "exclude_delisting_risk": "排除退市风险股",
+    "exclude_recent_unlock": "排除近期解禁",
+    "exclude_recent_large_unlock": "排除近期大额解禁",
+    "roe_filter": "ROE筛选",
 }

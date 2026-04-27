@@ -43,6 +43,33 @@ config_path_input = st.sidebar.text_input(
 )
 config_path = Path(config_path_input)
 
+# ========================
+# 侧边栏：板块/指数范围
+# ========================
+st.sidebar.markdown("---")
+st.sidebar.markdown("**🏷️ 筛选范围（板块/指数）**")
+st.sidebar.caption('可多选，取并集。不选或选「全部A股」表示不限制范围。')
+
+from src.screener.data_provider import ScreenerDataProvider as _SDP  # noqa: E402
+
+_SCOPE_OPTIONS = _SDP.SCOPE_DEFINITIONS  # {"全部A股": "all", "沪市主板": "sh_main", ...}
+
+selected_scope_labels = st.sidebar.multiselect(
+    "选择板块/指数",
+    options=list(_SCOPE_OPTIONS.keys()),
+    default=["全部A股"],
+    help='多选时取并集：如同时选「沪市主板」+「创业板」，则两个板块的股票都纳入筛选范围',
+)
+
+# 将中文标签转为内部 key
+selected_scope_keys = [_SCOPE_OPTIONS[label] for label in selected_scope_labels]
+
+# 显示当前范围信息
+if not selected_scope_keys or "all" in selected_scope_keys:
+    st.sidebar.success("📊 范围：全部A股")
+else:
+    st.sidebar.info(f"📊 范围：{' + '.join(selected_scope_labels)}")
+
 st.sidebar.markdown("---")
 st.sidebar.markdown("**⚡ 性能参数**")
 max_workers = st.sidebar.slider(
@@ -107,13 +134,17 @@ from src.screener.config_schema import parse_screen_config
 conditions, output_cfg = parse_screen_config(str(config_path), strategy_ids=selected_ids)
 
 # 关键信息摘要
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
     st.metric("方案数", len(selected_ids))
 with col2:
     st.metric("总条件数", len(conditions))
 with col3:
     st.metric("结果上限", output_cfg.get("limit", "无限制"))
+with col4:
+    scope_text = "全部A股" if (not selected_scope_keys or "all" in selected_scope_keys) \
+        else " + ".join(selected_scope_labels)
+    st.metric("筛选范围", scope_text)
 
 # 运行筛选
 if run_btn:
@@ -124,13 +155,28 @@ if run_btn:
             if clear_cache:
                 n = provider._cache.clear_all()
                 st.info(f"已清除缓存 {n} 个文件")
+
+            # 获取板块/指数范围
+            stock_scope = None
+            if selected_scope_keys and "all" not in selected_scope_keys:
+                with st.spinner("正在获取板块/指数成分股..."):
+                    stock_scope = provider.get_scope_codes(selected_scope_keys)
+                    if stock_scope:
+                        st.info(f"📊 板块/指数范围限定：{len(stock_scope)} 只股票")
+                    else:
+                        st.warning("板块/指数成分股获取失败，将使用全部A股")
+
             screener = StockScreener(
                 data_provider=provider,
                 request_delay=float(request_delay),
                 max_workers=int(max_workers),
             )
             t0 = pd.Timestamp.now()
-            results = screener.run_from_config(str(config_path), strategy_ids=selected_ids)
+            results = screener.run_from_config(
+                str(config_path),
+                strategy_ids=selected_ids,
+                stock_scope=stock_scope,
+            )
             elapsed = (pd.Timestamp.now() - t0).total_seconds()
             st.caption(f"⏱ 本次筛选总耗时 **{elapsed:.1f}s**")
         except Exception as e:

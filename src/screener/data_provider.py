@@ -239,6 +239,136 @@ class ScreenerDataProvider:
         return self._cache.get_or_fetch("all_a_shares_spot", _fetch, ttl_hours=self._spot_ttl)
 
     # ========================
+    # 板块/指数范围过滤
+    # ========================
+
+    # 板块/指数定义：key → (中文标签, 获取成分股的方法)
+    SCOPE_DEFINITIONS: dict[str, str] = {
+        "全部A股": "all",
+        "沪市主板": "sh_main",
+        "深市主板": "sz_main",
+        "创业板": "chinext",
+        "科创板": "star",
+        "北交所": "bse",
+        "沪深300": "csi300",
+        "中证500": "csi500",
+        "中证1000": "csi1000",
+        "上证50": "sse50",
+    }
+
+    def get_scope_codes(self, scope_keys: list[str]) -> set[str] | None:
+        """
+        获取指定板块/指数的成分股代码集合。
+
+        Args:
+            scope_keys: 板块/指数 key 列表，如 ["sh_main", "chinext", "csi300"]
+                        传入 ["all"] 或空列表 → 返回 None（不过滤）
+
+        Returns:
+            代码集合（纯6位数字），或 None 表示不过滤
+        """
+        if not scope_keys or "all" in scope_keys:
+            return None
+
+        all_codes: set[str] = set()
+        for key in scope_keys:
+            try:
+                codes = self._fetch_scope_codes_single(key)
+                if codes:
+                    all_codes.update(codes)
+                    logger.info(f"板块 [{key}] 获取到 {len(codes)} 只成分股")
+            except Exception as e:
+                logger.warning(f"板块 [{key}] 获取失败: {e}")
+        return all_codes if all_codes else None
+
+    def _fetch_scope_codes_single(self, key: str) -> set[str]:
+        """获取单个板块/指数的成分股代码"""
+
+        def _fetch():
+            with _no_proxy():
+                return self._do_fetch_scope(key)
+
+        cache_key = f"scope_{key}"
+        result = self._cache.get_or_fetch(cache_key, _fetch, ttl_hours=4)
+        if isinstance(result, set):
+            return result
+        return set(result) if result else set()
+
+    def _do_fetch_scope(self, key: str) -> set[str]:
+        """实际调用 akshare 获取板块/指数成分股"""
+        codes: set[str] = set()
+
+        if key == "sh_main":
+            # 沪市主板：代码以 60 开头
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                all_codes = df["代码"].astype(str)
+                codes = set(all_codes[all_codes.str.startswith("60")])
+
+        elif key == "sz_main":
+            # 深市主板：代码以 00 开头
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                all_codes = df["代码"].astype(str)
+                codes = set(all_codes[all_codes.str.startswith("00")])
+
+        elif key == "chinext":
+            # 创业板：代码以 30 开头
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                all_codes = df["代码"].astype(str)
+                codes = set(all_codes[all_codes.str.startswith("30")])
+
+        elif key == "star":
+            # 科创板：代码以 68 开头
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                all_codes = df["代码"].astype(str)
+                codes = set(all_codes[all_codes.str.startswith("68")])
+
+        elif key == "bse":
+            # 北交所：代码以 8/4 开头
+            df = ak.stock_zh_a_spot_em()
+            if df is not None and not df.empty:
+                all_codes = df["代码"].astype(str)
+                codes = set(all_codes[
+                    all_codes.str.startswith("8") | all_codes.str.startswith("4")
+                ])
+
+        elif key == "csi300":
+            # 沪深300成分股
+            df = ak.index_stock_cons_csindex(symbol="000300")
+            if df is not None and not df.empty:
+                code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+                codes = set(df[code_col].astype(str).str.zfill(6))
+
+        elif key == "csi500":
+            # 中证500成分股
+            df = ak.index_stock_cons_csindex(symbol="000905")
+            if df is not None and not df.empty:
+                code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+                codes = set(df[code_col].astype(str).str.zfill(6))
+
+        elif key == "csi1000":
+            # 中证1000成分股
+            df = ak.index_stock_cons_csindex(symbol="000852")
+            if df is not None and not df.empty:
+                code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+                codes = set(df[code_col].astype(str).str.zfill(6))
+
+        elif key == "sse50":
+            # 上证50成分股
+            df = ak.index_stock_cons_csindex(symbol="000016")
+            if df is not None and not df.empty:
+                code_col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+                codes = set(df[code_col].astype(str).str.zfill(6))
+
+        else:
+            logger.warning(f"未知的板块/指数 key: {key}")
+
+        return codes
+
+    # ========================
     # 单只 K 线获取（优先 akshare，线程安全；失败回 Baostock session）
     # ========================
 

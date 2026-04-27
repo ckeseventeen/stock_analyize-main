@@ -85,8 +85,8 @@ with tab_stocks:
             "代码": s.get("code", ""),
             "名称": s.get("name", ""),
             "估值方式": s.get("valuation", ""),
-            "PE 档位": s.get("pe_range", ""),
-            "PS 档位": s.get("ps_range", ""),
+            "PE 档位": str(s.get("pe_range", "")) if s.get("pe_range") else "",
+            "PS 档位": str(s.get("ps_range", "")) if s.get("ps_range") else "",
         } for s in stocks])
         st.dataframe(df, width="stretch", hide_index=True)
     else:
@@ -446,7 +446,7 @@ with tab_backtest:
                 "天数": (p.get("data") or {}).get("days_back", ""),
                 "初始资金": (p.get("account") or {}).get("initial_cash", ""),
                 "手续费": (p.get("account") or {}).get("commission", ""),
-                "策略参数": p.get("params", {}),
+                "策略参数": str(p.get("params", {})),
                 "说明": p.get("description", ""),
             })
         st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

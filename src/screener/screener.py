@@ -63,7 +63,8 @@ class StockScreener:
         logger.debug(f"添加筛选条件: {condition}")
         return self
 
-    def run(self, sort_by: str = "总市值", ascending: bool = False, limit: int = 100) -> pd.DataFrame:
+    def run(self, sort_by: str = "总市值", ascending: bool = False, limit: int = 100,
+            stock_scope: set[str] | None = None) -> pd.DataFrame:
         """
         执行筛选
 
@@ -71,6 +72,7 @@ class StockScreener:
             sort_by: 结果排序列
             ascending: 是否升序
             limit: 最大返回数量
+            stock_scope: 可选的股票代码范围集合（板块/指数过滤），None 表示不过滤
 
         Returns:
             筛选结果 DataFrame，包含: 代码, 名称, 最新价, 总市值(亿), 市盈率, 市净率 等
@@ -84,6 +86,15 @@ class StockScreener:
         if all_stocks.empty:
             logger.error("获取全A股数据失败，筛选终止")
             return pd.DataFrame()
+
+        # 板块/指数范围过滤
+        if stock_scope is not None:
+            before = len(all_stocks)
+            code_col = "代码" if "代码" in all_stocks.columns else "code"
+            all_stocks = all_stocks[
+                all_stocks[code_col].astype(str).isin(stock_scope)
+            ].copy()
+            logger.info(f"板块/指数范围过滤: {before} → {len(all_stocks)} 只")
 
         logger.info(f"第一轮筛选开始，全A共 {len(all_stocks)} 只股票")
         candidates = self._pass1_spot_filter(all_stocks)
@@ -113,13 +124,15 @@ class StockScreener:
         logger.info(f"筛选完成，共 {len(result)} 只股票符合条件")
         return result
 
-    def run_from_config(self, config_path: str, strategy_ids: list[str] | None = None) -> pd.DataFrame:
+    def run_from_config(self, config_path: str, strategy_ids: list[str] | None = None,
+                        stock_scope: set[str] | None = None) -> pd.DataFrame:
         """
         从配置文件加载条件并运行完整筛选。
         
         Args:
             config_path: YAML路径
             strategy_ids: 可选，指定要运行的策略 ID 列表
+            stock_scope: 可选的股票代码范围集合（板块/指数过滤）
         """
         conditions, output_config = parse_screen_config(config_path, strategy_ids=strategy_ids)
         for cond in conditions:
@@ -129,7 +142,7 @@ class StockScreener:
         limit = output_config.get("limit", 100)
         ascending = output_config.get("ascending", False)
 
-        return self.run(sort_by=sort_by, ascending=ascending, limit=limit)
+        return self.run(sort_by=sort_by, ascending=ascending, limit=limit, stock_scope=stock_scope)
 
     def _pass1_spot_filter(self, all_stocks: pd.DataFrame) -> pd.DataFrame:
         """

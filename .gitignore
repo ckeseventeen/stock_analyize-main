@@ -48,14 +48,7 @@ error.log
 app.log
 
 # Output files (中间产物，不提交)
-output/data/
-output/reports/
-output/backtest/
-output/plots/
-output/*.png
-output/*.pdf
-output/*.xlsx
-output/*.pptx
+output/
 
 # Cache files
 .cache/

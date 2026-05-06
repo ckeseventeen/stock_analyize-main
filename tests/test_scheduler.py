@@ -140,7 +140,7 @@ class TestBuildScheduler:
 @pytest.mark.unit
 class TestJobBuilders:
     def test_all_builders_registered(self):
-        assert set(JOB_BUILDERS.keys()) == {"price_monitor", "earnings_monitor", "scraper"}
+        assert set(JOB_BUILDERS.keys()) == {"price_monitor", "earnings_monitor", "scraper", "screener"}
 
     def test_price_monitor_callable_runs_without_rules(self, tmp_path, monkeypatch):
         """规则文件为空时应安全跳过而非抛异常"""

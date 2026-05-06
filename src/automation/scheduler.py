@@ -116,7 +116,7 @@ def _build_scraper_callable(job_cfg: dict) -> Callable[[], Any]:
     scraper_type = str(job_cfg.get("scraper_type", "all")).lower()
 
     def _run():
-        from src.data.scraper import (
+        from src.data.scrapers import (
             AnnouncementScraper,
             HoldingsScraper,
             NewsScraper,
@@ -156,11 +156,68 @@ def _build_scraper_callable(job_cfg: dict) -> Callable[[], Any]:
     return _run
 
 
+def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
+    """构造一个 screener 可调用对象：收盘后自动跑筛选并推送结果摘要"""
+
+    strategy_ids: list[str] | None = None
+    raw_strategies = job_cfg.get("strategies")
+    if isinstance(raw_strategies, list) and raw_strategies:
+        strategy_ids = [str(s) for s in raw_strategies]
+    screen_config = job_cfg.get("screen_config", "./config/screen_config.yaml")
+
+    def _run():
+        from src.automation.alert import build_channels
+        from src.analysis.screening.screener import StockScreener
+
+        alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
+        channels = build_channels(alerts_cfg)
+
+        try:
+            logger.info(f"[screener] 开始执行自动筛选，策略: {strategy_ids or '全部'}")
+            screener = StockScreener(max_workers=8)
+            result = screener.run_from_config(
+                screen_config, strategy_ids=strategy_ids,
+            )
+            if result is None or result.empty:
+                msg = f"[screener] 筛选完成，无符合条件股票（策略: {strategy_ids or '全部'}）"
+                logger.info(msg)
+                for ch in channels:
+                    ch.send("📊 股票筛选结果", msg)
+                return
+
+            total = len(result)
+            top5 = result.head(5).to_string(index=False)
+            summary = (
+                f"📊 每日筛选报告\n"
+                f"策略: {strategy_ids or '全部'}\n"
+                f"符合条件: {total} 只\n\n"
+                f"前5名:\n{top5}"
+            )
+            logger.info(f"[screener] 筛选完成，{total} 只股票符合条件")
+            for ch in channels:
+                ch.send("📊 股票筛选结果", summary)
+
+            # 保存 CSV
+            output_dir = job_cfg.get("output_dir", "./output")
+            csv_path = Path(output_dir) / "screen_result.csv"
+            result.to_csv(csv_path, index=False, encoding="utf-8-sig")
+            logger.info(f"[screener] 结果已保存: {csv_path}")
+
+        except Exception as e:
+            logger.error(f"[screener] 执行失败: {e}", exc_info=True)
+            err_msg = f"🚨 筛选执行失败: {e}"
+            for ch in channels:
+                ch.send("📊 股票筛选异常", err_msg)
+
+    return _run
+
+
 # Job 类型 → (可调用工厂, 默认触发方式)
 JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
     "price_monitor": _build_price_monitor_callable,
     "earnings_monitor": _build_earnings_monitor_callable,
     "scraper": _build_scraper_callable,
+    "screener": _build_screener_callable,
 }
 
 

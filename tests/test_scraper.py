@@ -15,7 +15,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.data.scraper import (
+from src.data.scrapers import (
     AnnouncementScraper,
     HoldingsScraper,
     NewsScraper,
@@ -23,7 +23,7 @@ from src.data.scraper import (
     build_scrapers,
     run_all,
 )
-from src.data.scraper.base import BaseScraper
+from src.data.scrapers.base import BaseScraper
 
 
 # ========================

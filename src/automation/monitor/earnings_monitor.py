@@ -17,7 +17,7 @@ import pandas as pd
 
 from src.automation.alert import AlertEvent, AlertStateStore
 from src.automation.monitor.base import BaseMonitor
-from src.data.fetcher.earnings_fetcher import EarningsFetcher
+from src.data.providers.earnings_fetcher import EarningsFetcher
 from src.utils.logger import get_logger
 
 logger = get_logger("earnings")

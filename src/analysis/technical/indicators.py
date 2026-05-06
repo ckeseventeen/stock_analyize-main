@@ -156,18 +156,16 @@ class TechnicalAnalyzer:
         rsv = (self._df["close"] - low_n) / (high_n - low_n) * 100
         rsv = rsv.fillna(50)
 
-        k_values = np.zeros(len(rsv))
-        d_values = np.zeros(len(rsv))
-        k_values[0] = 50.0
-        d_values[0] = 50.0
-
-        for i in range(1, len(rsv)):
-            k_values[i] = (m1 - 1) / m1 * k_values[i - 1] + 1 / m1 * rsv.iloc[i]
-            d_values[i] = (m2 - 1) / m2 * d_values[i - 1] + 1 / m2 * k_values[i]
+        # 向量化：使用指数加权移动平均 (EWM) 替代 Python for 循环
+        # K = EWM(RSV, alpha=1/m1), D = EWM(K, alpha=1/m2)
+        # 初始值设为 50，与原始递推算法一致
+        rsv.iloc[0] = 50.0
+        k_values = rsv.ewm(alpha=1.0 / m1, adjust=False).mean()
+        d_values = k_values.ewm(alpha=1.0 / m2, adjust=False).mean()
 
         self._df["kdj_k"] = k_values
         self._df["kdj_d"] = d_values
-        self._df["kdj_j"] = 3 * self._df["kdj_k"] - 2 * self._df["kdj_d"]
+        self._df["kdj_j"] = 3 * k_values - 2 * d_values
         return self
 
     def add_bollinger(self, period: int = 20, std_dev: float = 2.0) -> "TechnicalAnalyzer":

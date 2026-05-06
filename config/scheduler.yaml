@@ -79,3 +79,16 @@ jobs:
     timezone: "Asia/Shanghai"
     scraper_config: "./config/scraper.yaml"
     output_dir: "./output"
+
+  # ---------- 每日收盘后自动筛选 ----------
+  # 每天 15:05（收盘后5分钟）自动运行全部筛选策略，
+  # 结果通过告警通道推送摘要 + 保存 CSV
+  - id: daily_screening
+    type: screener
+    enable: true
+    cron: "5 15 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    screen_config: "./config/screen_config.yaml"
+    alerts_config: "./config/alerts.yaml"
+    output_dir: "./output"
+    # strategies: ["double_breakout", "box_breakout_only"]  # 可选：指定策略列表

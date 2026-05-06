@@ -177,7 +177,7 @@ def _fetch_daily_ohlcv(code: str, market: str, days_back: int = 120) -> pd.DataF
     # A 股优先走 Baostock
     if market == "a":
         try:
-            from src.data.fetcher.baostock_provider import BaostockProvider
+            from src.data.providers.baostock_provider import BaostockProvider
             with BaostockProvider() as bp:
                 df = bp.get_k_data(code, days_back=days_back, frequency="d",
                                    fields="date,open,high,low,close,volume")

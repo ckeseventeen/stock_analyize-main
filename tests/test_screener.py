@@ -5,7 +5,7 @@ tests/test_screener.py — 筛选器条件测试
 import pandas as pd
 import pytest
 
-from src.screener.conditions import (
+from src.analysis.screening.conditions import (
     MarketCapCondition,
     PBRangeCondition,
     PERangeCondition,
@@ -15,7 +15,7 @@ from src.screener.conditions import (
     TurnoverRateCondition,
     WeeklyMACDBottomDivergenceCondition,
 )
-from src.screener.config_schema import parse_screen_config
+from src.analysis.screening.config_schema import parse_screen_config
 
 
 @pytest.mark.unit

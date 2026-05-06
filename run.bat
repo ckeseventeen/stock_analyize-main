@@ -59,7 +59,7 @@ if "%1"=="--test" (
 
 if "%1"=="--gui" (
     echo [信息] 启动 Streamlit Web GUI...
-    streamlit run src\visualization\gui\streamlit_app.py
+    streamlit run src\web\app.py
     goto :end
 )
 

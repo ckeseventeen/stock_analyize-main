@@ -73,7 +73,7 @@ case "${1:-}" in
         ;;
     --gui)
         echo -e "${BLUE}→ 启动 Streamlit Web GUI...${NC}"
-        streamlit run src/visualization/gui/streamlit_app.py
+        streamlit run src/web/app.py
         ;;
     --lint)
         echo -e "${BLUE}→ 运行代码规范检查...${NC}"

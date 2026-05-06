@@ -10,9 +10,9 @@ import pandas as pd
 import argparse
 import os
 import time
-from data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
-from analyzer import AStockAnalyzer, HKStockAnalyzer, USStockAnalyzer
-from visualizer import Visualizer
+from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
+from src.core.analyzer import AStockAnalyzer, HKStockAnalyzer, USStockAnalyzer
+from src.core.visualizer import Visualizer
 from src.utils.logger import setup_logger
 
 # 全局日志初始化
@@ -22,19 +22,19 @@ logger = setup_logger()
 MARKET_MAPPING = {
     "a": {
         "name": "A股",
-        "config_path": "./config/a_stock.yaml",
+        "config_path": "./config/stocks/a_stock.yaml",
         "fetcher_class": AStockDataFetcher,
         "analyzer_class": AStockAnalyzer
     },
     "hk": {
         "name": "港股",
-        "config_path": "./config/hk_stock.yaml",
+        "config_path": "./config/stocks/hk_stock.yaml",
         "fetcher_class": HKStockDataFetcher,
         "analyzer_class": HKStockAnalyzer
     },
     "us": {
         "name": "美股",
-        "config_path": "./config/us_stock.yaml",
+        "config_path": "./config/stocks/us_stock.yaml",
         "fetcher_class": USStockDataFetcher,
         "analyzer_class": USStockAnalyzer
     }
@@ -202,7 +202,7 @@ def run_screener(args, strategy_ids: list[str] | None = None):
     :param args: argparse 命名空间
     :param strategy_ids: 可选，指定要运行的策略 ID 列表
     """
-    from src.screener import StockScreener
+    from src.analysis.screening import StockScreener
 
     config_path = args.screen_config
     logger.info(f"========== 股票筛选系统启动，配置文件: {config_path}，策略: {strategy_ids} ==========")
@@ -292,7 +292,7 @@ def run_scrape(args):
     stype = args.scrape_type
     logger.info(f"========== 数据抓取任务启动：{stype} ==========")
 
-    from src.data.scraper import (
+    from src.data.scrapers import (
         AnnouncementScraper, HoldingsScraper, NewsScraper, ResearchScraper, run_all,
     )
 

@@ -1,12 +1,11 @@
 """
-src/utils/logger.py — 统一日志管理模块（修复单例问题）
+src/utils/logger.py — 统一日志管理模块
 
-修复说明：
-  原 logger.py 每次调用 setup_logger() 都以当前秒命名新日志文件，
-  在一个进程内多次调用时会创建冗余 handler 和文件。
-  本版本用模块级字典管理已初始化的 Logger，确保全进程单例。
+使用 TimedRotatingFileHandler 按天轮转，保留30天日志。
+修复：原版每次进程启动创建独立文件，500个文件累积到17MB。
 """
 import logging
+import logging.handlers
 import os
 import sys
 from datetime import datetime
@@ -14,8 +13,8 @@ from datetime import datetime
 # 模块级单例存储：logger_name -> Logger 实例
 _loggers: dict[str, logging.Logger] = {}
 
-# 进程级别的日志文件名（进程启动时固定，不随调用时间变化）
-_LOG_SESSION_TIME = datetime.now().strftime("%Y%m%d_%H%M%S")
+# 日志保留天数
+_LOG_RETENTION_DAYS = 30
 
 
 def setup_logger(
@@ -27,9 +26,12 @@ def setup_logger(
     """
     获取或创建具名 Logger（进程级单例，多次调用返回同一实例）。
 
+    日志文件按天轮转（stock_analyzer.log.YYYY-MM-DD），
+    自动保留最近 _LOG_RETENTION_DAYS 天。
+
     Args:
         name: Logger 名称，同名调用返回已有实例
-        log_dir: 日志文件存放目录（相对路径以 cwd 为基准）
+        log_dir: 日志文件存放目录
         console_level: 控制台输出级别（默认 INFO）
         file_level: 文件输出级别（默认 DEBUG）
 
@@ -44,7 +46,7 @@ def setup_logger(
 
     logger = logging.getLogger(name)
 
-    # 防止重复添加 handler（跨模块重复调用时的额外保护）
+    # 防止重复添加 handler
     if logger.handlers:
         _loggers[name] = logger
         return logger
@@ -60,13 +62,19 @@ def setup_logger(
     )
     console_handler.setFormatter(console_fmt)
 
-    # ── 文件 handler（使用进程启动时间，不随每次调用变化）──
+    # ── 文件 handler：按天轮转，保留30天 ──
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"{name}_{_LOG_SESSION_TIME}.log")
-    file_handler = logging.FileHandler(log_file, encoding="utf-8")
+    base_filename = os.path.join(log_dir, "stock_analyzer.log")
+    file_handler = logging.handlers.TimedRotatingFileHandler(
+        base_filename,
+        when="midnight",
+        interval=1,
+        backupCount=_LOG_RETENTION_DAYS,
+        encoding="utf-8",
+    )
     file_handler.setLevel(file_level)
     file_fmt = logging.Formatter(
-        "[%(asctime)s] %(levelname)-7s [%(filename)s:%(lineno)d] %(message)s",
+        "[%(asctime)s] %(levelname)-7s [%(name)s] [%(filename)s:%(lineno)d] %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S"
     )
     file_handler.setFormatter(file_fmt)
@@ -77,7 +85,7 @@ def setup_logger(
     # 缓存单例
     _loggers[name] = logger
 
-    logger.info(f"日志初始化完成 → {log_file}")
+    logger.debug(f"日志模块初始化: {name}")
     return logger
 
 

@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.automation.alert import AlertStateStore, ConsoleChannel
 from src.automation.monitor.earnings_monitor import EarningsMonitor
-from src.data.fetcher.earnings_fetcher import COLUMNS
+from src.data.providers.earnings_fetcher import COLUMNS
 
 
 def _make_row(code, name, market, event_type, days_from_today, period="2024-12-31", extra=""):
@@ -170,7 +170,7 @@ class TestEarningsMonitor:
 # EarningsFetcher 辅助函数测试
 # ========================
 
-from src.data.fetcher.earnings_fetcher import _parse_ashare_df, _recent_quarter_codes
+from src.data.providers.earnings_fetcher import _parse_ashare_df, _recent_quarter_codes
 
 
 @pytest.mark.unit

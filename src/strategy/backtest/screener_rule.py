@@ -6,7 +6,7 @@ src/strategy/backtest/screener_rule.py — 桥接筛选器条件的策略
 import backtrader as bt
 import pandas as pd
 from src.strategy.backtest.base_strategy import BaseStrategy
-from src.screener.conditions import CONDITION_REGISTRY, BaseCondition
+from src.analysis.screening.conditions import CONDITION_REGISTRY, BaseCondition
 from src.utils.logger import get_logger
 
 logger = get_logger("backtest_screener_rule")
@@ -43,7 +43,7 @@ class ScreenerRuleStrategy(BaseStrategy):
 
     def _init_conditions(self, configs: list[dict]) -> list[BaseCondition]:
         objs = []
-        from src.screener.config_schema import _PARAM_MAP
+        from src.analysis.screening.config_schema import _PARAM_MAP
         for cfg in configs:
             ctype = cfg.get("type")
             if ctype in CONDITION_REGISTRY:

@@ -10,7 +10,7 @@ import pytest
 # 将项目根目录加入 sys.path 以支持根级模块导入
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from analyzer import BaseAnalyzer
+from src.core.analyzer import BaseAnalyzer
 
 
 class ConcreteAnalyzer(BaseAnalyzer):
@@ -218,7 +218,7 @@ class TestInternationalAnalyzer:
 
     def test_international_analyzer_hk(self):
         """港股 analyzer 应正确映射英文指标并返回结果"""
-        from analyzer import InternationalStockAnalyzer
+        from src.core.analyzer import InternationalStockAnalyzer
 
         # 模拟 akshare 东方财富返回的港股财务数据
         dates = pd.to_datetime(["2024-06-30", "2023-12-31", "2022-12-31", "2021-12-31"])
@@ -242,7 +242,7 @@ class TestInternationalAnalyzer:
 
     def test_international_analyzer_us(self):
         """美股 analyzer 应以 market_name 区分日志，功能与港股一致"""
-        from analyzer import InternationalStockAnalyzer
+        from src.core.analyzer import InternationalStockAnalyzer
 
         dates = pd.to_datetime(["2024-09-30", "2023-09-30", "2022-09-30", "2021-09-30"])
         raw_fin = pd.DataFrame({

@@ -10,7 +10,6 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
 
 import requests
 
@@ -75,7 +74,7 @@ class AlertChannel(ABC):
     # 最大重试次数（含首次）
     max_retries: int = 3
 
-    def __init__(self, config: Optional[dict] = None):
+    def __init__(self, config: dict | None = None):
         """
         Args:
             config: 通道配置字典（从 alerts.yaml 传入），各通道按需解析
@@ -111,7 +110,7 @@ class AlertChannel(ABC):
 
     def _send_with_retry(self, event: AlertEvent) -> bool:
         """内部重试封装：子类不需关心重试细节"""
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 return self._send_impl(event)
@@ -136,7 +135,7 @@ class AlertChannel(ABC):
     # ── 公共工具 ──
 
     @staticmethod
-    def _resolve_secret(cfg_value: Optional[str], env_var: str) -> str:
+    def _resolve_secret(cfg_value: str | None, env_var: str) -> str:
         """
         敏感字段取值顺序：环境变量 > YAML 配置。
 

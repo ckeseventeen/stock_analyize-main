@@ -11,8 +11,8 @@ from __future__ import annotations
 import hashlib
 import json
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 import requests
@@ -52,7 +52,7 @@ class BaseScraper(ABC):
         self,
         cache_dir: str = ".cache/scraper",
         cache_ttl_hours: int = 1,
-        seen_path: Optional[str | Path] = None,
+        seen_path: str | Path | None = None,
     ):
         """
         Args:
@@ -117,7 +117,7 @@ class BaseScraper(ABC):
         if not self._seen_path.exists():
             return set()
         try:
-            with open(self._seen_path, "r", encoding="utf-8") as f:
+            with open(self._seen_path, encoding="utf-8") as f:
                 return set(json.load(f))
         except Exception:
             return set()
@@ -132,7 +132,7 @@ class BaseScraper(ABC):
     # ------------------------------------------------------------------ #
     # CSV 落盘
     # ------------------------------------------------------------------ #
-    def save_csv(self, df: pd.DataFrame, output_dir: str | Path) -> Optional[Path]:
+    def save_csv(self, df: pd.DataFrame, output_dir: str | Path) -> Path | None:
         """保存到 output/scraper/{name}_{YYYYMMDD}.csv，返回路径"""
         if df is None or df.empty:
             return None
@@ -176,7 +176,7 @@ class BaseScraper(ABC):
 
         # 拼接文本便于一次正则匹配
         combined = df[text_cols].astype(str).agg(" ".join, axis=1).str.lower()
-        lower_keywords = [k.lower() for k in keywords if k]
+        [k.lower() for k in keywords if k]
 
         # 记录每行命中的关键词
         def _match(text: str) -> str:
@@ -192,14 +192,14 @@ class BaseScraper(ABC):
         """为 DataFrame 注入 'name' 列（基于 'code' 列）"""
         if df is None or df.empty or "code" not in df.columns:
             return df
-        
+
         resolver = StockNameResolver()
         df = df.copy()
-        
+
         # 如果列中已经有非空的 name，则不覆盖；否则尝试填充
         if "name" not in df.columns:
             df.insert(1, "name", "") # 插在 code 后面
-        
+
         def _get_name(row):
             current = str(row.get("name", "")).strip()
             if current and current != row["code"]:

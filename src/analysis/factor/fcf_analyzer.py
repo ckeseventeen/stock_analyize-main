@@ -1,5 +1,6 @@
 import pandas as pd
 
+
 class FCFAnalyzer:
     """
     FCF (Free Cash Flow) 分析计算与评分逻辑
@@ -46,7 +47,7 @@ class FCFAnalyzer:
         fcf = latest['fcf']
         net_profit = latest['net_profit']
         fcf_margin = latest['fcf_margin']
-        
+
         # 1. FCF 绝对值水平 (20)
         score_absolute = 20 if fcf > 0 else 0
 
@@ -95,7 +96,7 @@ class FCFAnalyzer:
             fcf_yield = (fcf / self.market_cap) * 100
         else:
             fcf_yield = 0.0
-            
+
         if fcf_yield >= 5:
             score_yield = 20
         elif fcf_yield >= 3:

@@ -11,7 +11,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import pandas as pd
 
@@ -43,10 +42,10 @@ class EarningsMonitor(BaseMonitor):
         self,
         config: dict,
         channels,
-        state_store: Optional[AlertStateStore] = None,
+        state_store: AlertStateStore | None = None,
         cooldown_hours: int = 72,
         output_dir: str = "./output",
-        fetcher: Optional[EarningsFetcher] = None,
+        fetcher: EarningsFetcher | None = None,
     ):
         super().__init__(channels, state_store, cooldown_hours, output_dir)
         self.config = config or {}

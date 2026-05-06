@@ -2,21 +2,23 @@
 src/utils/name_resolver.py — 股票代码与名称互转工具
 """
 from __future__ import annotations
-import yaml
+
 from pathlib import Path
-from typing import Dict
+
+import yaml
+
 
 class StockNameResolver:
     """
     单例模式：解析本地 config/*.yaml，提供 code -> name 映射。
     """
     _instance = None
-    _mapping: Dict[str, str] = {}  # "market:code" -> "name"
+    _mapping: dict[str, str] = {}  # "market:code" -> "name"
     _loaded = False
 
     def __new__(cls, *args, **kwargs):
         if not cls._instance:
-            cls._instance = super(StockNameResolver, cls).__new__(cls)
+            cls._instance = super().__new__(cls)
         return cls._instance
 
     def __init__(self, config_dir: Path | str | None = None):
@@ -56,15 +58,15 @@ class StockNameResolver:
         code_s = str(code).strip()
         # 降级尝试：600519.SH -> 600519
         pure_code = code_s.split('.')[0]
-        
+
         # 尝试市场前缀匹配
         name = self._mapping.get(f"{market}:{code_s}") or self._mapping.get(f"{market}:{pure_code}")
         if name:
             return name
-        
+
         # 尝试全量匹配（不看市场）
         for k, v in self._mapping.items():
             if k.endswith(f":{code_s}") or k.endswith(f":{pure_code}"):
                 return v
-        
+
         return code_s

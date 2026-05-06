@@ -10,7 +10,7 @@ src/data/scraper/holdings_scraper.py — 股东/机构持仓变动抓取器
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -73,7 +73,7 @@ class HoldingsScraper(BaseScraper):
         merged = pd.concat(all_frames, ignore_index=True)
         # 注入名称
         merged = self._inject_names(merged)
-        
+
         # 添加 key 列（用于 fetch_new）
         merged["key"] = (
             merged.get("code", "").astype(str)
@@ -84,7 +84,7 @@ class HoldingsScraper(BaseScraper):
         )
         return merged
 
-    def _fetch_reduction_notices(self) -> Optional[pd.DataFrame]:
+    def _fetch_reduction_notices(self) -> pd.DataFrame | None:
         """从公告中提取近期增减持事件"""
         from src.data.scrapers.announcement_scraper import AnnouncementScraper
         # 抓取最近 30 天关于增减持的公告
@@ -92,7 +92,7 @@ class HoldingsScraper(BaseScraper):
         df = s.fetch()
         if df is None or df.empty:
             return pd.DataFrame()
-        
+
         # 转换为 holdings 格式
         return pd.DataFrame({
             "time": df["time"],
@@ -103,7 +103,7 @@ class HoldingsScraper(BaseScraper):
             "source": "官方披露",
         })
 
-    def _fetch_northbound(self) -> Optional[pd.DataFrame]:
+    def _fetch_northbound(self) -> pd.DataFrame | None:
         """北向资金持仓（全市场，按 watchlist 过滤）"""
         cache_key = f"northbound_{pd.Timestamp.now():%Y%m%d}"
 
@@ -133,7 +133,7 @@ class HoldingsScraper(BaseScraper):
 
         return self._cache.get_or_fetch(cache_key, _fetch, ttl_hours=self._ttl)
 
-    def _fetch_top10(self, code: str) -> Optional[pd.DataFrame]:
+    def _fetch_top10(self, code: str) -> pd.DataFrame | None:
         """个股十大流通股东"""
         cache_key = f"top10_{code}_{pd.Timestamp.now():%Y%m}"
 

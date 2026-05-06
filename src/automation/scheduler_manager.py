@@ -18,7 +18,6 @@ src/automation/scheduler_manager.py — 进程级单例调度器管理
 from __future__ import annotations
 
 import threading
-import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path

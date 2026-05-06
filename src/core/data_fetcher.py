@@ -1,8 +1,10 @@
+from abc import ABC, abstractmethod
+
 import akshare as ak
 import pandas as pd
-from abc import ABC, abstractmethod
-from src.utils.logger import setup_logger
+
 from src.data.providers.baostock_provider import BaostockProvider
+from src.utils.logger import setup_logger
 
 # 全局日志初始化
 logger = setup_logger()
@@ -348,7 +350,7 @@ class AkshareDataFetcher(BaseDataFetcher):
             import yfinance as yf
             ticker = yf.Ticker(yf_symbol)
             info = ticker.info or {}
-            
+
             # 策略：优先取 trailingEps，若无则尝试用 regularMarketPrice / trailingPE 反推
             eps = float(info.get('trailingEps', 0) or 0)
             if eps <= 0:
@@ -356,7 +358,7 @@ class AkshareDataFetcher(BaseDataFetcher):
                 pe = float(info.get('trailingPE', 0) or 0)
                 if price > 0 and pe > 0:
                     eps = price / pe
-            
+
             # 若仍无 EPS，尝试从已抓取的财务摘要中获取最新一期 BASIC_EPS
             if eps <= 0:
                 fin_df = self.get_financial_abstract(code)

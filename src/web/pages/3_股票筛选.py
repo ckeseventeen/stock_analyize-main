@@ -22,7 +22,6 @@ import streamlit as st  # noqa: E402
 from src.web.utils import (  # noqa: E402
     PATH_SCREEN,
     df_to_csv_bytes,
-    load_yaml,
     quick_add_stock_widget,
 )
 
@@ -110,6 +109,7 @@ if not config_path.exists():
 
 # 策略选择
 from src.analysis.screening.config_schema import list_strategies
+
 available_strategies = list_strategies(str(config_path))
 
 if not available_strategies:
@@ -131,6 +131,7 @@ if not selected_ids:
 
 # 加载预览用的配置
 from src.analysis.screening.config_schema import parse_screen_config
+
 conditions, output_cfg = parse_screen_config(str(config_path), strategy_ids=selected_ids)
 
 # 关键信息摘要

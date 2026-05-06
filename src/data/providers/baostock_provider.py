@@ -16,9 +16,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Optional
 
 import baostock as bs
 import pandas as pd
@@ -101,7 +99,7 @@ class BaostockProvider:
     def __init__(self):
         self._logged_in = False
 
-    def login(self) -> "BaostockProvider":
+    def login(self) -> BaostockProvider:
         """登录 Baostock 服务器（线程安全）。"""
         if not self._logged_in:
             with _bs_lock:
@@ -121,7 +119,7 @@ class BaostockProvider:
             self._logged_in = False
             logger.debug("Baostock 登出成功")
 
-    def __enter__(self) -> "BaostockProvider":
+    def __enter__(self) -> BaostockProvider:
         return self.login()
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> bool:
@@ -139,8 +137,8 @@ class BaostockProvider:
         frequency: str = "d",
         adjust: str = "2",
         fields: str | None = None,
-        start_date: Optional[str] = None,
-        end_date: Optional[str] = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
     ) -> pd.DataFrame:
         """
         获取 K 线数据（含估值指标）。
@@ -200,7 +198,7 @@ class BaostockProvider:
     # 全市场股票列表
     # ========================
 
-    def get_all_stocks(self, date: Optional[str] = None) -> pd.DataFrame:
+    def get_all_stocks(self, date: str | None = None) -> pd.DataFrame:
         """
         获取指定日期全市场股票列表。
 
@@ -327,7 +325,7 @@ class BaostockProvider:
                 quarter = 3
 
         # 尝试当前季度，失败则向前回退
-        for attempt in range(4):
+        for _attempt in range(4):
             try:
                 with _bs_lock:
                     rs = bs.query_profit_data(code=bs_code, year=year, quarter=quarter)
@@ -381,7 +379,7 @@ class BaostockProvider:
 
         # 1. 当年最新已披露季度（非 Q4）
         if current_quarter != 4:
-            for attempt in range(3):
+            for _attempt in range(3):
                 try:
                     with _bs_lock:
                         rs = bs.query_profit_data(code=bs_code, year=current_year, quarter=current_quarter)

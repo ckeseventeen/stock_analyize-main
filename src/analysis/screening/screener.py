@@ -128,7 +128,7 @@ class StockScreener:
                         stock_scope: set[str] | None = None) -> pd.DataFrame:
         """
         从配置文件加载条件并运行完整筛选。
-        
+
         Args:
             config_path: YAML路径
             strategy_ids: 可选，指定要运行的策略 ID 列表

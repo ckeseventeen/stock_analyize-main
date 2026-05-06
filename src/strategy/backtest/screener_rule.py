@@ -3,10 +3,10 @@ src/strategy/backtest/screener_rule.py — 桥接筛选器条件的策略
 
 允许将 screen_config.yaml 中的筛选条件直接作为回测信号。
 """
-import backtrader as bt
 import pandas as pd
-from src.strategy.backtest.base_strategy import BaseStrategy
+
 from src.analysis.screening.conditions import CONDITION_REGISTRY, BaseCondition
+from src.strategy.backtest.base_strategy import BaseStrategy
 from src.utils.logger import get_logger
 
 logger = get_logger("backtest_screener_rule")
@@ -33,12 +33,12 @@ class ScreenerRuleStrategy(BaseStrategy):
     def __init__(self):
         self._buy_objs = self._init_conditions(self.params.buy_conditions)
         self._sell_objs = self._init_conditions(self.params.sell_conditions)
-        
+
         # 预计算整个数据集的信号（为了性能，避免在 next() 里反复切片 DataFrame）
         # 警告：在大数据集上可能耗时，但比在 next() 里逐 bar 构造 DataFrame 快
         self._buy_signals = self._precompute_signals(self._buy_objs, self.params.buy_logic)
         self._sell_signals = self._precompute_signals(self._sell_objs, self.params.sell_logic)
-        
+
         self._bar_idx = 0
 
     def _init_conditions(self, configs: list[dict]) -> list[BaseCondition]:
@@ -62,7 +62,7 @@ class ScreenerRuleStrategy(BaseStrategy):
     def _precompute_signals(self, condition_objs: list[BaseCondition], logic: str) -> list[bool]:
         if not condition_objs:
             return [False] * len(self.data)
-        
+
         # 将 Backtrader 数据馈送转回 DataFrame 供筛选器组件使用
         # 仅取必要列
         df = pd.DataFrame({
@@ -72,17 +72,17 @@ class ScreenerRuleStrategy(BaseStrategy):
             "close": self.data.close.array,
             "volume": self.data.volume.array,
         })
-        
+
         signals = []
         total = len(df)
-        
+
         # 逐 bar 预计算
         for i in range(total):
             bar_spot = df.iloc[i]
             # 筛选器条件通常需要一段历史。我们提供到当前 bar 为止的所有数据。
             # 注意：这保证了不会“偷看”未来数据，因为 iloc[:i+1] 只含当前及之前。
             bar_history = df.iloc[:i+1]
-            
+
             cond_results = []
             for obj in condition_objs:
                 try:
@@ -90,26 +90,27 @@ class ScreenerRuleStrategy(BaseStrategy):
                     cond_results.append(res)
                 except Exception:
                     cond_results.append(False)
-            
+
             if logic == "all":
                 signals.append(all(cond_results) if cond_results else False)
             else:
                 signals.append(any(cond_results) if cond_results else False)
-        
+
         return signals
 
     def next(self):
         if self._bar_idx >= len(self._buy_signals):
             return
-            
+
         buy_sig = self._buy_signals[self._bar_idx]
         sell_sig = self._sell_signals[self._bar_idx]
         self._bar_idx += 1
-        
+
         if not self.position:
             if buy_sig:
                 price = self.data.close[0]
-                if price <= 0: return
+                if price <= 0:
+                    return
                 size = int(self.broker.getcash() * self.params.position_size / price)
                 if size > 0:
                     self.buy(size=size)

@@ -16,7 +16,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from src.automation.alert import AlertStateStore, ConsoleChannel
 from src.automation.monitor.price_monitor import PriceMonitor, _RuleEvaluator
 
-
 # ========================
 # 规则求值器测试
 # ========================

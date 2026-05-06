@@ -7,7 +7,7 @@ src/data/scraper/research_scraper.py — 券商研报与机构评级抓取器
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -64,11 +64,11 @@ class ResearchScraper(BaseScraper):
             merged = merged[mask]
 
         merged = merged.drop_duplicates(subset=["title"])
-        
+
         # 按日期倒序
         if "date" in merged.columns:
             merged = merged.sort_values("date", ascending=False, na_position="last").reset_index(drop=True)
-        
+
         # 注入名称
         merged = self._inject_names(merged)
         return merged
@@ -82,7 +82,7 @@ class ResearchScraper(BaseScraper):
                 df = ak.stock_research_report_em(symbol=code)
                 if df is None or df.empty:
                     return pd.DataFrame()
-                
+
                 # 基础信息映射
                 out = pd.DataFrame({
                     "date": pd.to_datetime(df.get("报告日期", df.get("日期")), errors="coerce"),
@@ -93,7 +93,7 @@ class ResearchScraper(BaseScraper):
                     "institution": df.get("机构名称", df.get("机构", "")),
                     "url": df.get("报告链接", ""),
                 })
-                
+
                 # 动态加入盈利预测列（用户关心的字段补全）
                 for col in df.columns:
                     if "盈利预测" in col:

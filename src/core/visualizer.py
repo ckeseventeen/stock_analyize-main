@@ -1,8 +1,9 @@
 # 注意：matplotlib 字体和后端配置已在 main.py 入口处统一设置，此处不再重复
-import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+
 from src.utils.logger import setup_logger
 
 logger = setup_logger()
@@ -72,8 +73,8 @@ class Visualizer:
         np_vals = (net_profit / 1e8).tolist() if not net_profit.empty else [0] * len(years)
         gm_vals = (gross_margin * 100).tolist() if not gross_margin.empty else []
 
-        bars1 = ax.bar(x - width / 2, rev_vals, width, label='营业总收入(亿元)', color='#7BA3CC', alpha=0.85)
-        bars2 = ax.bar(x + width / 2, np_vals, width, label='归母净利润(亿元)', color='#A8D8A8', alpha=0.85)
+        ax.bar(x - width / 2, rev_vals, width, label='营业总收入(亿元)', color='#7BA3CC', alpha=0.85)
+        ax.bar(x + width / 2, np_vals, width, label='归母净利润(亿元)', color='#A8D8A8', alpha=0.85)
 
         ax.set_ylabel('金额 (亿元)', fontsize=11)
         ax.set_xticks(x)
@@ -164,7 +165,7 @@ class Visualizer:
             ax.text(0.5, 0.92, f'⚠ {self.val_name}区间偏低，当前{self.val_name}={self.current_val:.1f}，建议调整配置',
                     ha='center', va='top', fontsize=9, color='#CC0000', style='italic',
                     transform=ax.transAxes,
-                    bbox=dict(boxstyle='round,pad=0.3', facecolor='#FFF3CD', alpha=0.9))
+                    bbox={"boxstyle": 'round,pad=0.3', "facecolor": '#FFF3CD', "alpha": 0.9})
 
     def _plot_summary_table(self, ax):
         """右下：核心指标综合总览表格"""

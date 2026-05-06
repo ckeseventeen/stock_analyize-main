@@ -42,9 +42,9 @@ class MACDDivergenceDetector:
         self._details: dict = {}
 
     def detect_bottom_divergence(
-        self, 
-        lookback_bars: int = 60, 
-        order: int = 5, 
+        self,
+        lookback_bars: int = 60,
+        order: int = 5,
         max_bars_since_trough: int | None = None,
         zero_axis_filter: bool = False,
         multi_level_check: bool = False
@@ -75,7 +75,7 @@ class MACDDivergenceDetector:
 
         # 多级检测：尝试多种 order 敏感度
         orders_to_try = [1, 2, 3] if multi_level_check else [order]
-        
+
         for cur_order in orders_to_try:
             # 找价格局部最低点
             price_troughs = self._find_troughs(price, order=cur_order)
@@ -94,7 +94,7 @@ class MACDDivergenceDetector:
             # 两个低点间距需 >= _MIN_TROUGH_DISTANCE
             if t2_idx - t1_idx < _MIN_TROUGH_DISTANCE:
                 continue
-                
+
             # 零轴过滤：两次低点之间，MACD柱必须要穿过零轴（即存在正的柱子）
             if zero_axis_filter:
                 if np.max(macd_hist[t1_idx:t2_idx+1]) <= 0:

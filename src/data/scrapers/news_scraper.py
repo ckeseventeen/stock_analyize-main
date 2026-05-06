@@ -9,7 +9,7 @@ src/data/scraper/news_scraper.py — 财经新闻抓取器
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -91,7 +91,7 @@ class NewsScraper(BaseScraper):
         # 按时间倒序
         if "time" in merged.columns:
             merged = merged.sort_values("time", ascending=False, na_position="last").reset_index(drop=True)
-        
+
         # 注入名称
         merged = self._inject_names(merged)
         return merged

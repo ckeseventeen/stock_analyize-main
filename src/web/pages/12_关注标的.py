@@ -21,16 +21,12 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.web.utils import (  # noqa: E402
-    MARKET_LABELS,
     MARKET_CONFIG_PATHS,
-    PATH_A_STOCK,
-    PATH_HK_STOCK,
-    PATH_US_STOCK,
+    MARKET_LABELS,
     add_category_to_market,
     add_stock_to_market,
     list_market_categories,
     list_stocks_from_market_config,
-    load_yaml,
     move_stock_category,
     remove_category_from_market,
     remove_stock_from_market,
@@ -233,7 +229,7 @@ with tab_list:
     if ind_filter != "全部行业":
         filtered = [s for s in filtered if s.get("industry", "") == ind_filter]
 
-    st.markdown(f"**共 {len(filtered)} 只标的**" + (f"（搜索/筛选后）" if len(filtered) != len(stocks) else ""))
+    st.markdown(f"**共 {len(filtered)} 只标的**" + ("（搜索/筛选后）" if len(filtered) != len(stocks) else ""))
 
     if filtered:
         df = pd.DataFrame([{

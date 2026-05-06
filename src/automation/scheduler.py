@@ -166,8 +166,8 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
     screen_config = job_cfg.get("screen_config", "./config/screen_config.yaml")
 
     def _run():
-        from src.automation.alert import build_channels
         from src.analysis.screening.screener import StockScreener
+        from src.automation.alert import build_channels
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         channels = build_channels(alerts_cfg)

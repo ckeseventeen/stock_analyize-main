@@ -103,7 +103,7 @@ SPOT_ONLY_TYPES = {
 def list_strategies(config_path: str) -> dict[str, str]:
     """
     列出配置文件中所有的策略 ID 与 名称。
-    
+
     Returns:
         { "strategy_id": "策略显示名称", ... }
     """
@@ -119,7 +119,7 @@ def list_strategies(config_path: str) -> dict[str, str]:
         if "screen" in config:
             return {"default": "默认策略"}
         return {}
-    
+
     return {sid: cfg.get("name", sid) for sid, cfg in strategies_cfg.items()}
 
 
@@ -169,7 +169,7 @@ def parse_screen_config(config_path: str, strategy_ids: list[str] | None = None)
 
     # 获取所有策略配置
     strategies_cfg = config.get("strategies", {})
-    
+
     # 兼容性处理：如果没用新格式，尝试读取旧的 "screen" key
     if not strategies_cfg and "screen" in config:
         strategies_cfg = {"default": config["screen"]}
@@ -190,11 +190,11 @@ def parse_screen_config(config_path: str, strategy_ids: list[str] | None = None)
         if sid not in strategies_cfg:
             logger.warning(f"跳过不存在的策略: {sid}")
             continue
-            
+
         s_cfg = strategies_cfg[sid]
         conditions_config = s_cfg.get("conditions", [])
         output_config = s_cfg.get("output", {})
-        
+
         # 记录最后一个选中的输出配置作为最终配置（也可按需合并）
         final_output_config.update(output_config)
 

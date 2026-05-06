@@ -9,7 +9,6 @@ tests/test_alert.py — 告警通道与去重单元测试
 """
 from __future__ import annotations
 
-import json
 import os
 import sys
 from pathlib import Path
@@ -30,7 +29,6 @@ from src.automation.alert import (
     build_channels,
     dispatch,
 )
-
 
 # ========================
 # 夹具

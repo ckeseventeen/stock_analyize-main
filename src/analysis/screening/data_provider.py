@@ -22,7 +22,6 @@ import pandas as pd
 
 from src.data.providers.baostock_provider import BaostockProvider
 from src.data.providers.cache_manager import CacheManager
-from src.utils.exception_handler import retry
 from src.utils.logger import get_logger
 
 logger = get_logger("screener_data")
@@ -101,13 +100,13 @@ class ScreenerDataProvider:
         """
         获取全A股行情数据（约5000只）
 
-        优先级：akshare (一次拉完，含 总市值/PE/PB) → 
+        优先级：akshare (一次拉完，含 总市值/PE/PB) →
                 akshare 备用API (stock_zh_a_spot) →
                 Baostock (逐只拉 K 线，无总市值)
 
         akshare 有多个行情 API 端点，如果一个挂了可用另一个兜底，
         避免降级到慢 ~100 倍的 Baostock per-stock 查询。
-        
+
         返回列包含：代码, 名称, 最新价, 总市值, 市盈率-动态, 市净率, 换手率, 涨跌幅 等。
         """
 
@@ -160,7 +159,7 @@ class ScreenerDataProvider:
 
                             try:
                                 close = float(latest.get("close", 0) or 0)
-                                preclose = close / (1 + float(latest.get("pctChg", 0) or 0) / 100) if float(latest.get("pctChg", 0) or 0) != 0 else close
+                                close / (1 + float(latest.get("pctChg", 0) or 0) / 100) if float(latest.get("pctChg", 0) or 0) != 0 else close
                                 pct_chg = float(latest.get("pctChg", 0) or 0)
                             except (ValueError, TypeError, ZeroDivisionError):
                                 pct_chg = 0.0
@@ -395,7 +394,7 @@ class ScreenerDataProvider:
         """
         end_date = pd.Timestamp.now().strftime("%Y%m%d")
         start_date = (pd.Timestamp.now() - pd.Timedelta(days=days_back)).strftime("%Y%m%d")
-        ak_period = {"d": "daily", "w": "weekly", "m": "monthly"}.get(frequency, "daily")
+        {"d": "daily", "w": "weekly", "m": "monthly"}.get(frequency, "daily")
         try:
             if frequency == "d":
                 df = ak.stock_zh_a_hist(
@@ -457,7 +456,7 @@ class ScreenerDataProvider:
         # 2. 尝试 Eastmoney
         try:
             # akshare 港股接口：stock_hk_hist
-            df = ak.stock_hk_hist(symbol=code, period=ak_period, 
+            df = ak.stock_hk_hist(symbol=code, period=ak_period,
                                   start_date=start_date, end_date=end_date, adjust="qfq")
             if df is not None and not df.empty:
                 # 转换列名以匹配 A 股统一格式
@@ -507,7 +506,7 @@ class ScreenerDataProvider:
         # 2. 尝试 Eastmoney (需要市场前缀：105=纳斯达克, 106=纽交所, 107=美交所)
         for prefix in ["105.", "106.", "107.", ""]:
             try:
-                df = ak.stock_us_hist(symbol=f"{prefix}{code}", period=ak_period, 
+                df = ak.stock_us_hist(symbol=f"{prefix}{code}", period=ak_period,
                                       start_date=start_date, end_date=end_date, adjust="qfq")
                 if df is not None and not df.empty:
                     df.rename(columns={"日期": "日期", "开盘": "开盘", "最高": "最高",
@@ -551,7 +550,7 @@ class ScreenerDataProvider:
         for suffix in (".HK", ".US", ".SS", ".SZ"):
             if code.endswith(suffix):
                 code = code[:-len(suffix)]
-        
+
         if market == "hk":
             return self._fetch_k_hk_akshare(code, days_back, frequency)
         if market == "us":
@@ -593,12 +592,12 @@ class ScreenerDataProvider:
                          prefer: str = "akshare", market: str = "a") -> pd.DataFrame:
         """获取年线数据（通过月线重采样）"""
         cache_key = f"yearly_{market}_{code}_{days_back}"
-        
+
         def _fetch_yearly():
             m_df = self._fetch_k(code, days_back, "m", prefer=prefer, market=market)
             if m_df is None or m_df.empty:
                 return pd.DataFrame()
-            
+
             # 重采样逻辑
             m_df["日期"] = pd.to_datetime(m_df["日期"])
             m_df.set_index("日期", inplace=True)

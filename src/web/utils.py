@@ -365,7 +365,7 @@ def move_stock_category(market: str, code: str, new_category_key: str) -> tuple[
 
     # 找到并移除
     stock_entry = None
-    for cat_key, cat_data in cats.items():
+    for _cat_key, cat_data in cats.items():
         stocks = cat_data.get("stocks") or []
         for i, s in enumerate(stocks):
             if str(s.get("code", "")).strip() == code_str:

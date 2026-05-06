@@ -15,6 +15,7 @@ from __future__ import annotations
 # "Cannot create a GUI FigureManager outside the main thread"
 # ========================
 import os  # noqa: E402
+
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 import sys

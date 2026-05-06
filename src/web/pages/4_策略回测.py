@@ -14,6 +14,7 @@ from __future__ import annotations
 # matplotlib 后端必须在任何 matplotlib / backtrader 导入前设置为 Agg
 # 否则 Streamlit worker 线程调用 cerebro.plot() 会触发 MacOS GUI backend 异常
 import os  # noqa: E402
+
 os.environ["MPLBACKEND"] = "Agg"
 
 import sys
@@ -24,6 +25,7 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 import matplotlib  # noqa: E402
+
 matplotlib.use("Agg", force=True)
 matplotlib.rcParams["font.sans-serif"] = [
     "Hiragino Sans GB", "PingFang HK", "Heiti TC", "STHeiti",
@@ -32,7 +34,6 @@ matplotlib.rcParams["font.sans-serif"] = [
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 import backtrader as bt  # noqa: F401, E402
-import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 import yaml as _yaml  # noqa: E402
@@ -184,13 +185,16 @@ strategy_cls = STRATEGY_REGISTRY[strategy_key]
 # 如果是筛选器桥接策略，提供一键导入功能（使用统一的配置体系）
 if strategy_key == "screener_rule":
     import yaml as _yaml
+
+    from src.analysis.screening.config_schema import (
+        SPOT_ONLY_TYPES as _SPOT_ONLY,
+    )
     from src.analysis.screening.config_schema import (
         list_strategies,
         parse_backtest_from_strategy,
-        SPOT_ONLY_TYPES as _SPOT_ONLY,
     )
     from src.web.utils import PATH_SCREEN
-    
+
     screen_strats = list_strategies(str(PATH_SCREEN))
     if screen_strats:
         st.sidebar.markdown("---")
@@ -203,7 +207,7 @@ if strategy_key == "screener_rule":
             _bt_ready[sid] = bt_info.get("has_backtest", False)
 
         options = ["-- 手动输入 YAML --"] + list(screen_strats.keys())
-        
+
         def on_scheme_change():
             sel = st.session_state.get("_screener_scheme_sel")
             if sel and sel != "-- 手动输入 YAML --":
@@ -211,7 +215,7 @@ if strategy_key == "screener_rule":
                     bt_cfg = parse_backtest_from_strategy(str(PATH_SCREEN), sel)
                     buy_conds = bt_cfg.get("buy_conditions", [])
                     sell_conds = bt_cfg.get("sell_conditions", [])
-                    
+
                     st.session_state[f"param_{strategy_key}_buy_conditions"] = _yaml.safe_dump(
                         buy_conds, allow_unicode=True, sort_keys=False
                     )
@@ -236,7 +240,7 @@ if strategy_key == "screener_rule":
             return f"{'✅' if _bt_ready.get(x) else '⚠️'} {label}"
 
         st.sidebar.selectbox(
-            "选择筛选策略", 
+            "选择筛选策略",
             options=options,
             format_func=_format_strat,
             key="_screener_scheme_sel",
@@ -475,18 +479,18 @@ if run_btn:
             buy_dates, buy_prices = [], []
             sell_dates, sell_prices = [], []
             holding_intervals = []
-            
+
             last_buy_date = None
             current_pos = 0
-            
+
             # 按执行时间排序订单
             executed_orders = []
             for order in getattr(strat, "_orders", []):
                 if hasattr(order, "executed") and order.executed.size != 0:
                     executed_orders.append(order)
-            
+
             executed_orders.sort(key=lambda x: x.executed.dt)
-            
+
             for order in executed_orders:
                 exec_date = bt.num2date(order.executed.dt)
                 if order.executed.size > 0:
@@ -502,7 +506,7 @@ if run_btn:
                     if current_pos == 0 and last_buy_date:
                         holding_intervals.append((last_buy_date, exec_date))
                         last_buy_date = None
-            
+
             # 如果回测结束仍持仓
             if current_pos > 0 and last_buy_date:
                 holding_intervals.append((last_buy_date, k_df.index[-1]))
@@ -534,30 +538,30 @@ if run_btn:
             ta = TechnicalAnalyzer(k_df)
             ta.add_macd()
             m_df = ta.get_dataframe()
-            
+
             # 金叉死叉
             m_df["prev_macd"] = m_df["macd"].shift(1)
             m_df["prev_signal"] = m_df["macd_signal"].shift(1)
             golden_cross = (m_df["macd"] > m_df["macd_signal"]) & (m_df["prev_macd"] <= m_df["prev_signal"])
             death_cross = (m_df["macd"] < m_df["macd_signal"]) & (m_df["prev_macd"] >= m_df["prev_signal"])
-            
+
             # 背离检测 (基于 indicators.py 的简单实现)
             # 这里简单标记：如果当前是局部低点且MACD柱状图比前一个局部低点高，则标记底背离
-            from scipy.signal import argrelmin, argrelmax
-            
+            from scipy.signal import argrelmax, argrelmin
+
             def get_divergences(df):
                 price = df["close"].values
                 hist = df["macd_hist"].values
                 bottom_divs = []
                 top_divs = []
-                
+
                 # 寻找局部低点 (order=5)
                 troughs = argrelmin(price, order=5)[0]
                 for i in range(1, len(troughs)):
                     curr, prev = troughs[i], troughs[i-1]
                     if price[curr] < price[prev] and hist[curr] > hist[prev] and hist[curr] < 0 and hist[prev] < 0:
                         bottom_divs.append(df.index[curr])
-                
+
                 # 寻找局部高点
                 peaks = argrelmax(price, order=5)[0]
                 for i in range(1, len(peaks)):
@@ -572,17 +576,17 @@ if run_btn:
                 x=k_df.index,
                 open=k_df["open"], high=k_df["high"],
                 low=k_df["low"], close=k_df["close"],
-                increasing=dict(line=dict(color="#ef5350"), fillcolor="#ef5350"),
-                decreasing=dict(line=dict(color="#26a69a"), fillcolor="#26a69a"),
+                increasing={"line": {"color": "#ef5350"}, "fillcolor": "#ef5350"},
+                decreasing={"line": {"color": "#26a69a"}, "fillcolor": "#26a69a"},
                 name="K线走势",
             ), row=1, col=1)
 
             if show_ma:
                 fig.add_trace(go.Scatter(x=k_df.index, y=ma_fast,
-                                         line=dict(color="#FB8C00", width=1.8),
+                                         line={"color": "#FB8C00", "width": 1.8},
                                          name=ma_fast_name), row=1, col=1)
                 fig.add_trace(go.Scatter(x=k_df.index, y=ma_slow,
-                                         line=dict(color="#1E88E5", width=1.8),
+                                         line={"color": "#1E88E5", "width": 1.8},
                                          name=ma_slow_name), row=1, col=1)
 
             # --- 绘制持仓区间高亮 (Green blocks) ---
@@ -593,22 +597,22 @@ if run_btn:
                     layer="below", line_width=0,
                     row=1, col=1,
                     annotation_text="持仓期", annotation_position="top left",
-                    annotation_font=dict(size=10, color="rgba(76, 175, 80, 0.5)")
+                    annotation_font={"size": 10, "color": "rgba(76, 175, 80, 0.5)"}
                 )
 
             if buy_dates:
                 fig.add_trace(go.Scatter(
                     x=buy_dates, y=buy_prices, mode="markers",
-                    marker=dict(symbol="triangle-up", size=18, color="#D32F2F",
-                                line=dict(color="white", width=2)),
+                    marker={"symbol": "triangle-up", "size": 18, "color": "#D32F2F",
+                                "line": {"color": "white", "width": 2}},
                     name="买入信号 ▲",
                 ), row=1, col=1)
 
             if sell_dates:
                 fig.add_trace(go.Scatter(
                     x=sell_dates, y=sell_prices, mode="markers",
-                    marker=dict(symbol="triangle-down", size=18, color="#1976D2",
-                                line=dict(color="white", width=2)),
+                    marker={"symbol": "triangle-down", "size": 18, "color": "#1976D2",
+                                "line": {"color": "white", "width": 2}},
                     name="卖出信号 ▼",
                 ), row=1, col=1)
 
@@ -619,37 +623,37 @@ if run_btn:
                               row=2, col=1)
 
             # --- MACD 子图 ---
-            fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd"], line=dict(color="#2196F3", width=1.5), name="MACD"), row=3, col=1)
-            fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd_signal"], line=dict(color="#FF9800", width=1.5), name="Signal"), row=3, col=1)
-            
+            fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd"], line={"color": "#2196F3", "width": 1.5}, name="MACD"), row=3, col=1)
+            fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd_signal"], line={"color": "#FF9800", "width": 1.5}, name="Signal"), row=3, col=1)
+
             # MACD 柱状图颜色
             hist_colors = ["#ef5350" if h >= 0 else "#26a69a" for h in m_df["macd_hist"]]
             fig.add_trace(go.Bar(x=m_df.index, y=m_df["macd_hist"], marker_color=hist_colors, name="Hist", showlegend=False), row=3, col=1)
-            
+
             # 标记金叉死叉 (在 MACD 图上)
             gold_dates = m_df.index[golden_cross]
             death_dates = m_df.index[death_cross]
-            
+
             if not gold_dates.empty:
-                fig.add_trace(go.Scatter(x=gold_dates, y=m_df.loc[gold_dates, "macd"], mode="markers", 
-                                         marker=dict(symbol="circle", size=8, color="#D32F2F"), name="MACD 金叉"), row=3, col=1)
+                fig.add_trace(go.Scatter(x=gold_dates, y=m_df.loc[gold_dates, "macd"], mode="markers",
+                                         marker={"symbol": "circle", "size": 8, "color": "#D32F2F"}, name="MACD 金叉"), row=3, col=1)
             if not death_dates.empty:
-                fig.add_trace(go.Scatter(x=death_dates, y=m_df.loc[death_dates, "macd"], mode="markers", 
-                                         marker=dict(symbol="circle", size=8, color="#1976D2"), name="MACD 死叉"), row=3, col=1)
+                fig.add_trace(go.Scatter(x=death_dates, y=m_df.loc[death_dates, "macd"], mode="markers",
+                                         marker={"symbol": "circle", "size": 8, "color": "#1976D2"}, name="MACD 死叉"), row=3, col=1)
 
             # 标记背离 (在 K 线图上标记文字/图标)
             if bottom_div_dates:
                 fig.add_trace(go.Scatter(x=bottom_div_dates, y=m_df.loc[bottom_div_dates, "low"] * 0.98, mode="markers+text",
                                          text="底背离", textposition="bottom center",
-                                         marker=dict(symbol="star-triangle-up", size=12, color="#FF5722"), name="底背离"), row=1, col=1)
+                                         marker={"symbol": "star-triangle-up", "size": 12, "color": "#FF5722"}, name="底背离"), row=1, col=1)
             if top_div_dates:
                 fig.add_trace(go.Scatter(x=top_div_dates, y=m_df.loc[top_div_dates, "high"] * 1.02, mode="markers+text",
                                          text="顶背离", textposition="top center",
-                                         marker=dict(symbol="star-triangle-down", size=12, color="#9C27B0"), name="顶背离"), row=1, col=1)
+                                         marker={"symbol": "star-triangle-down", "size": 12, "color": "#9C27B0"}, name="顶背离"), row=1, col=1)
 
             fig.add_trace(go.Scatter(
                 x=k_df.index, y=benchmark,
-                line=dict(color="#616161", width=2, dash="dash"),
+                line={"color": "#616161", "width": 2, "dash": "dash"},
                 name="买入持有 (Benchmark)",
                 fill="tozeroy", fillcolor="rgba(0,0,0,0.05)",
             ), row=4, col=1)
@@ -662,32 +666,32 @@ if run_btn:
                           annotation_text=f"策略 ¥{final_v:,.0f}", row=4, col=1)
 
             fig.update_layout(
-                height=950, 
+                height=950,
                 template="plotly_white",
                 xaxis_rangeslider_visible=False,
-                legend=dict(
-                    orientation="h", 
-                    yanchor="bottom", y=1.02,
-                    xanchor="left", x=0,
-                    font=dict(size=14, color="white"),
-                    bgcolor="black",
-                    bordercolor="#555555", borderwidth=1
-                ),
-                margin=dict(l=20, r=20, t=60, b=50),
+                legend={
+                    "orientation": "h",
+                    "yanchor": "bottom", "y": 1.02,
+                    "xanchor": "left", "x": 0,
+                    "font": {"size": 14, "color": "white"},
+                    "bgcolor": "black",
+                    "bordercolor": "#555555", "borderwidth": 1
+                },
+                margin={"l": 20, "r": 20, "t": 60, "b": 50},
                 hovermode="x unified",
             )
-            
+
             # 统一网格线风格
-            grid_style = dict(gridcolor="#F0F0F0", zerolinecolor="#E0E0E0")
-            
+            grid_style = {"gridcolor": "#F0F0F0", "zerolinecolor": "#E0E0E0"}
+
             fig.update_yaxes(title_text="价格", row=1, col=1, **grid_style)
             fig.update_yaxes(title_text="成交量", row=2, col=1, **grid_style)
             fig.update_yaxes(title_text="MACD", row=3, col=1, **grid_style)
             fig.update_yaxes(title_text="资金 (¥)", row=4, col=1, **grid_style)
-            
+
             fig.update_xaxes(**grid_style)
             # 移除周末空隙（所有子图）
-            fig.update_xaxes(rangebreaks=[dict(bounds=["sat", "mon"])])
+            fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}])
 
             st.plotly_chart(fig, width='stretch')
 

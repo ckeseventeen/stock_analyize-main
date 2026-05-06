@@ -18,7 +18,6 @@ import json
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from src.utils.logger import get_logger
 
@@ -42,7 +41,7 @@ class AlertStateStore:
             store.mark_fired(event_key)
     """
 
-    def __init__(self, path: Optional[Path | str] = None):
+    def __init__(self, path: Path | str | None = None):
         """
         Args:
             path: 状态文件路径，None 使用默认 ./cache/alert_state.json
@@ -56,7 +55,7 @@ class AlertStateStore:
         if not self._path.exists():
             return {}
         try:
-            with open(self._path, "r", encoding="utf-8") as f:
+            with open(self._path, encoding="utf-8") as f:
                 data = json.load(f)
             if not isinstance(data, dict):
                 logger.warning(f"告警状态文件结构异常，重置: {self._path}")

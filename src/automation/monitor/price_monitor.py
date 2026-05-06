@@ -13,11 +13,10 @@ src/automation/monitor/price_monitor.py — 价格预警监控器
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 import pandas as pd
 
-from src.automation.alert import AlertChannel, AlertEvent, AlertStateStore
+from src.automation.alert import AlertEvent, AlertStateStore
 from src.automation.monitor.base import BaseMonitor
 from src.utils.logger import get_logger
 
@@ -38,9 +37,9 @@ class _RuleEvaluator:
     def evaluate(
         rule: dict,
         price: float,
-        prev_close: Optional[float] = None,
-        daily_df: Optional[pd.DataFrame] = None,
-        cost_basis: Optional[float] = None,
+        prev_close: float | None = None,
+        daily_df: pd.DataFrame | None = None,
+        cost_basis: float | None = None,
     ) -> tuple[bool, str]:
         rtype = rule.get("type", "").lower()
 
@@ -102,7 +101,7 @@ class _RuleEvaluator:
 # 市场数据适配
 # ========================
 
-def _fetch_spot_price(code: str, market: str) -> tuple[float, Optional[float]]:
+def _fetch_spot_price(code: str, market: str) -> tuple[float, float | None]:
     """
     获取实时价和昨收（用于涨跌幅计算）。
 
@@ -127,7 +126,7 @@ def _fetch_spot_price(code: str, market: str) -> tuple[float, Optional[float]]:
                     return price, prev
             except Exception as e:
                 logger.debug(f"东财接口受限，切换为单股通道(雪球): {e}")
-                
+
             # 雪球单只股票极速接口 fallback
             prefix = "SH" if code.startswith("6") else "SZ" if code.startswith(("0", "3")) else "BJ"
             symbol = f"{prefix}{code}"
@@ -230,7 +229,7 @@ class PriceMonitor(BaseMonitor):
         self,
         rules: list[dict],
         channels,
-        state_store: Optional[AlertStateStore] = None,
+        state_store: AlertStateStore | None = None,
         cooldown_hours: int = 24,
         output_dir: str = "./output",
         # 可注入 price/ohlcv 查询函数，便于测试 mock

@@ -10,7 +10,7 @@ src/automation/alert/ — 告警通道包
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from src.automation.alert.bark import BarkChannel
 from src.automation.alert.base import AlertChannel, AlertEvent
@@ -74,7 +74,7 @@ def build_channels(config: dict) -> list[AlertChannel]:
 def dispatch(
     event: AlertEvent,
     channels: Iterable[AlertChannel],
-    store: Optional[AlertStateStore] = None,
+    store: AlertStateStore | None = None,
     cooldown_hours: int = 24,
 ) -> dict[str, bool]:
     """

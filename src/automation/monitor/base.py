@@ -12,8 +12,8 @@ src/automation/monitor/base.py — 监控任务抽象基类
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -37,7 +37,7 @@ class BaseMonitor(ABC):
     def __init__(
         self,
         channels: Iterable[AlertChannel],
-        state_store: Optional[AlertStateStore] = None,
+        state_store: AlertStateStore | None = None,
         cooldown_hours: int = 24,
         output_dir: str | Path = "./output",
     ):

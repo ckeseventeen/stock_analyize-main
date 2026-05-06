@@ -3,8 +3,8 @@ from src.strategy.backtest.factor_strategy import FactorRebalanceStrategy
 from src.strategy.backtest.ma_crossover import MACrossoverStrategy
 from src.strategy.backtest.report import BacktestReport
 from src.strategy.backtest.rule_based import RuleBasedStrategy
-from src.strategy.backtest.screener_rule import ScreenerRuleStrategy
 from src.strategy.backtest.runner import BacktestRunner
+from src.strategy.backtest.screener_rule import ScreenerRuleStrategy
 
 # ========================
 # 策略注册表（YAML 预设 → 策略类）

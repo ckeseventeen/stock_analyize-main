@@ -6,6 +6,7 @@ src/strategy/backtest/runner.py — 回测运行器
 # matplotlib 后端必须在 backtrader 导入前设置，
 # 否则 backtrader import 时会锁定 MacOS GUI 后端
 import matplotlib
+
 matplotlib.use("Agg", force=True)
 
 import backtrader as bt

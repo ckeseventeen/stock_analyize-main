@@ -10,7 +10,6 @@ import streamlit as st
 from src.automation.scheduler_manager import (
     get_job_history,
     get_status,
-    is_running,
     pause_job,
     resume_job,
     start,

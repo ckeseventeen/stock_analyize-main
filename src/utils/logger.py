@@ -8,7 +8,6 @@ import logging
 import logging.handlers
 import os
 import sys
-from datetime import datetime
 
 # 模块级单例存储：logger_name -> Logger 实例
 _loggers: dict[str, logging.Logger] = {}

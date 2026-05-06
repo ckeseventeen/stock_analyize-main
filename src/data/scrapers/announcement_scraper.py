@@ -9,7 +9,7 @@ src/data/scraper/announcement_scraper.py — 公司公告抓取器
 """
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 import pandas as pd
 
@@ -75,7 +75,7 @@ class AnnouncementScraper(BaseScraper):
         merged = merged.drop_duplicates(subset=["title"])
         if "time" in merged.columns:
             merged = merged.sort_values("time", ascending=False, na_position="last").reset_index(drop=True)
-        
+
         # 注入名称
         merged = self._inject_names(merged)
         return merged

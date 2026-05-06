@@ -12,8 +12,8 @@ src/data/fetcher/earnings_fetcher.py — 财报披露日历数据获取器
 """
 from __future__ import annotations
 
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import Iterable, Optional
 
 import pandas as pd
 
@@ -65,7 +65,7 @@ class EarningsFetcher:
             periods = _recent_quarter_codes(2)  # 最近两个季度
 
             for period in periods:
-                for src_name, loader, etype, date_col in (
+                for _src_name, loader, etype, date_col in (
                     ("yjyg", self._safe_yjyg, "业绩预告", "预告日期"),
                     ("yjkb", self._safe_yjkb, "业绩快报", "公告日期"),
                     ("yjbb", self._safe_yjbb, "业绩报告", "最新公告日期"),
@@ -95,7 +95,7 @@ class EarningsFetcher:
 
     # --- 薄封装：akshare 调用易报错（网络/参数），独立封装便于容错 ---
     @retry(max_attempts=2, delay=2.0)
-    def _safe_yjyg(self, period: str) -> Optional[pd.DataFrame]:
+    def _safe_yjyg(self, period: str) -> pd.DataFrame | None:
         try:
             import akshare as ak
             return ak.stock_yjyg_em(date=period)
@@ -104,7 +104,7 @@ class EarningsFetcher:
             return None
 
     @retry(max_attempts=2, delay=2.0)
-    def _safe_yjkb(self, period: str) -> Optional[pd.DataFrame]:
+    def _safe_yjkb(self, period: str) -> pd.DataFrame | None:
         try:
             import akshare as ak
             return ak.stock_yjkb_em(date=period)
@@ -113,7 +113,7 @@ class EarningsFetcher:
             return None
 
     @retry(max_attempts=2, delay=2.0)
-    def _safe_yjbb(self, period: str) -> Optional[pd.DataFrame]:
+    def _safe_yjbb(self, period: str) -> pd.DataFrame | None:
         try:
             import akshare as ak
             return ak.stock_yjbb_em(date=period)
@@ -122,7 +122,7 @@ class EarningsFetcher:
             return None
 
     @retry(max_attempts=2, delay=2.0)
-    def _safe_yysj(self, period: str) -> Optional[pd.DataFrame]:
+    def _safe_yysj(self, period: str) -> pd.DataFrame | None:
         try:
             import akshare as ak
             return ak.stock_yysj_em(date=period)
@@ -283,7 +283,7 @@ class EarningsFetcher:
         """获取可读名称：优先本地配置 -> 其次 yfinance -> 最后返回 code"""
         code_str = str(code).strip()
         cache_key = f"{market}:{code_str}"
-        
+
         if cache_key in self._name_map:
             return self._name_map[cache_key]
 
@@ -310,14 +310,15 @@ class EarningsFetcher:
 
     def _load_local_stock_configs(self):
         """将 a_stock, hk_stock, us_stock 中的名称存入内存映射"""
-        import yaml
         from pathlib import Path
-        
+
+        import yaml
+
         # 寻找 config 目录 (假设在项目根目录)
         # EarningsFetcher 在 src/data/fetcher/
         root = Path(__file__).resolve().parents[3]
         config_dir = root / "config"
-        
+
         for m, filename in [("a", "a_stock.yaml"), ("hk", "hk_stock.yaml"), ("us", "us_stock.yaml")]:
             p = config_dir / filename
             if not p.exists():

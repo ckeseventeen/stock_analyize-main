@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import sys
 import types
-from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -24,7 +23,6 @@ from src.data.scrapers import (
     run_all,
 )
 from src.data.scrapers.base import BaseScraper
-
 
 # ========================
 # BaseScraper 辅助

@@ -172,7 +172,7 @@ for i, cond in enumerate(conditions):
             # 动态渲染参数
             param_map = _PARAM_MAP.get(cond_type, {})
             if param_map:
-                for yaml_key, init_key in param_map.items():
+                for yaml_key, _init_key in param_map.items():
                     current_val = cond.get(yaml_key)
 
                     # 根据类型推断输入控件
@@ -348,7 +348,7 @@ if enable_backtest:
         col_sc, col_sca = st.columns([4, 1])
         with col_sc:
             param_map = _PARAM_MAP.get(sc_type, {})
-            for yaml_key, init_key in param_map.items():
+            for yaml_key, _init_key in param_map.items():
                 val = sc.get(yaml_key)
                 if isinstance(val, (int, float)):
                     new_val = st.number_input(

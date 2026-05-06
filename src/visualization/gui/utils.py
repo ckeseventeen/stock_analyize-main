@@ -314,6 +314,77 @@ def remove_stock_from_market(market: str, code: str) -> tuple[bool, str]:
     return ok, ("已删除" if ok else "写入失败")
 
 
+def update_stock_in_market(market: str, code: str, updates: dict) -> tuple[bool, str]:
+    """
+    更新市场 YAML 中指定 code 的股票字段（合并更新，不替换整条记录）。
+
+    Args:
+        market: 'a' / 'hk' / 'us'
+        code: 股票代码
+        updates: 要更新的字段 dict，例如 {"name": "xxx", "pe_range": [10, 20, 30]}
+
+    Returns:
+        (成功标志, 消息)
+    """
+    cfg_path = MARKET_CONFIG_PATHS.get(market)
+    if not cfg_path:
+        return False, f"未知市场: {market}"
+
+    cfg = load_yaml(cfg_path) or {}
+    code_str = str(code).strip()
+    found = False
+
+    for cat_data in (cfg.get("categories") or {}).values():
+        for stock in (cat_data.get("stocks") or []):
+            if str(stock.get("code", "")).strip() == code_str:
+                stock.update(updates)
+                found = True
+                break
+        if found:
+            break
+
+    if not found:
+        return False, f"未找到代码 {code}"
+
+    ok = atomic_save_yaml(cfg_path, cfg)
+    return ok, ("更新成功" if ok else "写入失败")
+
+
+def move_stock_category(market: str, code: str, new_category_key: str) -> tuple[bool, str]:
+    """将股票从当前分类移动到另一个分类"""
+    cfg_path = MARKET_CONFIG_PATHS.get(market)
+    if not cfg_path:
+        return False, f"未知市场: {market}"
+
+    cfg = load_yaml(cfg_path) or {}
+    code_str = str(code).strip()
+    cats = cfg.get("categories") or {}
+
+    if new_category_key not in cats:
+        return False, f"目标分类 {new_category_key} 不存在"
+
+    # 找到并移除
+    stock_entry = None
+    for cat_key, cat_data in cats.items():
+        stocks = cat_data.get("stocks") or []
+        for i, s in enumerate(stocks):
+            if str(s.get("code", "")).strip() == code_str:
+                stock_entry = stocks.pop(i)
+                break
+        if stock_entry:
+            break
+
+    if not stock_entry:
+        return False, f"未找到代码 {code}"
+
+    # 追加到目标分类
+    cats[new_category_key].setdefault("stocks", [])
+    cats[new_category_key]["stocks"].append(stock_entry)
+
+    ok = atomic_save_yaml(cfg_path, cfg)
+    return ok, ("移动成功" if ok else "写入失败")
+
+
 def add_category_to_market(market: str, category_key: str, category_name: str) -> tuple[bool, str]:
     """新增板块分类"""
     cfg_path = MARKET_CONFIG_PATHS.get(market)

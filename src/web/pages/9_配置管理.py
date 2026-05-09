@@ -1,13 +1,12 @@
 """
 pages/8_配置管理.py — 统一配置管理
 
-四个 tab：
-  📌 关注标的 — 增删股票 + 板块分类（写入 a/hk/us_stock.yaml）
+三个 tab：
   📐 技术指标 — 多 profile 的 MACD/RSI/KDJ/BOLL/MA 参数
   🎯 因子库   — 从 FACTOR_REGISTRY 增删因子并配置参数
   🔁 回测预设 — 从 STRATEGY_REGISTRY 创建命名预设供"7_策略回测"加载
 
-所有写入使用 atomic_save_yaml；不会破坏既有注释和结构。
+📌 关注标的已迁移到 12_关注标的.py（功能更完整）
 """
 from __future__ import annotations
 
@@ -22,29 +21,19 @@ import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
 from src.web.utils import (  # noqa: E402
-    MARKET_LABELS,
-    PATH_A_STOCK,
     PATH_BACKTEST_PRESETS,
     PATH_FACTORS,
-    PATH_HK_STOCK,
     PATH_INDICATORS,
-    PATH_US_STOCK,
-    add_category_to_market,
-    add_stock_to_market,
     delete_backtest_preset,
     delete_factor_profile,
     delete_indicator_profile,
     list_backtest_presets,
     list_factor_profiles,
     list_indicator_profiles,
-    list_market_categories,
-    list_stocks_from_market_config,
     load_backtest_preset,
     load_factor_profile,
     load_indicator_profile,
     load_yaml,
-    remove_category_from_market,
-    remove_stock_from_market,
     save_backtest_preset,
     save_factor_profile,
     save_indicator_profile,
@@ -56,151 +45,21 @@ st.set_page_config(page_title="配置管理", page_icon="⚙️", layout="wide")
 st.title("⚙️ 配置管理")
 st.caption("所有标的 / 指标 / 因子 / 回测参数均存于 YAML，前端增删即改文件，重启生效。")
 
-tab_stocks, tab_indicators, tab_factors, tab_backtest = st.tabs([
-    "📌 关注标的", "📐 技术指标", "🎯 因子库", "🔁 回测预设",
+tab_indicators, tab_factors, tab_backtest = st.tabs([
+    "📐 技术指标", "🎯 因子库", "🔁 回测预设",
 ])
 
 
 # ==============================================================
-# Tab 1: 关注标的
+# 跳转：关注标的管理（已迁移到 12_关注标的.py）
 # ==============================================================
-with tab_stocks:
-    st.subheader("关注标的管理")
-    market_paths = {"a": PATH_A_STOCK, "hk": PATH_HK_STOCK, "us": PATH_US_STOCK}
-
-    market = st.selectbox(
-        "市场",
-        options=list(MARKET_LABELS.keys()),
-        format_func=lambda k: MARKET_LABELS[k],
-        key="cfg_market",
-    )
-    st.caption(f"配置文件：`{market_paths[market]}`")
-
-    # --- 现有股票列表 ---
-    stocks = list_stocks_from_market_config(market)
-    st.markdown(f"**现有股票 ({len(stocks)} 只)**")
-    if stocks:
-        df = pd.DataFrame([{
-            "分类": s.get("category", ""),
-            "代码": s.get("code", ""),
-            "名称": s.get("name", ""),
-            "估值方式": s.get("valuation", ""),
-            "PE 档位": str(s.get("pe_range", "")) if s.get("pe_range") else "",
-            "PS 档位": str(s.get("ps_range", "")) if s.get("ps_range") else "",
-        } for s in stocks])
-        st.dataframe(df, width="stretch", hide_index=True)
-    else:
-        st.info("该市场暂无股票，使用下方表单新增")
-
-    # --- 新增股票 ---
-    st.markdown("---")
-    st.markdown("**➕ 新增股票**")
-    cats = list_market_categories(market)
-    if not cats:
-        st.warning("该市场尚无分类板块，请先到下方【新增板块】创建")
-    else:
-        with st.form(f"add_stock_{market}", clear_on_submit=True):
-            col1, col2, col3 = st.columns([1, 1, 1])
-            with col1:
-                cat_key = st.selectbox(
-                    "板块",
-                    options=[k for k, _ in cats],
-                    format_func=lambda k: dict(cats).get(k, k),
-                )
-            with col2:
-                code = st.text_input("代码", placeholder="600519")
-            with col3:
-                name = st.text_input("名称", placeholder="贵州茅台")
-
-            col4, col5, col6 = st.columns([1, 2, 2])
-            with col4:
-                val_type = st.selectbox("估值方式", options=["pe", "ps"])
-            with col5:
-                pe_str = st.text_input("PE 档位（低,中,高）", value="10,20,30")
-            with col6:
-                ps_str = st.text_input("PS 档位（低,中,高）", value="1,2,3")
-
-            submit = st.form_submit_button("✅ 添加", type="primary")
-            if submit:
-                try:
-                    pe_range = [float(x.strip()) for x in pe_str.split(",") if x.strip()]
-                    ps_range = [float(x.strip()) for x in ps_str.split(",") if x.strip()]
-                except ValueError:
-                    st.error("档位必须为数字，用逗号分隔")
-                else:
-                    if len(pe_range) != 3 or len(ps_range) != 3:
-                        st.error("档位必须是 3 个数字（低/中/高）")
-                    elif not code.strip() or not name.strip():
-                        st.error("代码和名称不能为空")
-                    else:
-                        new_stock = {
-                            "name": name.strip(),
-                            "code": code.strip(),
-                            "valuation": val_type,
-                            "pe_range": pe_range,
-                            "ps_range": ps_range,
-                        }
-                        ok, msg = add_stock_to_market(market, cat_key, new_stock)
-                        if ok:
-                            st.success(msg)
-                            st.rerun()
-                        else:
-                            st.error(msg)
-
-    # --- 删除股票 ---
-    if stocks:
-        with st.expander("🗑 删除股票"):
-            code_to_del = st.selectbox(
-                "选择要删除的代码",
-                options=[s["code"] for s in stocks],
-                format_func=lambda c: f"{c} - {next((s['name'] for s in stocks if s['code'] == c), '')}",
-                key=f"del_code_{market}",
-            )
-            if st.button("确认删除", type="secondary", key=f"del_btn_{market}"):
-                ok, msg = remove_stock_from_market(market, code_to_del)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-    # --- 板块分类 CRUD ---
-    st.markdown("---")
-    st.markdown("**📂 板块分类**")
-    c1, c2 = st.columns(2)
-    with c1:
-        with st.form(f"add_cat_{market}", clear_on_submit=True):
-            new_key = st.text_input("分类 key（英文）", placeholder="finance")
-            new_name = st.text_input("分类名称", placeholder="金融")
-            if st.form_submit_button("➕ 新增板块"):
-                if not new_key.strip():
-                    st.error("分类 key 不能为空")
-                else:
-                    ok, msg = add_category_to_market(market, new_key.strip(), new_name.strip())
-                    if ok:
-                        st.success(msg)
-                        st.rerun()
-                    else:
-                        st.error(msg)
-    with c2:
-        if cats:
-            del_cat_key = st.selectbox(
-                "删除板块",
-                options=[k for k, _ in cats],
-                format_func=lambda k: f"{dict(cats)[k]} ({k})",
-                key=f"del_cat_sel_{market}",
-            )
-            if st.button("🗑 删除板块（及其下全部股票）", key=f"del_cat_btn_{market}"):
-                ok, msg = remove_category_from_market(market, del_cat_key)
-                if ok:
-                    st.success(msg)
-                    st.rerun()
-                else:
-                    st.error(msg)
+st.info("📌 **关注标的**管理已迁移到专属页面，功能更完整（支持搜索、编辑、板块移动等）。")
+st.page_link("pages/12_关注标的.py", label="前往「关注标的管理」→", icon="📌")
+st.markdown("---")
 
 
 # ==============================================================
-# Tab 2: 技术指标
+# Tab 1: 技术指标
 # ==============================================================
 with tab_indicators:
     st.subheader("技术指标参数配置")

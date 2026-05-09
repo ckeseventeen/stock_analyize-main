@@ -11,7 +11,9 @@ import logging
 import time
 from typing import Any, Callable
 
-logger = logging.getLogger("stock_analyzer")
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # ========================

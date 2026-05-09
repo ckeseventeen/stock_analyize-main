@@ -5,7 +5,6 @@ src/data/fetcher/cache_manager.py — 数据缓存管理器
 支持：Pickle 格式（DataFrame）、过期自动失效、缓存统计。
 """
 import hashlib
-import logging
 import os
 import pickle
 from datetime import datetime, timedelta
@@ -14,7 +13,9 @@ from typing import Any, Callable, Optional
 
 import pandas as pd
 
-logger = logging.getLogger("stock_analyzer")
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class CacheManager:

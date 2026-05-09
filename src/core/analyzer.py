@@ -4,9 +4,9 @@ from abc import ABC, abstractmethod
 import numpy as np
 import pandas as pd
 
-from src.utils.logger import setup_logger
+from src.utils.logger import get_logger
 
-logger = setup_logger()
+logger = get_logger(__name__)
 
 
 # ---------------------- 抽象基类：封装全市场通用核心逻辑 ----------------------
@@ -232,13 +232,25 @@ class AStockAnalyzer(BaseAnalyzer):
         fin_ts = fin_ts.sort_index(ascending=False)  # 按日期降序，最新在最前
 
         # 转换为数值型 (清理千分位或中文字符)
+        # 注意：不能用字符串替换处理中文单位（'1.5亿'→'1.500000000'→NaN），
+        # 必须用数值乘法保证带小数的中文金额正确转换
+        def _convert_chinese_units(val):
+            """将含中文单位的字符串转为数值：'1.5亿'→1.5e8, '3.2万'→3.2e4"""
+            s = str(val).replace(',', '').replace('None', '').strip()
+            if not s or s == '-' or s == 'nan':
+                return np.nan
+            try:
+                if '亿' in s:
+                    return float(s.replace('亿', '')) * 1e8
+                if '万' in s:
+                    return float(s.replace('万', '')) * 1e4
+                return float(s)
+            except (ValueError, TypeError):
+                return np.nan
+
         for col in fin_ts.columns:
-            fin_ts[col] = pd.to_numeric(
-                fin_ts[col].astype(str).str.replace(',', '').str.replace('万', '0000').str.replace('亿',
-                                                                                                   '00000000').str.replace(
-                    'None', 'NaN'),
-                errors='coerce'
-            )
+            fin_ts[col] = fin_ts[col].map(_convert_chinese_units)
+            fin_ts[col] = pd.to_numeric(fin_ts[col], errors='coerce')
 
         return fin_ts
 

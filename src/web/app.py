@@ -9,15 +9,6 @@ pages/ 目录下的文件会自动出现在侧边栏（按文件名前缀数字�
 """
 from __future__ import annotations
 
-# ========================
-# matplotlib 后端强制 Agg（必须在任何 matplotlib / backtrader 导入前设置）
-# Streamlit 页面在 worker 线程渲染，MacOS/TkAgg GUI 后端会抛
-# "Cannot create a GUI FigureManager outside the main thread"
-# ========================
-import os  # noqa: E402
-
-os.environ.setdefault("MPLBACKEND", "Agg")
-
 import sys
 from pathlib import Path
 
@@ -38,7 +29,11 @@ from src.web.utils import (  # noqa: E402
     PATH_US_STOCK,
     ensure_project_dirs,
     load_yaml,
+    setup_matplotlib_chinese,
 )
+
+# 初始化 matplotlib 中文渲染（全局一次即可）
+setup_matplotlib_chinese()
 
 # 确保 cache/logs/output 目录存在
 ensure_project_dirs()
@@ -75,7 +70,7 @@ col1, col2, col3, col4 = st.columns(4)
 
 def _count_stocks(cfg_path: Path) -> int:
     """统计某市场配置中的股票总数（累加所有 category.stocks）"""
-    cfg = load_yaml(cfg_path)
+    cfg = load_yaml(cfg_path, ttl=300)
     if not cfg:
         return 0
     total = 0
@@ -93,7 +88,7 @@ with col3:
     st.metric("美股关注股票", _count_stocks(PATH_US_STOCK))
 with col4:
     # 价格预警规则条数
-    rules = (load_yaml(PATH_PRICE_ALERTS) or {}).get("rules", []) or []
+    rules = (load_yaml(PATH_PRICE_ALERTS, ttl=300) or {}).get("rules", []) or []
     st.metric("价格预警规则", len(rules))
 
 
@@ -157,13 +152,17 @@ with info_col1:
 
     st.markdown("**告警状态文件**")
     if ALERT_STATE_PATH.exists():
-        import json
-        try:
-            with open(ALERT_STATE_PATH, encoding="utf-8") as f:
-                state = json.load(f)
-            st.caption(f"当前 {len(state)} 条记录")
-        except Exception:
-            st.caption("(读取失败)")
+        @st.cache_data(ttl=60, show_spinner=False)
+        def _count_alert_records(p: str) -> int:
+            import json
+            try:
+                with open(p, encoding="utf-8") as f:
+                    state = json.load(f)
+                return len(state)
+            except Exception:
+                return -1
+        n = _count_alert_records(str(ALERT_STATE_PATH))
+        st.caption(f"当前 {n} 条记录" if n >= 0 else "(读取失败)")
     else:
         st.caption("暂无记录")
 
@@ -171,10 +170,12 @@ with info_col2:
     st.markdown("**输出目录**")
     st.code(str(OUTPUT_DIR), language="text")
 
-    # 展示输出目录下的文件数
+    # 展示输出目录下的文件数（缓存 60 秒，避免每次 rerun 递归扫描）
     if OUTPUT_DIR.exists():
-        files = list(OUTPUT_DIR.rglob("*"))
-        st.caption(f"共 {len([f for f in files if f.is_file()])} 个文件")
+        @st.cache_data(ttl=60, show_spinner=False)
+        def _count_output_files(d: str) -> int:
+            return sum(1 for f in Path(d).rglob("*") if f.is_file())
+        st.caption(f"共 {_count_output_files(str(OUTPUT_DIR))} 个文件")
 
 # 页脚
 st.markdown("---")

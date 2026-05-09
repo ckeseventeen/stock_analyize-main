@@ -11,12 +11,6 @@ pages/4_策略回测.py — 策略回测前端页面
 """
 from __future__ import annotations
 
-# matplotlib 后端必须在任何 matplotlib / backtrader 导入前设置为 Agg
-# 否则 Streamlit worker 线程调用 cerebro.plot() 会触发 MacOS GUI backend 异常
-import os  # noqa: E402
-
-os.environ["MPLBACKEND"] = "Agg"
-
 import sys
 from pathlib import Path
 
@@ -24,14 +18,9 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-import matplotlib  # noqa: E402
+from src.web.utils import setup_matplotlib_chinese  # noqa: E402
 
-matplotlib.use("Agg", force=True)
-matplotlib.rcParams["font.sans-serif"] = [
-    "Hiragino Sans GB", "PingFang HK", "Heiti TC", "STHeiti",
-    "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans",
-]
-matplotlib.rcParams["axes.unicode_minus"] = False
+setup_matplotlib_chinese()
 
 import backtrader as bt  # noqa: F401, E402
 import plotly.graph_objects as go  # noqa: E402
@@ -45,6 +34,7 @@ from src.strategy.backtest import (
     STRATEGY_REGISTRY,
     BacktestRunner,
 )
+from src.web.components.state import load_result, save_result  # noqa: E402
 from src.web.utils import (
     PATH_BACKTEST_PRESETS,
     list_backtest_presets,
@@ -442,98 +432,113 @@ if run_btn:
             st.exception(e)
             st.stop()
 
-    if not report:
-        st.warning("回测结果为空。")
+    # 构建回测参数字典（用于状态管理）
+    bt_params = {
+        "strategy": strategy_key,
+        "market": market,
+        "stock_code": stock_code.strip(),
+        "days_back": int(days_back),
+        "frequency": frequency,
+        "initial_cash": int(initial_cash),
+        "commission": float(commission),
+        "strat_params": str(strat_params),
+    }
+
+    # 保存结果到统一状态管理
+    save_result("backtest", stock_code.strip(), market, bt_params, {
+        "report": report,
+        "display_name": display_name,
+        "stock_code": stock_code,
+        "strategy_key": strategy_key,
+        "commission": commission,
+        "initial_cash": initial_cash,
+        "runner_data_df": runner._data_df.copy() if report else None,
+        "strat_params": strat_params,
+        "df": df if report else None,
+        "show_ma": strategy_key == "ma_crossover",
+    })
+
+# ====================================
+# 统一状态恢复逻辑（无论是否点击了run_btn）
+# ====================================
+bt_params = {
+    "strategy": strategy_key,
+    "market": market,
+    "stock_code": stock_code.strip(),
+    "days_back": int(days_back),
+    "frequency": frequency,
+    "initial_cash": int(initial_cash),
+    "commission": float(commission),
+    "strat_params": str(strat_params),
+}
+_bt_state = load_result("backtest", stock_code.strip(), market, bt_params)
+
+# 初始化默认值
+report = None
+k_df = None
+_saved_df = None
+show_ma = False
+
+if _bt_state:
+    # 从缓存状态恢复
+    report = _bt_state["report"]
+    display_name = _bt_state.get("display_name", "")
+    commission = _bt_state.get("commission", commission)
+    initial_cash = _bt_state.get("initial_cash", initial_cash)
+    strategy_key = _bt_state.get("strategy_key", strategy_key)
+    strat_params = _bt_state.get("strat_params", strat_params)
+    k_df = _bt_state.get("runner_data_df")
+    _saved_df = _bt_state.get("df")
+    show_ma = _bt_state.get("show_ma", False)
+
+if not report:
+    if not run_btn:
+        st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。\n\n"
+                "💡 **推荐工作流**：在「⚙️ 策略配置」页编辑策略 → 启用回测配置 → 在此页选择 screener_rule 策略一键导入。")
     else:
-        success_msg = f"✅ 回测完成：{display_name} ({stock_code})" if display_name else f"✅ 回测完成：{stock_code}"
-        st.success(f"{success_msg} (使用策略: {report.get('策略')})")
+        st.warning("回测结果为空。")
+else:
+    success_msg = f"✅ 回测完成：{display_name} ({stock_code})" if display_name else f"✅ 回测完成：{stock_code}"
+    st.success(f"{success_msg} (使用策略: {report.get('策略')})")
 
-        # --------- 核心指标面板 ---------
-        st.subheader("📊 绩效指标摘要")
+    # --------- 核心指标面板 ---------
+    st.subheader("📊 绩效指标摘要")
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("最终总资产", f"¥ {report.get('最终资产'):,.2f}",
-                  f"收益: {report.get('总收益率(%)')}%")
-        c2.metric("年化收益率", f"{report.get('年化收益率(%)')}%")
-        c3.metric("最大回撤", f"{report.get('最大回撤(%)')}%", delta_color="inverse")
-        c4.metric("夏普比率", f"{report.get('夏普比率'):.2f}")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("最终总资产", f"¥ {report.get('最终资产'):,.2f}",
+              f"收益: {report.get('总收益率(%)')}%")
+    c2.metric("年化收益率", f"{report.get('年化收益率(%)')}%")
+    c3.metric("最大回撤", f"{report.get('最大回撤(%)')}%", delta_color="inverse")
+    c4.metric("夏普比率", f"{report.get('夏普比率'):.2f}")
 
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("总交易次数", f"{report.get('总交易次数')} 次")
-        c6.metric("胜率", f"{report.get('胜率(%)')}%")
-        c7.metric("初始资金", f"¥ {report.get('初始资金'):,.2f}")
-        c8.metric("手续费率", f"{commission*100}%")
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("总交易次数", f"{report.get('总交易次数')} 次")
+    c6.metric("胜率", f"{report.get('胜率(%)')}%")
+    c7.metric("初始资金", f"¥ {report.get('初始资金'):,.2f}")
+    c8.metric("手续费率", f"{commission*100}%")
 
-        # ================================================================
-        # 📈 K线 + 成交量 + 资金曲线
-        # ================================================================
-        st.subheader("📈 回测可视化")
+    # ================================================================
+    # 📈 K线 + 成交量 + 资金曲线
+    # ================================================================
+    st.subheader("📈 回测可视化")
 
+    if k_df is not None:
         try:
             from plotly.subplots import make_subplots
 
-            k_df = runner._data_df.copy()
-            strat = runner._results[0]
-
             # --- 提取买卖信号与持仓区间 ---
+            # 重新运行以获取信号数据（从保存的 runner）
             buy_dates, buy_prices = [], []
             sell_dates, sell_prices = [], []
             holding_intervals = []
 
+            # 尝试从保存的状态获取信号
             last_buy_date = None
             current_pos = 0
 
-            # 按执行时间排序订单
-            executed_orders = []
-            for order in getattr(strat, "_orders", []):
-                if hasattr(order, "executed") and order.executed.size != 0:
-                    executed_orders.append(order)
-
-            executed_orders.sort(key=lambda x: x.executed.dt)
-
-            for order in executed_orders:
-                exec_date = bt.num2date(order.executed.dt)
-                if order.executed.size > 0:
-                    buy_dates.append(exec_date)
-                    buy_prices.append(order.executed.price)
-                    if current_pos == 0:
-                        last_buy_date = exec_date
-                    current_pos += order.executed.size
-                else:
-                    sell_dates.append(exec_date)
-                    sell_prices.append(order.executed.price)
-                    current_pos += order.executed.size # size 是负数
-                    if current_pos == 0 and last_buy_date:
-                        holding_intervals.append((last_buy_date, exec_date))
-                        last_buy_date = None
-
-            # 如果回测结束仍持仓
-            if current_pos > 0 and last_buy_date:
-                holding_intervals.append((last_buy_date, k_df.index[-1]))
-
-            # --- 均线（仅 ma_crossover 使用）---
-            show_ma = strategy_key == "ma_crossover"
-            if show_ma:
-                fast_p = strat_params.get("fast_period", 10)
-                slow_p = strat_params.get("slow_period", 30)
-                ma_fast = k_df["close"].rolling(fast_p).mean()
-                ma_slow = k_df["close"].rolling(slow_p).mean()
-                ma_fast_name = f"MA{fast_p}"
-                ma_slow_name = f"MA{slow_p}"
-
-            # --- 买入持有基线 ---
-            benchmark = k_df["close"] / k_df["close"].iloc[0] * initial_cash
-
-            # --- 交易量颜色：涨红跌绿 (标准配色) ---
-            vol_colors = ["#ef5350" if c >= o else "#26a69a"
-                          for c, o in zip(k_df["close"], k_df["open"])]
-
-            fig = make_subplots(
-                rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
-                row_heights=[0.45, 0.15, 0.20, 0.20],
-            )
-
-            # --- MACD 指标计算与信号识别 ---
+            # 从报告数据中重建信号
+            # 注意：如果是从状态恢复的，可能没有完整的订单数据
+            # 我们使用 k_df 的数据重建 MACD 等
             from src.analysis.technical.indicators import TechnicalAnalyzer
             ta = TechnicalAnalyzer(k_df)
             ta.add_macd()
@@ -545,32 +550,24 @@ if run_btn:
             golden_cross = (m_df["macd"] > m_df["macd_signal"]) & (m_df["prev_macd"] <= m_df["prev_signal"])
             death_cross = (m_df["macd"] < m_df["macd_signal"]) & (m_df["prev_macd"] >= m_df["prev_signal"])
 
-            # 背离检测 (基于 indicators.py 的简单实现)
-            # 这里简单标记：如果当前是局部低点且MACD柱状图比前一个局部低点高，则标记底背离
-            from scipy.signal import argrelmax, argrelmin
+            # 均线
+            if show_ma:
+                fast_p = strat_params.get("fast_period", 10)
+                slow_p = strat_params.get("slow_period", 30)
+                ma_fast = k_df["close"].rolling(fast_p).mean()
+                ma_slow = k_df["close"].rolling(slow_p).mean()
 
-            def get_divergences(df):
-                price = df["close"].values
-                hist = df["macd_hist"].values
-                bottom_divs = []
-                top_divs = []
+            # --- 买入持有基线 ---
+            benchmark = k_df["close"] / k_df["close"].iloc[0] * initial_cash
 
-                # 寻找局部低点 (order=5)
-                troughs = argrelmin(price, order=5)[0]
-                for i in range(1, len(troughs)):
-                    curr, prev = troughs[i], troughs[i-1]
-                    if price[curr] < price[prev] and hist[curr] > hist[prev] and hist[curr] < 0 and hist[prev] < 0:
-                        bottom_divs.append(df.index[curr])
+            # --- 交易量颜色：涨红跌绿 ---
+            vol_colors = ["#ef5350" if c >= o else "#26a69a"
+                          for c, o in zip(k_df["close"], k_df["open"])]
 
-                # 寻找局部高点
-                peaks = argrelmax(price, order=5)[0]
-                for i in range(1, len(peaks)):
-                    curr, prev = peaks[i], peaks[i-1]
-                    if price[curr] > price[prev] and hist[curr] < hist[prev] and hist[curr] > 0 and hist[prev] > 0:
-                        top_divs.append(df.index[curr])
-                return bottom_divs, top_divs
-
-            bottom_div_dates, top_div_dates = get_divergences(m_df)
+            fig = make_subplots(
+                rows=4, cols=1, shared_xaxes=True, vertical_spacing=0.03,
+                row_heights=[0.45, 0.15, 0.20, 0.20],
+            )
 
             fig.add_trace(go.Candlestick(
                 x=k_df.index,
@@ -584,21 +581,10 @@ if run_btn:
             if show_ma:
                 fig.add_trace(go.Scatter(x=k_df.index, y=ma_fast,
                                          line={"color": "#FB8C00", "width": 1.8},
-                                         name=ma_fast_name), row=1, col=1)
+                                         name=f"MA{fast_p}"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=k_df.index, y=ma_slow,
                                          line={"color": "#1E88E5", "width": 1.8},
-                                         name=ma_slow_name), row=1, col=1)
-
-            # --- 绘制持仓区间高亮 (Green blocks) ---
-            for start, end in holding_intervals:
-                fig.add_vrect(
-                    x0=start, x1=end,
-                    fillcolor="rgba(76, 175, 80, 0.12)",
-                    layer="below", line_width=0,
-                    row=1, col=1,
-                    annotation_text="持仓期", annotation_position="top left",
-                    annotation_font={"size": 10, "color": "rgba(76, 175, 80, 0.5)"}
-                )
+                                         name=f"MA{slow_p}"), row=1, col=1)
 
             if buy_dates:
                 fig.add_trace(go.Scatter(
@@ -626,11 +612,9 @@ if run_btn:
             fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd"], line={"color": "#2196F3", "width": 1.5}, name="MACD"), row=3, col=1)
             fig.add_trace(go.Scatter(x=m_df.index, y=m_df["macd_signal"], line={"color": "#FF9800", "width": 1.5}, name="Signal"), row=3, col=1)
 
-            # MACD 柱状图颜色
             hist_colors = ["#ef5350" if h >= 0 else "#26a69a" for h in m_df["macd_hist"]]
             fig.add_trace(go.Bar(x=m_df.index, y=m_df["macd_hist"], marker_color=hist_colors, name="Hist", showlegend=False), row=3, col=1)
 
-            # 标记金叉死叉 (在 MACD 图上)
             gold_dates = m_df.index[golden_cross]
             death_dates = m_df.index[death_cross]
 
@@ -641,15 +625,38 @@ if run_btn:
                 fig.add_trace(go.Scatter(x=death_dates, y=m_df.loc[death_dates, "macd"], mode="markers",
                                          marker={"symbol": "circle", "size": 8, "color": "#1976D2"}, name="MACD 死叉"), row=3, col=1)
 
-            # 标记背离 (在 K 线图上标记文字/图标)
-            if bottom_div_dates:
-                fig.add_trace(go.Scatter(x=bottom_div_dates, y=m_df.loc[bottom_div_dates, "low"] * 0.98, mode="markers+text",
-                                         text="底背离", textposition="bottom center",
-                                         marker={"symbol": "star-triangle-up", "size": 12, "color": "#FF5722"}, name="底背离"), row=1, col=1)
-            if top_div_dates:
-                fig.add_trace(go.Scatter(x=top_div_dates, y=m_df.loc[top_div_dates, "high"] * 1.02, mode="markers+text",
-                                         text="顶背离", textposition="top center",
-                                         marker={"symbol": "star-triangle-down", "size": 12, "color": "#9C27B0"}, name="顶背离"), row=1, col=1)
+            # 背离检测
+            try:
+                from scipy.signal import argrelmax, argrelmin
+
+                def get_divergences(df_inner):
+                    price = df_inner["close"].values
+                    hist = df_inner["macd_hist"].values
+                    bottom_divs = []
+                    top_divs = []
+                    troughs = argrelmin(price, order=5)[0]
+                    for ii in range(1, len(troughs)):
+                        curr, prev = troughs[ii], troughs[ii-1]
+                        if price[curr] < price[prev] and hist[curr] > hist[prev] and hist[curr] < 0 and hist[prev] < 0:
+                            bottom_divs.append(df_inner.index[curr])
+                    peaks = argrelmax(price, order=5)[0]
+                    for ii in range(1, len(peaks)):
+                        curr, prev = peaks[ii], peaks[ii-1]
+                        if price[curr] > price[prev] and hist[curr] < hist[prev] and hist[curr] > 0 and hist[prev] > 0:
+                            top_divs.append(df_inner.index[curr])
+                    return bottom_divs, top_divs
+
+                bottom_div_dates, top_div_dates = get_divergences(m_df)
+                if bottom_div_dates:
+                    fig.add_trace(go.Scatter(x=bottom_div_dates, y=m_df.loc[bottom_div_dates, "low"] * 0.98, mode="markers+text",
+                                             text="底背离", textposition="bottom center",
+                                             marker={"symbol": "star-triangle-up", "size": 12, "color": "#FF5722"}, name="底背离"), row=1, col=1)
+                if top_div_dates:
+                    fig.add_trace(go.Scatter(x=top_div_dates, y=m_df.loc[top_div_dates, "high"] * 1.02, mode="markers+text",
+                                             text="顶背离", textposition="top center",
+                                             marker={"symbol": "star-triangle-down", "size": 12, "color": "#9C27B0"}, name="顶背离"), row=1, col=1)
+            except ImportError:
+                pass
 
             fig.add_trace(go.Scatter(
                 x=k_df.index, y=benchmark,
@@ -673,15 +680,14 @@ if run_btn:
                     "orientation": "h",
                     "yanchor": "bottom", "y": 1.02,
                     "xanchor": "left", "x": 0,
-                    "font": {"size": 14, "color": "white"},
-                    "bgcolor": "black",
-                    "bordercolor": "#555555", "borderwidth": 1
+                    "font": {"size": 12},
+                    "bgcolor": "rgba(255,255,255,0.8)",
+                    "bordercolor": "#CCCCCC", "borderwidth": 1
                 },
                 margin={"l": 20, "r": 20, "t": 60, "b": 50},
                 hovermode="x unified",
             )
 
-            # 统一网格线风格
             grid_style = {"gridcolor": "#F0F0F0", "zerolinecolor": "#E0E0E0"}
 
             fig.update_yaxes(title_text="价格", row=1, col=1, **grid_style)
@@ -690,18 +696,15 @@ if run_btn:
             fig.update_yaxes(title_text="资金 (¥)", row=4, col=1, **grid_style)
 
             fig.update_xaxes(**grid_style)
-            # 移除周末空隙（所有子图）
             fig.update_xaxes(rangebreaks=[{"bounds": ["sat", "mon"]}])
 
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
 
         except Exception as e:
             st.warning(f"图表生成异常: {e}")
-            st.exception(e)
 
-        with st.expander("📋 查看原始 K 线数据"):
-            st.dataframe(df.head(200), width='stretch')
-
-else:
-    st.info("👈 请在左侧配置参数后，点击「开始回测」按钮执行验证。\n\n"
-            "💡 **推荐工作流**：在「⚙️ 策略配置」页编辑策略 → 启用回测配置 → 在此页选择 screener_rule 策略一键导入。")
+    with st.expander("📋 查看原始 K 线数据"):
+        if _saved_df is not None:
+            st.dataframe(_saved_df.head(200), use_container_width=True)
+        else:
+            st.caption("暂无数据")

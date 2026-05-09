@@ -6,16 +6,22 @@ src/utils/config_parser.py — 统一配置解析工具
   - 环境变量覆盖（敏感配置如 API Key 不写入文件）
   - 配置合并（基础配置 + 环境配置）
   - Schema 基础验证
+
+.. deprecated::
+    本模块的 ConfigParser 类目前未被项目使用。
+    各模块直接使用 src/web/utils.py 中的 YAML 读写函数。
+    如需统一配置管理，建议基于此模块重构。
 """
 import json
-import logging
 import os
 from pathlib import Path
 from typing import Any, Optional
 
 import yaml
 
-logger = logging.getLogger("stock_analyzer")
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ConfigParser:

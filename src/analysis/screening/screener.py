@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 
-from src.analysis.screening.conditions import BaseCondition
+from src.analysis.screening.conditions import BaseCondition, ExcludeRiskCondition
 from src.analysis.screening.config_schema import parse_screen_config
 from src.analysis.screening.data_provider import ScreenerDataProvider
 from src.utils.logger import get_logger
@@ -64,7 +64,7 @@ class StockScreener:
         return self
 
     def run(self, sort_by: str = "总市值", ascending: bool = False, limit: int = 100,
-            stock_scope: set[str] | None = None) -> pd.DataFrame:
+            stock_scope: set[str] | None = None, auto_exclude_risk: bool = True) -> pd.DataFrame:
         """
         执行筛选
 
@@ -73,6 +73,7 @@ class StockScreener:
             ascending: 是否升序
             limit: 最大返回数量
             stock_scope: 可选的股票代码范围集合（板块/指数过滤），None 表示不过滤
+            auto_exclude_risk: 是否自动注入全局风险排除条件（排除ST/退市股），默认开启
 
         Returns:
             筛选结果 DataFrame，包含: 代码, 名称, 最新价, 总市值(亿), 市盈率, 市净率 等
@@ -80,6 +81,16 @@ class StockScreener:
         if not self._conditions:
             logger.warning("未添加任何筛选条件，返回空结果")
             return pd.DataFrame()
+
+        # 自动注入全局默认排除条件（ST/退市股），避免每个策略重复配置
+        if auto_exclude_risk:
+            has_risk_exclude = any(
+                c.name in ("exclude_risk", "exclude_st", "exclude_delisting_risk")
+                for c in self._conditions
+            )
+            if not has_risk_exclude:
+                self._conditions.insert(0, ExcludeRiskCondition(strict=True))
+                logger.debug("自动注入全局风险排除条件（排除ST/退市股）")
 
         # 第一轮：获取全A实时行情并做内存过滤
         all_stocks = self._provider.get_all_a_shares()

@@ -4,10 +4,10 @@ import akshare as ak
 import pandas as pd
 
 from src.data.providers.baostock_provider import BaostockProvider
-from src.utils.logger import setup_logger
+from src.utils.logger import get_logger
 
 # 全局日志初始化
-logger = setup_logger()
+logger = get_logger(__name__)
 
 
 

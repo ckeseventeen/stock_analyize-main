@@ -28,6 +28,8 @@ from src.analysis.screening.conditions import (  # noqa: E402
     CONDITION_REGISTRY,
 )
 from src.analysis.screening.config_schema import _PARAM_MAP, SPOT_ONLY_TYPES  # noqa: E402
+from src.web.components.confirm import confirm_action  # noqa: E402
+from src.web.components.unsaved import mark_clean, mark_dirty, unsaved_badge  # noqa: E402
 from src.web.utils import (  # noqa: E402
     PATH_SCREEN,
     atomic_save_yaml,
@@ -37,6 +39,9 @@ from src.web.utils import (  # noqa: E402
 st.set_page_config(page_title="策略配置", page_icon="⚙️", layout="wide")
 st.title("⚙️ 策略配置编辑器")
 st.caption("可视化创建和编辑筛选/回测策略，无需手动编辑 YAML 文件")
+
+# 未保存变更提示
+unsaved_badge("strategy_editor")
 
 
 # ========================
@@ -111,9 +116,13 @@ if current_sid:
             st.session_state["strategies_data"] = strategies
             st.rerun()
     with col_del:
-        if st.button("🗑️ 删除", type="secondary"):
+        del_result = confirm_action(
+            "del_strategy", f"确定删除策略 {current_sid}？此操作不可撤销。", "🗑️ 删除"
+        )
+        if del_result is True:
             del strategies[current_sid]
             st.session_state["strategies_data"] = strategies
+            mark_dirty("strategy_editor")
             st.rerun()
 
 # 保存所有策略
@@ -123,6 +132,7 @@ if st.sidebar.button("💾 保存全部到文件", type="primary", use_container
     cfg["strategies"] = strategies
     if atomic_save_yaml(PATH_SCREEN, cfg):
         st.sidebar.success("✅ 已保存到 screen_config.yaml")
+        mark_clean("strategy_editor")
         # 刷新内存数据
         st.session_state["strategies_data"] = _load_all_strategies()
     else:
@@ -151,6 +161,7 @@ new_strategy_name = st.text_input(
 )
 if new_strategy_name != s_cfg.get("name"):
     s_cfg["name"] = new_strategy_name
+    mark_dirty("strategy_editor")
 
 # ========================
 # 条件编辑区
@@ -243,16 +254,19 @@ for i, cond in enumerate(conditions):
             if st.button("🗑️", key=f"del_cond_{current_sid}_{i}", help="删除此条件"):
                 conditions.pop(i)
                 s_cfg["conditions"] = conditions
+                mark_dirty("strategy_editor")
                 st.rerun()
             if i > 0:
                 if st.button("⬆️", key=f"up_cond_{current_sid}_{i}", help="上移"):
                     conditions[i], conditions[i-1] = conditions[i-1], conditions[i]
                     s_cfg["conditions"] = conditions
+                    mark_dirty("strategy_editor")
                     st.rerun()
             if i < len(conditions) - 1:
                 if st.button("⬇️", key=f"down_cond_{current_sid}_{i}", help="下移"):
                     conditions[i], conditions[i+1] = conditions[i+1], conditions[i]
                     s_cfg["conditions"] = conditions
+                    mark_dirty("strategy_editor")
                     st.rerun()
 
 # 添加新条件
@@ -286,6 +300,7 @@ for idx, (cat_name, cat_types) in enumerate(CONDITION_CATEGORIES.items()):
                             new_cond[yaml_key] = param.default
                 conditions.append(new_cond)
                 s_cfg["conditions"] = conditions
+                mark_dirty("strategy_editor")
                 st.rerun()
 
 

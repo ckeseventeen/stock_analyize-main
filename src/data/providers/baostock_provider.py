@@ -14,14 +14,15 @@ src/data/fetcher/baostock_provider.py — Baostock 统一封装层
 """
 from __future__ import annotations
 
-import logging
 import threading
 from datetime import datetime, timedelta
 
 import baostock as bs
 import pandas as pd
 
-logger = logging.getLogger("stock_analyzer")
+from src.utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 # Baostock 库内部使用单一全局 TCP socket，非线程安全。
 # 所有 bs.* 调用（login / logout / query_*）必须在此锁保护下串行执行，

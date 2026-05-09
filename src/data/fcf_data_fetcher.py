@@ -2,9 +2,9 @@ import akshare as ak
 import pandas as pd
 import yfinance as yf
 
-from src.utils.logger import setup_logger
+from src.utils.logger import get_logger
 
-logger = setup_logger()
+logger = get_logger(__name__)
 
 class FCFDataFetcher:
     """

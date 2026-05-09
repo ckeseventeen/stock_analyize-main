@@ -59,12 +59,14 @@ class ScreenerRuleStrategy(BaseStrategy):
                     logger.error(f"构建条件 {ctype} 失败: {e}")
         return objs
 
+    # 滑动窗口最大回溯长度（避免O(n²)的累计切片）
+    _MAX_LOOKBACK = 300  # 覆盖最长需求（如 250 均线 + 一些余量）
+
     def _precompute_signals(self, condition_objs: list[BaseCondition], logic: str) -> list[bool]:
         if not condition_objs:
             return [False] * len(self.data)
 
         # 将 Backtrader 数据馈送转回 DataFrame 供筛选器组件使用
-        # 仅取必要列
         df = pd.DataFrame({
             "open": self.data.open.array,
             "high": self.data.high.array,
@@ -76,12 +78,12 @@ class ScreenerRuleStrategy(BaseStrategy):
         signals = []
         total = len(df)
 
-        # 逐 bar 预计算
+        # 逐 bar 预计算，使用滑动窗口而非全量切片，将 O(n²) 优化为 O(n)
         for i in range(total):
             bar_spot = df.iloc[i]
-            # 筛选器条件通常需要一段历史。我们提供到当前 bar 为止的所有数据。
-            # 注意：这保证了不会“偷看”未来数据，因为 iloc[:i+1] 只含当前及之前。
-            bar_history = df.iloc[:i+1]
+            # 只取最近 _MAX_LOOKBACK 根 K 线，而非从第 0 根开始
+            start_idx = max(0, i - self._MAX_LOOKBACK + 1)
+            bar_history = df.iloc[start_idx:i + 1]
 
             cond_results = []
             for obj in condition_objs:

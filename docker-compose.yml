@@ -64,7 +64,7 @@ services:
     volumes:
       - ./config:/app/config:ro
       - ./output:/app/output
-    command: ["streamlit", "run", "src/visualization/gui/streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    command: ["streamlit", "run", "src/web/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     networks:
       - stock_net
 

@@ -19,13 +19,14 @@ if str(_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from src.web.components.confirm import confirm_action  # noqa: E402
 from src.web.utils import (  # noqa: E402
     MARKET_LABELS,
     PATH_ALERTS,
     PATH_PRICE_ALERTS,
+    atomic_save_yaml,
     load_yaml,
     quick_add_stock_widget,
-    save_yaml,
 )
 
 st.set_page_config(page_title="价格预警", page_icon="🔔", layout="wide")
@@ -69,16 +70,22 @@ else:
         df_rules = pd.DataFrame(flat_rows)
         st.dataframe(df_rules, width='stretch', hide_index=True)
 
-    # 删除规则
+    # 删除规则 — 选择式 + 二次确认
     with st.expander("🗑 删除规则"):
-        delete_idx = st.number_input(
-            "规则序号 (#)", min_value=0, max_value=max(len(rules) - 1, 0),
-            value=0, step=1,
+        del_options = [
+            f"#{i} — {r.get('name', '')} ({r.get('code', '')}) · {', '.join(c.get('type','') for c in r.get('conditions', []))}"
+            for i, r in enumerate(rules)
+        ]
+        del_sel = st.selectbox("选择要删除的规则", options=range(len(del_options)),
+                               format_func=lambda i: del_options[i], key="alert_del_sel")
+        del_result = confirm_action(
+            "alert_del", f"确定删除规则 #{del_sel}（{rules[del_sel].get('name', '')}）？",
+            "🗑️ 删除选中规则",
         )
-        if st.button("确认删除", type="secondary"):
-            removed = rules.pop(int(delete_idx))
+        if del_result is True:
+            removed = rules.pop(int(del_sel))
             cfg["rules"] = rules
-            if save_yaml(PATH_PRICE_ALERTS, cfg):
+            if atomic_save_yaml(PATH_PRICE_ALERTS, cfg):
                 st.success(f"已删除规则: {removed.get('name')} ({removed.get('code')})")
                 st.rerun()
             else:
@@ -153,7 +160,7 @@ with st.form("add_rule_form", clear_on_submit=True):
             }
             rules.append(new_rule)
             cfg["rules"] = rules
-            if save_yaml(PATH_PRICE_ALERTS, cfg):
+            if atomic_save_yaml(PATH_PRICE_ALERTS, cfg):
                 st.success(f"已添加规则: {new_rule['name']} ({code})")
                 # 记下来供下方"加入关注"预填
                 st.session_state["_alert_last_code"] = new_rule["code"]

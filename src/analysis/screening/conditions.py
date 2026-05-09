@@ -482,35 +482,32 @@ class DowntrendBreakoutCondition(BaseCondition):
 # 新增条件（为了支持 yaml 中新增的方案）
 # ========================
 
-class ExcludeSTCondition(BaseCondition):
-    name = "exclude_st"
-    requires_ohlcv = False
-    def evaluate_spot(self, spot_row: pd.Series) -> bool:
-        name = str(spot_row.get("名称", ""))
-        return "ST" not in name and "退" not in name
-    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
-        if "名称" not in df.columns:
-            return pd.Series(True, index=df.index)
-        return ~df["名称"].astype(str).str.contains("ST|退", na=False)
+class ExcludeRiskCondition(BaseCondition):
+    """
+    排除风险股票（ST/退市/退市风险）
 
-class ExcludeDelistingRiskCondition(BaseCondition):
-    name = "exclude_delisting_risk"
+    Args:
+        strict: True=排除所有ST(含*ST)+退; False=仅排除*ST+退
+    """
+    name = "exclude_risk"
     requires_ohlcv = False
+
+    def __init__(self, strict: bool = True):
+        self.strict = strict
+
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         name = str(spot_row.get("名称", ""))
+        if self.strict:
+            return "ST" not in name and "退" not in name
         return "*ST" not in name and "退" not in name
+
     def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
         if "名称" not in df.columns:
             return pd.Series(True, index=df.index)
+        if self.strict:
+            return ~df["名称"].astype(str).str.contains(r"ST|退", na=False)
         return ~df["名称"].astype(str).str.contains(r"\*ST|退", na=False)
 
-class ExcludeRecentUnlockCondition(BaseCondition):
-    name = "exclude_recent_unlock"
-    requires_ohlcv = False
-    def evaluate_spot(self, spot_row: pd.Series) -> bool:
-        return True # 占位，需接入额外解禁数据源才能真正实现
-    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(True, index=df.index)
 
 class ROEFilterCondition(BaseCondition):
     name = "roe_filter"
@@ -967,6 +964,251 @@ class RSIOverboughtCondition(BaseCondition):
 
 
 # ========================
+# 新增条件（策略改进 Phase 4）
+# ========================
+
+class BoxBreakoutWithVolumeCondition(BaseCondition):
+    """
+    箱体放量突破筛选（日线）
+
+    在 BoxBreakoutCondition 基础上增加成交量验证：
+    突破日成交量 > 近 N 日均量 × vol_multiple，过滤无量假突破。
+    """
+    name = "box_breakout_volume"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(
+        self,
+        lookback_bars: int = 20,
+        breakout_pct: float = 0.02,
+        consolidation_pct: float = 0.10,
+        vol_lookback: int = 20,
+        vol_multiple: float = 1.5,
+    ):
+        self.lookback_bars = lookback_bars
+        self.breakout_pct = breakout_pct
+        self.consolidation_pct = consolidation_pct
+        self.vol_lookback = vol_lookback
+        self.vol_multiple = vol_multiple
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < self.lookback_bars + 1:
+            return False
+        try:
+            df = ohlcv_df.copy()
+            rename = {"最高": "high", "最低": "low", "收盘": "close"}
+            df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+            vol_col = "成交量" if "成交量" in df.columns else "volume"
+            if not all(c in df.columns for c in ("high", "low", "close")) or vol_col not in df.columns:
+                return False
+
+            # 箱体识别
+            box_df = df.iloc[-(self.lookback_bars + 1):-1]
+            box_high = float(box_df["high"].max())
+            box_low = float(box_df["low"].min())
+            if box_low <= 0:
+                return False
+            amplitude = (box_high - box_low) / box_low
+            if amplitude > self.consolidation_pct:
+                return False
+
+            # 突破判断
+            last_close = float(df["close"].iloc[-1])
+            if last_close <= box_high * (1 + self.breakout_pct):
+                return False
+
+            # 成交量验证：突破日放量
+            vols = pd.to_numeric(df[vol_col], errors="coerce").fillna(0).values
+            current_vol = vols[-1]
+            avg_vol = vols[-(self.vol_lookback + 1):-1].mean()
+            if avg_vol <= 0 or current_vol <= avg_vol * self.vol_multiple:
+                return False
+
+            return True
+        except Exception as e:
+            logger.debug(f"箱体放量突破检测异常: {e}")
+            return False
+
+
+class StopLossCondition(BaseCondition):
+    """
+    止损条件（Spot）：当前亏损超过阈值时触发卖出。
+
+    在回测中使用：当持仓亏损超过 max_loss_pct 时卖出。
+    """
+    name = "stop_loss"
+    requires_ohlcv = False
+
+    def __init__(self, max_loss_pct: float = 8.0, cost_key: str = "cost_basis"):
+        """
+        Args:
+            max_loss_pct: 最大允许亏损百分比（正数，如 8 表示 -8%）
+            cost_key: 持仓成本价所在的 spot_row 键名
+        """
+        self.max_loss_pct = max_loss_pct
+        self.cost_key = cost_key
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        price = float(spot_row.get("最新价", 0) or 0)
+        cost = float(spot_row.get(self.cost_key, 0) or 0)
+        if cost <= 0 or price <= 0:
+            return False
+        loss_pct = (cost - price) / cost * 100
+        return loss_pct >= self.max_loss_pct
+
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        if "最新价" not in df.columns or self.cost_key not in df.columns:
+            return pd.Series(False, index=df.index)
+        price = pd.to_numeric(df["最新价"], errors="coerce").fillna(0)
+        cost = pd.to_numeric(df[self.cost_key], errors="coerce").fillna(0)
+        loss_pct = (cost - price) / cost * 100
+        return (cost > 0) & (price > 0) & (loss_pct >= self.max_loss_pct)
+
+
+class TrailingStopCondition(BaseCondition):
+    """
+    移动止损条件（OHLCV）：从买入后的最高收盘价回落超过阈值时触发卖出。
+    """
+    name = "trailing_stop"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, callback_pct: float = 5.0, lookback: int = 60):
+        """
+        Args:
+            callback_pct: 从最高价回落的百分比阈值（正数，如 5 表示回落 5%）
+            lookback: 回溯最高价的K线根数
+        """
+        self.callback_pct = callback_pct
+        self.lookback = lookback
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < 2:
+            return False
+        try:
+            close_col = "close" if "close" in ohlcv_df.columns else "收盘"
+            closes = pd.to_numeric(ohlcv_df[close_col], errors="coerce").fillna(0)
+            recent_high = closes.iloc[-self.lookback:].max()
+            current = closes.iloc[-1]
+            if recent_high <= 0 or current <= 0:
+                return False
+            drawdown = (recent_high - current) / recent_high * 100
+            return drawdown >= self.callback_pct
+        except Exception:
+            return False
+
+
+class VolumePriceDivergenceCondition(BaseCondition):
+    """
+    量价背离筛选（日线）
+
+    顶背离：价格创新高但成交量萎缩 → 趋势衰竭信号
+    底背离：价格创新低但成交量放大 → 底部反转信号
+    """
+    name = "volume_price_divergence"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, lookback_bars: int = 30, direction: str = "top"):
+        """
+        Args:
+            lookback_bars: 回溯区间
+            direction: "top" 顶背离 或 "bottom" 底背离
+        """
+        self.lookback_bars = lookback_bars
+        self.direction = direction
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.lookback_bars:
+            return False
+        try:
+            df = ohlcv_df.tail(self.lookback_bars).copy()
+            close_col = "close" if "close" in df.columns else "收盘"
+            vol_col = "成交量" if "成交量" in df.columns else "volume"
+            if close_col not in df.columns or vol_col not in df.columns:
+                return False
+
+            closes = pd.to_numeric(df[close_col], errors="coerce")
+            vols = pd.to_numeric(df[vol_col], errors="coerce")
+
+            # 将区间分为前半段和后半段
+            half = len(df) // 2
+            if half < 3:
+                return False
+
+            first_half_close = closes.iloc[:half]
+            second_half_close = closes.iloc[half:]
+            first_half_vol = vols.iloc[:half]
+            second_half_vol = vols.iloc[half:]
+
+            if self.direction == "top":
+                # 顶背离：后半段价格更高但量更小
+                price_new_high = second_half_close.max() > first_half_close.max()
+                vol_shrink = second_half_vol.mean() < first_half_vol.mean() * 0.8
+                return price_new_high and vol_shrink
+            else:
+                # 底背离：后半段价格更低但量更大
+                price_new_low = second_half_close.min() < first_half_close.min()
+                vol_expand = second_half_vol.mean() > first_half_vol.mean() * 1.2
+                return price_new_low and vol_expand
+        except Exception:
+            return False
+
+
+class NorthboundFlowCondition(BaseCondition):
+    """
+    北向资金持续净买入筛选
+
+    检测近 N 日北向资金对个股的净买入趋势。
+    注意：需要 akshare 接口支持，部分股票可能无数据。
+    """
+    name = "northbound_flow"
+    requires_ohlcv = False
+
+    def __init__(self, lookback_days: int = 5, min_net_buy: float = 1e8):
+        """
+        Args:
+            lookback_days: 回溯天数
+            min_net_buy: 最小累计净买入金额（元），默认 1 亿
+        """
+        self.lookback_days = lookback_days
+        self.min_net_buy = min_net_buy
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(True, index=df.index)
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        code = str(spot_row.get("代码", "")).strip()
+        if not code:
+            return False
+        try:
+            import akshare as ak
+            df = ak.stock_hsgt_individual_em(symbol=code)
+            if df is None or df.empty:
+                return False
+            if "当日净买入" in df.columns:
+                recent = df.tail(self.lookback_days)
+                net_buy = pd.to_numeric(recent["当日净买入"], errors="coerce").sum()
+                return net_buy >= self.min_net_buy
+            return False
+        except Exception:
+            return False
+
+
+# ========================
 # 条件注册表（用于YAML配置解析）
 # ========================
 
@@ -983,10 +1225,9 @@ CONDITION_REGISTRY: dict[str, type] = {
     "price_above_ma": PriceAboveMACondition,
     "box_breakout": BoxBreakoutCondition,
     "downtrend_breakout": DowntrendBreakoutCondition,
-    "exclude_st": ExcludeSTCondition,
-    "exclude_delisting_risk": ExcludeDelistingRiskCondition,
-    "exclude_recent_unlock": ExcludeRecentUnlockCondition,
-    "exclude_recent_large_unlock": ExcludeRecentUnlockCondition,
+    "exclude_risk": ExcludeRiskCondition,
+    "exclude_st": ExcludeRiskCondition,
+    "exclude_delisting_risk": ExcludeRiskCondition,
     "roe_filter": ROEFilterCondition,
     "multi_ma_bull": MultiMABullCondition,
     "volume_break": VolumeBreakCondition,
@@ -999,6 +1240,11 @@ CONDITION_REGISTRY: dict[str, type] = {
     "ma_death_cross": MADeathCrossCondition,
     "price_change": PriceChangeCondition,
     "macd_hist_positive": MACDHistPositiveCondition,
+    "box_breakout_volume": BoxBreakoutWithVolumeCondition,
+    "stop_loss": StopLossCondition,
+    "trailing_stop": TrailingStopCondition,
+    "volume_price_divergence": VolumePriceDivergenceCondition,
+    "northbound_flow": NorthboundFlowCondition,
 }
 
 
@@ -1009,8 +1255,8 @@ CONDITION_REGISTRY: dict[str, type] = {
 # 条件分类，供前端分组展示
 CONDITION_CATEGORIES = {
     "基本面/排除": [
-        "exclude_st", "exclude_delisting_risk", "exclude_recent_unlock",
-        "exclude_recent_large_unlock", "roe_filter",
+        "exclude_risk", "exclude_st", "exclude_delisting_risk",
+        "roe_filter", "northbound_flow",
     ],
     "估值/财务": [
         "market_cap", "pe_range", "pb_range", "price_range",
@@ -1029,10 +1275,14 @@ CONDITION_CATEGORIES = {
     ],
     "量价/突破": [
         "volume_break", "volume_shrink", "box_breakout",
-        "downtrend_breakout", "bollinger_breakout",
+        "box_breakout_volume", "downtrend_breakout",
+        "bollinger_breakout", "volume_price_divergence",
     ],
     "KDJ": [
         "kdj_gold_cross",
+    ],
+    "风控/止损": [
+        "stop_loss", "trailing_stop",
     ],
 }
 
@@ -1058,12 +1308,16 @@ CONDITION_LABELS: dict[str, str] = {
     "volume_break": "放量突破",
     "volume_shrink": "缩量",
     "box_breakout": "箱体突破",
+    "box_breakout_volume": "箱体放量突破",
     "downtrend_breakout": "下降趋势线突破",
     "bollinger_breakout": "布林带突破",
     "kdj_gold_cross": "KDJ金叉",
-    "exclude_st": "排除ST股",
-    "exclude_delisting_risk": "排除退市风险股",
-    "exclude_recent_unlock": "排除近期解禁",
-    "exclude_recent_large_unlock": "排除近期大额解禁",
+    "exclude_risk": "排除风险股(ST/退市)",
+    "exclude_st": "排除ST股(兼容旧配置)",
+    "exclude_delisting_risk": "排除退市风险股(兼容旧配置)",
     "roe_filter": "ROE筛选",
+    "stop_loss": "固定止损",
+    "trailing_stop": "移动止损",
+    "volume_price_divergence": "量价背离",
+    "northbound_flow": "北向资金净买入",
 }

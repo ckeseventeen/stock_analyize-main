@@ -20,6 +20,7 @@ if str(_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from src.web.components.search import fuzzy_search_stocks  # noqa: E402
 from src.web.utils import (  # noqa: E402
     MARKET_CONFIG_PATHS,
     MARKET_LABELS,
@@ -92,21 +93,11 @@ div[data-testid="stAppViewBlockContainer"] > div:first-child h1 {
     font-weight: 800;
 }
 
-/* 指标卡片 */
+/* 指标卡片 - 适配亮/暗模式 */
 div[data-testid="stMetric"] {
-    background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
     border: 1px solid rgba(102, 126, 234, 0.3);
     border-radius: 12px;
     padding: 16px 20px;
-    box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
-}
-div[data-testid="stMetric"] label {
-    color: #a0aec0 !important;
-    font-size: 0.85rem !important;
-}
-div[data-testid="stMetric"] [data-testid="stMetricValue"] {
-    color: #e2e8f0 !important;
-    font-weight: 700 !important;
 }
 
 /* 数据表格 */
@@ -115,19 +106,10 @@ div[data-testid="stDataFrame"] {
     overflow: hidden;
 }
 
-/* 表单容器 */
-div[data-testid="stForm"] {
-    background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
-    border: 1px solid rgba(102, 126, 234, 0.2);
-    border-radius: 12px;
-    padding: 20px;
-}
-
 /* Expander */
 details[data-testid="stExpander"] {
-    border: 1px solid rgba(102, 126, 234, 0.2) !important;
+    border: 1px solid rgba(102, 126, 234, 0.15) !important;
     border-radius: 10px !important;
-    background: rgba(15, 15, 26, 0.6) !important;
 }
 
 /* 选中 Tab 高亮 */
@@ -213,15 +195,7 @@ with tab_list:
         ind_filter = st.selectbox("筛选行业", options=ind_filter_options, key="wl_ind_filter")
 
     # 应用筛选
-    filtered = stocks
-    if search_q.strip():
-        q = search_q.strip().lower()
-        filtered = [
-            s for s in filtered
-            if q in str(s.get("code", "")).lower()
-            or q in str(s.get("name", "")).lower()
-            or q in str(s.get("notes", "")).lower()
-        ]
+    filtered = fuzzy_search_stocks(stocks, search_q) if search_q.strip() else stocks
     if cat_filter != "全部":
         # 提取板块 name
         cat_name_selected = cat_filter.split(" (")[0]

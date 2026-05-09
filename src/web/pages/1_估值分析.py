@@ -16,20 +16,21 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-# 图形后端要在 pyplot import 前设置
-import matplotlib  # noqa: E402
+from src.web.utils import setup_matplotlib_chinese  # noqa: E402
 
-matplotlib.use("Agg")
-matplotlib.rcParams["font.sans-serif"] = [
-    "Hiragino Sans GB", "PingFang HK", "Heiti TC", "STHeiti",
-    "Microsoft YaHei", "SimHei", "Arial Unicode MS", "DejaVu Sans",
-]
-matplotlib.rcParams["axes.unicode_minus"] = False
+setup_matplotlib_chinese()
 
 import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from src.web.components.search import searchable_select  # noqa: E402
+from src.web.components.state import (  # noqa: E402
+    is_stale,
+    load_result,
+    save_result,
+    stale_warning,
+)
 from src.web.utils import (  # noqa: E402
     MARKET_LABELS,
     list_stocks_from_market_config,
@@ -78,11 +79,18 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**股票选择**")
     if stocks:
-        # 下拉选配置中的股票
-        options = [f"{s['name']} ({s['code']}) · {s.get('category', '')}" for s in stocks]
-        idx = st.selectbox("从配置中选择", options=range(len(options)),
-                           format_func=lambda i: options[i], index=0)
-        selected = stocks[idx]
+        # 可搜索的股票选择器
+        selected_code = searchable_select(
+            "选择股票",
+            options=stocks,
+            key="page1_stock",
+            id_field="code",
+            name_field="name",
+        )
+        if selected_code:
+            selected = next((s for s in stocks if s["code"] == selected_code), stocks[0])
+        else:
+            selected = stocks[0]
         default_code = selected["code"]
         default_name = selected["name"]
         default_val = selected.get("valuation", "pe")
@@ -161,70 +169,87 @@ if run_btn:
     with st.spinner(f"正在拉取 {name} ({code}) 数据..."):
         try:
             result, fin_df, hist_val_df, market_data = _run_pipeline(market, stock_config)
+            # 用统一状态管理保存结果
+            params = {
+                "code": code.strip(),
+                "valuation": val_type,
+                "range": [r_low, r_mid, r_high],
+            }
+            save_result("valuation", code.strip(), market, params,
+                        (result, fin_df, hist_val_df, market_data, stock_config))
         except Exception as e:
             st.error(f"数据拉取或分析异常: {e}")
             st.exception(e)
             st.stop()
 
+# Stale 检测与警告
+params = {"code": code.strip(), "valuation": val_type, "range": [r_low, r_mid, r_high]}
+stale_warning("valuation", code.strip())
+
+# 从统一状态管理恢复结果
+_val_data = load_result("valuation", code.strip(), market, params)
+if _val_data:
+    result, fin_df, hist_val_df, market_data, stock_config = _val_data
+
     if not result:
         st.warning("分析结果为空，可能数据缺失或 price=0。请检查代码是否正确。")
-        st.stop()
+    else:
+        # --------- 关键指标汇总 ---------
+        _name = stock_config.get("name", code)
+        _code = stock_config.get("code", code)
+        st.success(f"✅ 分析完成: {_name} ({_code})")
 
-    # --------- 关键指标汇总 ---------
-    st.success(f"✅ 分析完成: {name} ({code})")
+        m1, m2, m3, m4 = st.columns(4)
+        with m1:
+            st.metric("当前价", f"{result.get('price', 0):.2f}")
+        with m2:
+            pe_ttm = result.get("current_pe")
+            st.metric("PE (TTM)", f"{pe_ttm:.2f}" if pe_ttm and pe_ttm > 0 else "N/A")
+        with m3:
+            ps_ttm = result.get("current_ps")
+            st.metric("PS (TTM)", f"{ps_ttm:.2f}" if ps_ttm and ps_ttm > 0 else "N/A")
+        with m4:
+            st.metric("市值(亿)", f"{market_data.get('market_cap', 0) / 1e8:.2f}"
+                      if market_data.get("market_cap") else "N/A")
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric("当前价", f"{result.get('price', 0):.2f}")
-    with m2:
-        pe_ttm = result.get("current_pe")
-        st.metric("PE (TTM)", f"{pe_ttm:.2f}" if pe_ttm and pe_ttm > 0 else "N/A")
-    with m3:
-        ps_ttm = result.get("current_ps")
-        st.metric("PS (TTM)", f"{ps_ttm:.2f}" if ps_ttm and ps_ttm > 0 else "N/A")
-    with m4:
-        st.metric("市值(亿)", f"{market_data.get('market_cap', 0) / 1e8:.2f}"
-                  if market_data.get("market_cap") else "N/A")
+        # --------- 目标价档位 ---------
+        st.subheader("🎯 目标价档位")
+        target_prices = result.get("target_prices") or {}
+        if target_prices:
+            tp_df = pd.DataFrame([
+                {"档位": level, "目标价": round(price, 2),
+                 "相对当前": f"{(price / result['price'] - 1) * 100:+.1f}%"
+                           if result.get("price") else ""}
+                for level, price in target_prices.items()
+            ])
+            st.dataframe(tp_df, width='stretch', hide_index=True)
 
-    # --------- 目标价档位 ---------
-    st.subheader("🎯 目标价档位")
-    target_prices = result.get("target_prices") or {}
-    if target_prices:
-        tp_df = pd.DataFrame([
-            {"档位": level, "目标价": round(price, 2),
-             "相对当前": f"{(price / result['price'] - 1) * 100:+.1f}%"
-                       if result.get("price") else ""}
-            for level, price in target_prices.items()
-        ])
-        st.dataframe(tp_df, width='stretch', hide_index=True)
+        # --------- 4 格估值图（matplotlib）---------
+        st.subheader("📊 4 格估值图")
+        try:
+            from src.core.visualizer import Visualizer
+            viz = Visualizer(result, stock_config)
+            fig = viz.plot()
+            st.pyplot(fig, width='stretch')
+            plt.close(fig)
+        except Exception as e:
+            st.error(f"图表渲染失败: {e}")
+            st.exception(e)
 
-    # --------- 4 格估值图（matplotlib）---------
-    st.subheader("📊 4 格估值图")
-    try:
-        from src.core.visualizer import Visualizer
-        viz = Visualizer(result, stock_config)
-        fig = viz.plot()
-        st.pyplot(fig, width='stretch')
-        plt.close(fig)
-    except Exception as e:
-        st.error(f"图表渲染失败: {e}")
-        st.exception(e)
+        # --------- 原始数据展示（可折叠）---------
+        with st.expander("📋 财务数据原表"):
+            if fin_df is not None and not fin_df.empty:
+                st.dataframe(fin_df, width='stretch')
+            else:
+                st.caption("暂无财务数据")
 
-    # --------- 原始数据展示（可折叠）---------
-    with st.expander("📋 财务数据原表"):
-        if fin_df is not None and not fin_df.empty:
-            st.dataframe(fin_df, width='stretch')
-        else:
-            st.caption("暂无财务数据")
+        with st.expander("📉 历史估值原表"):
+            if hist_val_df is not None and not hist_val_df.empty:
+                st.dataframe(hist_val_df.tail(100), width='stretch')
+            else:
+                st.caption("暂无历史估值数据")
 
-    with st.expander("📉 历史估值原表"):
-        if hist_val_df is not None and not hist_val_df.empty:
-            st.dataframe(hist_val_df.tail(100), width='stretch')
-        else:
-            st.caption("暂无历史估值数据")
-
-    with st.expander("💹 实时行情 Dict"):
-        st.json(market_data)
-
+        with st.expander("💹 实时行情 Dict"):
+            st.json(market_data)
 else:
     st.info("👈 在左侧配置后点击「开始分析」")

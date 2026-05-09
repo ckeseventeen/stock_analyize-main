@@ -64,18 +64,27 @@ else:
             })
         df_state = pd.DataFrame(rows).sort_values("fired_at", ascending=False)
 
-        # 过滤
-        colf1, colf2 = st.columns(2)
-        with colf1:
-            code_filter = st.text_input("🔍 按股票代码过滤（留空=全部）", value="")
-        with colf2:
-            rule_filter = st.text_input("🔍 按规则类型过滤（留空=全部）", value="")
+        # 过滤（使用 form 避免每次按键触发 rerun）
+        with st.form("alert_filter_form"):
+            colf1, colf2, colf3 = st.columns(3)
+            with colf1:
+                code_filter = st.text_input("按股票代码过滤（留空=全部）", value="")
+            with colf2:
+                rule_filter = st.text_input("按规则类型过滤（留空=全部）", value="")
+            with colf3:
+                date_from = st.date_input("起始日期（留空=不限）", value=None, key="alert_date_from")
+                date_to = st.date_input("结束日期（留空=不限）", value=None, key="alert_date_to")
+            st.form_submit_button("应用过滤")
 
         df_show = df_state
         if code_filter.strip():
             df_show = df_show[df_show["股票代码"].str.contains(code_filter.strip(), na=False)]
         if rule_filter.strip():
             df_show = df_show[df_show["规则类型"].str.contains(rule_filter.strip(), na=False)]
+        if date_from:
+            df_show = df_show[df_show["日期"] >= date_from.isoformat()]
+        if date_to:
+            df_show = df_show[df_show["日期"] <= date_to.isoformat()]
 
         st.dataframe(df_show, width='stretch', hide_index=True)
 

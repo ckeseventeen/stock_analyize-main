@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import streamlit as st
 
+from src.web.components.confirm import confirm_action
+from src.web.utils import CONFIG_DIR
 from src.automation.scheduler_manager import (
     get_job_history,
     get_status,
@@ -50,7 +52,8 @@ ctrl_col1, ctrl_col2, ctrl_col3 = st.columns([1, 1, 4])
 
 with ctrl_col1:
     if running:
-        if st.button("⏹ 停止调度器", type="secondary", width='stretch'):
+        stop_result = confirm_action("stop_scheduler", "停止调度器将中断所有定时任务，确认停止？", "⏹ 停止调度器", danger=True)
+        if stop_result is True:
             stop()
             st.rerun()
     else:
@@ -142,7 +145,7 @@ if history:
     }
 
     st.dataframe(
-        df.style.applymap(_color_status, subset=["status"]),
+        df.style.map(_color_status, subset=["status"]),
         column_config=col_config,
         width='stretch',
         hide_index=True,
@@ -159,7 +162,7 @@ else:
 st.subheader("⚙️ 调度配置")
 
 with st.expander("查看 scheduler.yaml", expanded=False):
-    config_path = "./config/scheduler.yaml"
+    config_path = str(CONFIG_DIR / "scheduler.yaml")
     try:
         with open(config_path, encoding="utf-8") as f:
             st.code(f.read(), language="yaml")

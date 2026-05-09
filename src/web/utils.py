@@ -52,18 +52,48 @@ ALERT_LOG_PATH = LOGS_DIR / "alerts.log"
 # YAML 读写
 # ========================
 
-def load_yaml(path: Path | str) -> dict:
+def load_yaml(path: Path | str, ttl: int = 0) -> dict:
     """
     读取 YAML 文件为字典。文件不存在或格式错误时返回空 dict，避免前端崩溃。
+
+    Args:
+        path: YAML 文件路径
+        ttl: 缓存秒数（0=不缓存，默认）。前端页面可传 ttl>0 启用缓存，
+             避免每次 Streamlit rerun 都重新读取磁盘。
     """
     p = Path(path)
     if not p.exists():
         return {}
+    if ttl > 0:
+        return _cached_load_yaml(str(p), ttl)
+    return _read_yaml_file(p)
+
+
+def _cached_load_yaml(path_str: str, ttl: int) -> dict:
+    """带 Streamlit 缓存的 YAML 读取"""
+    try:
+        import streamlit as st
+        @st.cache_data(ttl=ttl, show_spinner=False)
+        def _inner(p: str) -> dict:
+            return _read_yaml_file(Path(p))
+        return _inner(path_str)
+    except Exception:
+        return _read_yaml_file(Path(path_str))
+
+
+def _read_yaml_file(p: Path) -> dict:
+    """内部：实际读取 YAML 文件"""
     try:
         with open(p, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return data if isinstance(data, dict) else {}
-    except Exception:
+    except yaml.YAMLError as e:
+        import logging
+        logging.getLogger("web.utils").warning(f"YAML 解析失败 [{p}]: {e}")
+        return {}
+    except Exception as e:
+        import logging
+        logging.getLogger("web.utils").warning(f"YAML 读取失败 [{p}]: {e}")
         return {}
 
 
@@ -145,9 +175,13 @@ MARKET_CONFIG_PATHS = {
 }
 
 
-def list_stocks_from_market_config(market: str) -> list[dict]:
+def list_stocks_from_market_config(market: str, ttl: int = 300) -> list[dict]:
     """
     从市场 YAML 提取所有股票（展平 categories）供下拉选择。
+
+    Args:
+        market: 市场标识 ("a", "hk", "us")
+        ttl: 缓存秒数（默认 5 分钟），避免每次 rerun 重新读取 YAML
 
     Returns:
         [{"code": "...", "name": "...", "category": "...", "valuation": "pe", ...}, ...]
@@ -155,7 +189,7 @@ def list_stocks_from_market_config(market: str) -> list[dict]:
     cfg_path = MARKET_CONFIG_PATHS.get(market)
     if not cfg_path:
         return []
-    cfg = load_yaml(cfg_path)
+    cfg = load_yaml(cfg_path, ttl=ttl)
     if not cfg:
         return []
 
@@ -174,6 +208,26 @@ def list_stocks_from_market_config(market: str) -> list[dict]:
 # ========================
 # 通用渲染
 # ========================
+
+def setup_matplotlib_chinese() -> None:
+    """
+    配置 matplotlib 使用中文字体 + Agg 后端。
+    解决 Streamlit 多线程环境下 TkAgg 崩溃问题，同时确保图表中文不乱码。
+    每个使用 matplotlib 的页面调用一次即可。
+    """
+    import os
+    os.environ.setdefault("MPLBACKEND", "Agg")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    for _fn in ("SimHei", "Microsoft YaHei", "WenQuanYi Micro Hei", "Arial Unicode MS"):
+        try:
+            plt.rcParams["font.sans-serif"] = [_fn] + plt.rcParams.get("font.sans-serif", [])
+            break
+        except Exception:
+            continue
+    plt.rcParams["axes.unicode_minus"] = False
+
 
 def ensure_project_dirs() -> None:
     """确保 cache/logs/output 目录存在（避免读写抛 FileNotFoundError）"""

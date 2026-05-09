@@ -44,8 +44,7 @@ _PARAM_MAP = {
     },
     "exclude_st": {},
     "exclude_delisting_risk": {},
-    "exclude_recent_unlock": {},
-    "exclude_recent_large_unlock": {},
+    "exclude_risk": {"strict": "strict"},
     "roe_filter": {"min_roe": "min_roe"},
     "multi_ma_bull": {
         "ma_list": "ma_list",
@@ -88,15 +87,36 @@ _PARAM_MAP = {
     "macd_hist_positive": {
         "consecutive": "consecutive",
     },
+    "box_breakout_volume": {
+        "lookback_bars": "lookback_bars",
+        "breakout_pct": "breakout_pct",
+        "consolidation_pct": "consolidation_pct",
+        "vol_lookback": "vol_lookback",
+        "vol_multiple": "vol_multiple",
+    },
+    "stop_loss": {
+        "max_loss_pct": "max_loss_pct",
+    },
+    "trailing_stop": {
+        "callback_pct": "callback_pct",
+        "lookback": "lookback",
+    },
+    "volume_price_divergence": {
+        "lookback_bars": "lookback_bars",
+        "direction": "direction",
+    },
+    "northbound_flow": {
+        "lookback_days": "lookback_days",
+        "min_net_buy": "min_net_buy",
+    },
 }
 
 # 不适合回测的基本面/排除类条件（仅在实时 Spot 筛选时有效）
 SPOT_ONLY_TYPES = {
-    "exclude_st", "exclude_delisting_risk",
-    "exclude_recent_unlock", "exclude_recent_large_unlock",
+    "exclude_risk", "exclude_st", "exclude_delisting_risk",
     "market_cap", "pe_range", "pb_range",
     "price_range", "turnover_rate", "roe_filter",
-    "price_change",
+    "price_change", "stop_loss", "northbound_flow",
 }
 
 

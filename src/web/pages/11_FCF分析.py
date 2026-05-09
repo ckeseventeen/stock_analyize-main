@@ -24,9 +24,12 @@ import streamlit as st
 from src.analysis.factor.fcf_analyzer import FCFAnalyzer
 from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
 from src.data.fcf_data_fetcher import FCFDataFetcher
+from src.web.components.search import searchable_select  # noqa: E402
+from src.web.components.state import load_result, save_result, stale_warning  # noqa: E402
 from src.web.utils import (
     MARKET_LABELS,
     list_stocks_from_market_config,
+    quick_add_stock_widget,
 )
 
 st.set_page_config(page_title="FCF 分析", page_icon="💰", layout="wide")
@@ -49,10 +52,17 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("**股票选择**")
     if stocks:
-        options = [f"{s['name']} ({s['code']})" for s in stocks]
-        idx = st.selectbox("从配置中选择", options=range(len(options)),
-                           format_func=lambda i: options[i], index=0)
-        selected = stocks[idx]
+        selected_code = searchable_select(
+            "选择股票",
+            options=stocks,
+            key="page11_stock",
+            id_field="code",
+            name_field="name",
+        )
+        if selected_code:
+            selected = next((s for s in stocks if s["code"] == selected_code), stocks[0])
+        else:
+            selected = stocks[0]
         default_code = selected["code"]
         default_name = selected["name"]
     else:
@@ -66,6 +76,17 @@ with st.sidebar:
     is_annual = (period == "年度")
 
     run_btn = st.button("▶️ 开始分析", type="primary", use_container_width=True)
+
+    # 加入关注列表
+    st.markdown("---")
+    if quick_add_stock_widget(
+        key_prefix="page11_sidebar",
+        default_market=market,
+        default_code=code.strip(),
+        default_name=name.strip() if name else "",
+        label="➕ 加入关注列表",
+    ):
+        st.rerun()
 
 # ========================
 # 获取市值 Helper
@@ -86,23 +107,43 @@ def _get_market_cap(market: str, code: str) -> float:
     return 0.0
 
 # ========================
+# 缓存的数据获取
+# ========================
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_fcf_fetch(market: str, code: str, is_annual: bool):
+    """带缓存的 FCF 数据获取"""
+    return FCFDataFetcher.fetch(market, code, is_annual=is_annual)
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_market_cap(market: str, code: str):
+    """带缓存的市值获取"""
+    return _get_market_cap(market, code)
+
+
+# ========================
 # 主逻辑
 # ========================
+
+# 尝试从状态恢复
+fcf_params = {"code": code.strip(), "market": market, "period": period}
+_fcf_state = load_result("fcf", code.strip(), market, fcf_params)
+
 if run_btn:
     if not code:
         st.error("请输入股票代码")
         st.stop()
 
     with st.spinner(f"正在拉取 {name} ({code}) 的 {period} 财务数据与市值..."):
-        # 拉取 FCF 数据
-        raw_df = FCFDataFetcher.fetch(market, code, is_annual=is_annual)
+        # 拉取 FCF 数据（带缓存）
+        raw_df = _cached_fcf_fetch(market, code, is_annual=is_annual)
 
         if raw_df.empty:
             st.error("未获取到足够的财务数据（现金流量表或利润表为空），请检查代码或网络。")
             st.stop()
 
-        # 拉取最新市值
-        market_cap = _get_market_cap(market, code)
+        # 拉取最新市值（带缓存）
+        market_cap = _cached_market_cap(market, code)
 
         # 实例化 Analyzer
         analyzer = FCFAnalyzer(raw_df, market_cap)
@@ -113,8 +154,31 @@ if run_btn:
         st.error("指标计算失败。")
         st.stop()
 
+    # 保存结果到统一状态管理
+    save_result("fcf", code.strip(), market, fcf_params, {
+        "analyzed_df": analyzed_df,
+        "score_res": score_res,
+        "name": name,
+        "code": code,
+        "is_annual": is_annual,
+    })
+    _fcf_state = load_result("fcf", code.strip(), market, fcf_params)
+
+# Stale 检测与警告（统一在run_btn处理之后调用）
+stale_warning("fcf", code.strip())
+
+if _fcf_state:
+    analyzed_df = _fcf_state["analyzed_df"]
+    score_res = _fcf_state["score_res"]
+    name = _fcf_state.get("name", name)
+    code = _fcf_state.get("code", code)
+    is_annual = _fcf_state.get("is_annual", is_annual)
+
+    if analyzed_df.empty:
+        st.error("指标计算失败。")
+        st.stop()
+
     # --------- 格式化单位：亿元 ---------
-    # 注意：yfinance 返回美股或港股可能不是人民币，展示时保持原币种，但通常数量级很大，统一除以 1亿 方便展示
     df_plot = analyzed_df.copy()
     for col in ['operating_cash_flow', 'capex', 'fcf', 'revenue', 'net_profit']:
         df_plot[col] = df_plot[col] / 1e8

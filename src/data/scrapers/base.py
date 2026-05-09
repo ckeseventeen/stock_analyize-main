@@ -176,11 +176,11 @@ class BaseScraper(ABC):
 
         # 拼接文本便于一次正则匹配
         combined = df[text_cols].astype(str).agg(" ".join, axis=1).str.lower()
-        [k.lower() for k in keywords if k]
+        keywords_lower = [k.lower() for k in keywords if k]
 
         # 记录每行命中的关键词
         def _match(text: str) -> str:
-            hits = [k for k in keywords if k and k.lower() in text]
+            hits = [k for k in keywords_lower if k in text]
             return ",".join(hits)
 
         matched = combined.map(_match)

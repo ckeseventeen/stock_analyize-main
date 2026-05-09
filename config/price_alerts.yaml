@@ -1,2 +1,9 @@
 default_cooldown_hours: 24
-rules: []
+rules:
+  - code: '000333'
+    market: a
+    name: '000333'
+    conditions:
+      - type: price_below
+        value: 20.0
+    cooldown_hours: 25

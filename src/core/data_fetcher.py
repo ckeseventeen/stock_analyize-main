@@ -70,11 +70,31 @@ class AStockDataFetcher(BaseDataFetcher):
     """
 
     # 通达信行情服务器地址池（备用数据源）
-    TDX_SERVERS = [
+    # 可通过 config/data_source.yaml 的 tdx_servers 字段覆盖
+    _DEFAULT_TDX_SERVERS = [
         ('119.147.212.81', 7709),
         ('114.80.80.222', 7709),
         ('180.153.18.170', 7709),
     ]
+
+    @classmethod
+    def _load_tdx_servers(cls) -> list[tuple[str, int]]:
+        """从配置加载 TDX 服务器列表，加载失败则使用默认值"""
+        try:
+            import yaml
+            from pathlib import Path
+            cfg_path = Path(__file__).resolve().parents[2] / "config" / "data_source.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                servers = cfg.get("tdx_servers")
+                if servers and isinstance(servers, list):
+                    return [(s["host"], int(s["port"])) for s in servers if "host" in s]
+        except Exception:
+            pass
+        return cls._DEFAULT_TDX_SERVERS
+
+    TDX_SERVERS = _DEFAULT_TDX_SERVERS  # 类属性保持向后兼容
 
     def __init__(self):
         super().__init__("A股")

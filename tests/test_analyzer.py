@@ -84,8 +84,9 @@ class TestTTMCalculation:
         market_data = {"price": 1800.0, "market_cap": 2.26e12}
         config = {"name": "test", "code": "000001", "valuation": "pe", "pe_range": [10, 20, 30]}
         analyzer = ConcreteAnalyzer(df, pd.DataFrame(), market_data, config)
-        ttm = analyzer._calc_ttm(df, "归母净利润")
+        ttm, confidence = analyzer._calc_ttm(df, "归母净利润")
         assert ttm == pytest.approx(600e8)
+        assert confidence == 'high'  # 年报直接取值
 
     def test_ttm_quarterly_calculation(self, sample_financial_df):
         """季报数据的 TTM = 当期YTD + 上年年报 - 上年同期YTD"""
@@ -93,19 +94,21 @@ class TestTTMCalculation:
         config = {"name": "test", "code": "000001", "valuation": "pe", "pe_range": [10, 20, 30]}
         analyzer = ConcreteAnalyzer(sample_financial_df, pd.DataFrame(), market_data, config)
 
-        ttm = analyzer._calc_ttm(sample_financial_df, "归母净利润")
+        ttm, confidence = analyzer._calc_ttm(sample_financial_df, "归母净利润")
         # 最新Q3(2024-09-30) = 450e8
         # TTM = Q3_2024 + Annual_2023 - Q3_2023 = 450 + 600 - 420 = 630 (亿)
         expected = 450e8 + 600e8 - 420e8
         assert ttm == pytest.approx(expected)
+        assert confidence == 'medium'  # 正常 TTM 累计差值
 
     def test_ttm_missing_metric_returns_zero(self, sample_financial_df):
         """指标不存在时应返回 0.0"""
         market_data = {"price": 100.0, "market_cap": 1e12}
         config = {"name": "test", "code": "000001", "valuation": "pe", "pe_range": [10, 20, 30]}
         analyzer = ConcreteAnalyzer(sample_financial_df, pd.DataFrame(), market_data, config)
-        ttm = analyzer._calc_ttm(sample_financial_df, "不存在的指标")
+        ttm, confidence = analyzer._calc_ttm(sample_financial_df, "不存在的指标")
         assert ttm == 0.0
+        assert confidence == 'low'  # 缺失指标视为低置信度
 
     def test_process_returns_dict(self, sample_financial_df):
         """process 应返回包含关键字段的字典"""
@@ -123,6 +126,8 @@ class TestTTMCalculation:
         assert isinstance(result, dict)
         assert "ttm_net_profit" in result
         assert "ttm_revenue" in result
+        assert "ttm_confidence" in result
+        assert result["ttm_confidence"] in ('high', 'medium', 'low')
         assert "scenarios" in result
         assert "price" in result
 

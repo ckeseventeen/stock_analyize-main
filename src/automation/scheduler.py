@@ -167,7 +167,7 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
 
     def _run():
         from src.analysis.screening.screener import StockScreener
-        from src.automation.alert import build_channels
+        from src.automation.alert import AlertEvent, build_channels
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         channels = build_channels(alerts_cfg)
@@ -181,8 +181,14 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
             if result is None or result.empty:
                 msg = f"[screener] 筛选完成，无符合条件股票（策略: {strategy_ids or '全部'}）"
                 logger.info(msg)
+                event = AlertEvent(
+                    title="📊 股票筛选结果",
+                    body=msg,
+                    event_key=f"screener:empty:{__import__('datetime').date.today()}",
+                    event_type="screener_result",
+                )
                 for ch in channels:
-                    ch.send("📊 股票筛选结果", msg)
+                    ch.send(event)
                 return
 
             total = len(result)
@@ -194,8 +200,14 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
                 f"前5名:\n{top5}"
             )
             logger.info(f"[screener] 筛选完成，{total} 只股票符合条件")
+            event = AlertEvent(
+                title="📊 股票筛选结果",
+                body=summary,
+                event_key=f"screener:result:{__import__('datetime').date.today()}",
+                event_type="screener_result",
+            )
             for ch in channels:
-                ch.send("📊 股票筛选结果", summary)
+                ch.send(event)
 
             # 保存 CSV
             output_dir = job_cfg.get("output_dir", "./output")
@@ -205,9 +217,14 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
 
         except Exception as e:
             logger.error(f"[screener] 执行失败: {e}", exc_info=True)
-            err_msg = f"🚨 筛选执行失败: {e}"
+            err_event = AlertEvent(
+                title="📊 股票筛选异常",
+                body=f"🚨 筛选执行失败: {e}",
+                event_key=f"screener:error:{__import__('datetime').date.today()}",
+                event_type="screener_error",
+            )
             for ch in channels:
-                ch.send("📊 股票筛选异常", err_msg)
+                ch.send(err_event)
 
     return _run
 
@@ -328,17 +345,23 @@ def build_scheduler(config: dict, scheduler_cls=None):
 # ========================
 
 _current_scheduler = None  # 模块级引用，便于 signal handler 访问
+_scheduler_lock = __import__("threading").Lock()
 
 
 def _install_signal_handlers(scheduler) -> None:
     """安装 SIGTERM / SIGINT 处理器，实现优雅停止（等待 Job 完成）"""
     global _current_scheduler
-    _current_scheduler = scheduler
+    with _scheduler_lock:
+        _current_scheduler = scheduler
 
     def _graceful_shutdown(signum, frame):
         logger.info(f"收到信号 {signum}，开始优雅停止...")
+        with _scheduler_lock:
+            sched = _current_scheduler
+        if sched is None:
+            sys.exit(0)
         try:
-            scheduler.shutdown(wait=True)
+            sched.shutdown(wait=True)
             logger.info("调度器已停止")
         except Exception as e:
             logger.error(f"停止调度器异常: {e}")

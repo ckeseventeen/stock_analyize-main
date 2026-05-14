@@ -795,84 +795,66 @@ class KDJGoldCrossCondition(BaseCondition):
             return False
 
 
-class MAGoldCrossCondition(BaseCondition):
+class _MACrossCondition(BaseCondition):
+    """
+    均线交叉筛选基类（DRY 提取）
+
+    子类仅需设置 `_cross_direction`:
+      - "golden": 短上穿长（金叉）
+      - "death":  短下穿长（死叉）
+    """
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+    _cross_direction: str = "golden"
+
+    def __init__(self, fast_period: int = 5, slow_period: int = 20):
+        self.fast_period = fast_period
+        self.slow_period = slow_period
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.slow_period + 4:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages([self.fast_period, self.slow_period])
+            df = ta.get_dataframe()
+            if len(df) < 4:
+                return False
+            fast_col = f"ma_{self.fast_period}"
+            slow_col = f"ma_{self.slow_period}"
+            # 允许最近3根K线内出现交叉
+            for offset in range(3):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(df):
+                    prev_fast = float(df[fast_col].iloc[prev_idx])
+                    prev_slow = float(df[slow_col].iloc[prev_idx])
+                    curr_fast = float(df[fast_col].iloc[idx])
+                    curr_slow = float(df[slow_col].iloc[idx])
+                    if self._cross_direction == "golden":
+                        if prev_fast <= prev_slow and curr_fast > curr_slow:
+                            return True
+                    else:
+                        if prev_fast >= prev_slow and curr_fast < curr_slow:
+                            return True
+            return False
+        except Exception:
+            return False
+
+
+class MAGoldCrossCondition(_MACrossCondition):
     """均线金叉筛选：短期均线上穿长期均线"""
     name = "ma_gold_cross"
-    requires_ohlcv = True
-    ohlcv_period = "daily"
-
-    def __init__(self, fast_period: int = 5, slow_period: int = 20):
-        self.fast_period = fast_period
-        self.slow_period = slow_period
-
-    def evaluate_spot(self, spot_row: pd.Series) -> bool:
-        return True
-
-    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
-        if ohlcv_df is None or len(ohlcv_df) < self.slow_period + 4:
-            return False
-        try:
-            ta = TechnicalAnalyzer(ohlcv_df)
-            ta.add_moving_averages([self.fast_period, self.slow_period])
-            df = ta.get_dataframe()
-            if len(df) < 4:
-                return False
-            fast_col = f"ma_{self.fast_period}"
-            slow_col = f"ma_{self.slow_period}"
-            # 允许最近3根K线内出现金叉
-            for offset in range(3):
-                idx = -(offset + 1)
-                prev_idx = idx - 1
-                if abs(prev_idx) <= len(df):
-                    prev_fast = float(df[fast_col].iloc[prev_idx])
-                    prev_slow = float(df[slow_col].iloc[prev_idx])
-                    curr_fast = float(df[fast_col].iloc[idx])
-                    curr_slow = float(df[slow_col].iloc[idx])
-                    if prev_fast <= prev_slow and curr_fast > curr_slow:
-                        return True
-            return False
-        except Exception:
-            return False
+    _cross_direction = "golden"
 
 
-class MADeathCrossCondition(BaseCondition):
+class MADeathCrossCondition(_MACrossCondition):
     """均线死叉筛选：短期均线下穿长期均线"""
     name = "ma_death_cross"
-    requires_ohlcv = True
-    ohlcv_period = "daily"
-
-    def __init__(self, fast_period: int = 5, slow_period: int = 20):
-        self.fast_period = fast_period
-        self.slow_period = slow_period
-
-    def evaluate_spot(self, spot_row: pd.Series) -> bool:
-        return True
-
-    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
-        if ohlcv_df is None or len(ohlcv_df) < self.slow_period + 4:
-            return False
-        try:
-            ta = TechnicalAnalyzer(ohlcv_df)
-            ta.add_moving_averages([self.fast_period, self.slow_period])
-            df = ta.get_dataframe()
-            if len(df) < 4:
-                return False
-            fast_col = f"ma_{self.fast_period}"
-            slow_col = f"ma_{self.slow_period}"
-            # 允许最近3根K线内出现死叉
-            for offset in range(3):
-                idx = -(offset + 1)
-                prev_idx = idx - 1
-                if abs(prev_idx) <= len(df):
-                    prev_fast = float(df[fast_col].iloc[prev_idx])
-                    prev_slow = float(df[slow_col].iloc[prev_idx])
-                    curr_fast = float(df[fast_col].iloc[idx])
-                    curr_slow = float(df[slow_col].iloc[idx])
-                    if prev_fast >= prev_slow and curr_fast < curr_slow:
-                        return True
-            return False
-        except Exception:
-            return False
+    _cross_direction = "death"
 
 
 class PriceChangeCondition(BaseCondition):

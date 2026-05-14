@@ -1,6 +1,16 @@
-# 注意：matplotlib 字体和后端配置已在 main.py 入口处统一设置，此处不再重复
-import matplotlib.dates as mdates
-import matplotlib.pyplot as plt
+# matplotlib 全局配置：无头模式 + 中文字体栈（需在 import pyplot 之前设置）
+import os as _os
+_os.environ.setdefault("MPLBACKEND", "Agg")
+import matplotlib as _mpl  # noqa: E402
+_mpl.use("Agg")
+_mpl.rcParams["font.sans-serif"] = [
+    "SimHei", "Microsoft YaHei", "Hiragino Sans GB", "PingFang HK",
+    "Heiti TC", "STHeiti", "Arial Unicode MS", "DejaVu Sans",
+]
+_mpl.rcParams["axes.unicode_minus"] = False
+
+import matplotlib.dates as mdates  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np
 import pandas as pd
 

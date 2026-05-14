@@ -2,55 +2,92 @@
 src/utils/logger.py — 统一日志管理模块
 
 使用 TimedRotatingFileHandler 按天轮转，保留30天日志。
-修复：原版每次进程启动创建独立文件，500个文件累积到17MB。
+
+架构设计：
+  - Handler（控制台 + 文件）只绑定在根 Logger "stock_analyzer" 上，全局仅一套。
+  - 各模块通过 get_logger("screener") 获取子 Logger "stock_analyzer.screener"，
+    日志沿 propagate 链传递到根 Logger 的 handler，避免重复写入。
+  - setup_logger() 仅在首次调用时初始化 handler，后续调用幂等。
 """
 import logging
 import logging.handlers
 import os
 import sys
+import threading
 
-# 模块级单例存储：logger_name -> Logger 实例
-_loggers: dict[str, logging.Logger] = {}
+# 根 Logger 名称，所有子 Logger 均以此为前缀
+_ROOT_LOGGER_NAME = "stock_analyzer"
 
 # 日志保留天数
 _LOG_RETENTION_DAYS = 30
 
+# 初始化锁：保证多线程环境下 handler 只创建一次
+_init_lock = threading.Lock()
+_initialized = False
+
 
 def setup_logger(
-    name: str = "stock_analyzer",
+    name: str = _ROOT_LOGGER_NAME,
     log_dir: str = "logs",
     console_level: int = logging.INFO,
     file_level: int = logging.DEBUG,
 ) -> logging.Logger:
     """
-    获取或创建具名 Logger（进程级单例，多次调用返回同一实例）。
+    初始化并返回 Logger。
 
-    日志文件按天轮转（stock_analyzer.log.YYYY-MM-DD），
-    自动保留最近 _LOG_RETENTION_DAYS 天。
+    首次调用时在根 Logger "stock_analyzer" 上创建 Console + File handler；
+    后续调用直接返回已有 Logger（线程安全、幂等）。
 
     Args:
-        name: Logger 名称，同名调用返回已有实例
-        log_dir: 日志文件存放目录
-        console_level: 控制台输出级别（默认 INFO）
-        file_level: 文件输出级别（默认 DEBUG）
+        name: Logger 名称。传入模块名（如 "screener"）会自动映射为
+              "stock_analyzer.screener" 子 Logger。
+        log_dir: 日志文件存放目录（仅首次初始化时生效）
+        console_level: 控制台输出级别（仅首次初始化时生效）
+        file_level: 文件输出级别（仅首次初始化时生效）
 
     Returns:
         logging.Logger: 配置好的日志记录器
     """
-    global _loggers
+    global _initialized
 
-    # 单例检查：已存在直接返回
-    if name in _loggers:
-        return _loggers[name]
+    # 1. 确保根 Logger 的 handler 只初始化一次
+    if not _initialized:
+        with _init_lock:
+            if not _initialized:
+                _setup_root_handlers(log_dir, console_level, file_level)
+                _initialized = True
 
-    logger = logging.getLogger(name)
+    # 2. 根据传入的 name 获取对应 Logger
+    #    - name == _ROOT_LOGGER_NAME → 直接返回根 Logger
+    #    - name 已经是 "stock_analyzer.xxx" → 直接用
+    #    - name 是其他字符串（如 "screener"）→ 转为 "stock_analyzer.screener"
+    if name == _ROOT_LOGGER_NAME:
+        return logging.getLogger(_ROOT_LOGGER_NAME)
 
-    # 防止重复添加 handler
-    if logger.handlers:
-        _loggers[name] = logger
-        return logger
+    if name.startswith(_ROOT_LOGGER_NAME + "."):
+        full_name = name
+    else:
+        full_name = f"{_ROOT_LOGGER_NAME}.{name}"
 
-    logger.setLevel(logging.DEBUG)
+    child_logger = logging.getLogger(full_name)
+    # 子 Logger 不需要自己的 handler，通过 propagate 传递到根 Logger
+    # 但要确保不重复添加 handler（某些场景可能被外部代码修改）
+    child_logger.setLevel(logging.DEBUG)
+    return child_logger
+
+
+def _setup_root_handlers(
+    log_dir: str,
+    console_level: int,
+    file_level: int,
+) -> None:
+    """在根 Logger 上绑定 Console + TimedRotatingFile handler（仅调用一次）。"""
+    root_logger = logging.getLogger(_ROOT_LOGGER_NAME)
+    root_logger.setLevel(logging.DEBUG)
+
+    # 防御：如果已有 handler（比如被 pytest 注入），不重复添加
+    if root_logger.handlers:
+        return
 
     # ── 控制台 handler ──
     console_handler = logging.StreamHandler(sys.stdout)
@@ -78,19 +115,24 @@ def setup_logger(
     )
     file_handler.setFormatter(file_fmt)
 
-    logger.addHandler(console_handler)
-    logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    root_logger.addHandler(file_handler)
 
-    # 缓存单例
-    _loggers[name] = logger
+    # 阻止日志继续向 Python 默认 root logger 传播（避免第三方库的 handler 拿到）
+    root_logger.propagate = False
 
-    logger.debug(f"日志模块初始化: {name}")
-    return logger
+    root_logger.debug("日志模块初始化完成（根 Logger handler 已就绪）")
 
 
-def get_logger(name: str = "stock_analyzer") -> logging.Logger:
+def get_logger(name: str = _ROOT_LOGGER_NAME) -> logging.Logger:
     """
-    获取已存在的 Logger（不自动创建），供模块内部使用。
-    如果 Logger 不存在则创建并使用默认配置。
+    获取 Logger，供各模块使用。
+
+    推荐用法::
+
+        from src.utils.logger import get_logger
+        logger = get_logger(__name__)   # 或 get_logger("screener")
+
+    首次调用时自动初始化根 Logger 的 handler。
     """
     return setup_logger(name)

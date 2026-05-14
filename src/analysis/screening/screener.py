@@ -313,8 +313,9 @@ class StockScreener:
 
     @staticmethod
     def _format_output(df: pd.DataFrame) -> pd.DataFrame:
-        """整理输出列"""
-        output_cols = {
+        """整理输出列：重命名 + 选取 + 市值转亿元"""
+        # 源列名 → 目标列名映射
+        rename_map = {
             "代码": "代码",
             "名称": "名称",
             "最新价": "最新价",
@@ -327,17 +328,13 @@ class StockScreener:
             "振幅": "振幅(%)",
         }
 
-        result = pd.DataFrame()
-        for src_col, dst_col in output_cols.items():
-            if src_col in df.columns:
-                result[dst_col] = df[src_col].values
-            else:
-                result[dst_col] = None
+        # 仅保留源数据中存在的列，一步 rename
+        available = {k: v for k, v in rename_map.items() if k in df.columns}
+        result = df[list(available.keys())].rename(columns=available).copy()
 
         # 市值转亿元
-        if "总市值(亿)" in result.columns:
-            result["总市值(亿)"] = pd.to_numeric(result["总市值(亿)"], errors="coerce") / 1e8
-        if "流通市值(亿)" in result.columns:
-            result["流通市值(亿)"] = pd.to_numeric(result["流通市值(亿)"], errors="coerce") / 1e8
+        for col in ("总市值(亿)", "流通市值(亿)"):
+            if col in result.columns:
+                result[col] = pd.to_numeric(result[col], errors="coerce") / 1e8
 
         return result

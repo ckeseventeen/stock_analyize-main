@@ -1,17 +1,12 @@
-import matplotlib
-# matplotlib 全局配置：无头模式 + 中文字体栈（需在 import pyplot 之前设置）
-matplotlib.use('Agg')
-matplotlib.rcParams['font.sans-serif'] = ['Hiragino Sans GB', 'PingFang HK', 'Heiti TC', 'STHeiti', 'Arial Unicode MS', 'DejaVu Sans']
-matplotlib.rcParams['axes.unicode_minus'] = False
-
-import yaml
-import matplotlib.pyplot as plt
-import pandas as pd
 import argparse
 import os
 import time
-from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
+
+import pandas as pd
+import yaml
+
 from src.core.analyzer import AStockAnalyzer, HKStockAnalyzer, USStockAnalyzer
+from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
 from src.core.visualizer import Visualizer
 from src.utils.logger import setup_logger
 
@@ -182,7 +177,8 @@ def process_single_market(market_code: str):
                     output_file = f"[{category_name}]_{name}_{code}_四格估值分析.png"
                     output_full_path = os.path.join(output_dir, output_file)
                     fig.savefig(output_full_path, dpi=300, bbox_inches='tight')
-                    plt.close(fig)
+                    import matplotlib.pyplot as _plt
+                    _plt.close(fig)
 
                     logger.info(f"【{market_name}-{category_name}】生成成功 -> {output_full_path}")
 
@@ -267,10 +263,7 @@ def run_monitor(args):
         from src.automation.monitor.earnings_monitor import EarningsMonitor
         cfg = load_config(args.monitor_config or "./config/earnings_monitor.yaml")
         monitor = EarningsMonitor(
-            watchlist=cfg.get("watchlist", {}) or {},
-            days_ahead=int(cfg.get("days_ahead", 30)),
-            remind_days_ahead=int(cfg.get("remind_days_ahead", 3)),
-            track_forecasts=bool(cfg.get("track_forecasts", True)),
+            config=cfg,
             channels=channels,
             state_store=store,
             cooldown_hours=int(cfg.get("cooldown_hours", 72)),

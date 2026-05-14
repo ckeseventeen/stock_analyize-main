@@ -53,14 +53,20 @@ class BaseAnalyzer(ABC):
             month_year_counts[m] = years
         return max(month_year_counts, key=lambda m: (month_year_counts[m], m == 12, m))
 
-    def _calc_ttm(self, fin_ts: pd.DataFrame, metric: str) -> float:
+    def _calc_ttm(self, fin_ts: pd.DataFrame, metric: str) -> tuple[float, str]:
         """
         通用TTM计算逻辑
         规则：年报直接取当期值（自动检测财年月）；季报做累计差值；缺失数据做平滑年化
+
+        Returns:
+            (ttm_value, confidence) 其中 confidence 为:
+              - 'high': 年报直接取值
+              - 'medium': 正常 TTM 累计差值
+              - 'low': 缺失可比期，回退到线性年化（季节性行业偏差大）
         """
         if metric not in fin_ts.columns:
             logger.warning(f"【{self.market_name}-{self.stock_name}】指标 '{metric}' 不在财务数据中")
-            return 0.0
+            return 0.0, 'low'
 
         latest_date = fin_ts.index[0]
         y_latest = latest_date.year
@@ -68,7 +74,7 @@ class BaseAnalyzer(ABC):
 
         # 年报直接返回当期值（兼容非12月财年，如苹果9月、微软6月）
         if latest_date.month == fiscal_month:
-            return fin_ts.loc[latest_date, metric]
+            return fin_ts.loc[latest_date, metric], 'high'
 
         # 计算可比期
         last_year_same_period = latest_date.replace(year=y_latest - 1)
@@ -82,7 +88,7 @@ class BaseAnalyzer(ABC):
             ytd_current = fin_ts.loc[latest_date, metric]
             ytd_last = fin_ts.loc[last_year_same_period, metric]
             annual_last = fin_ts.loc[last_year_end, metric]
-            return ytd_current + annual_last - ytd_last
+            return ytd_current + annual_last - ytd_last, 'medium'
         except KeyError:
             # 缺失可比期数据，回退到线性年化（按已披露月份等比外推全年）
             # 注意：季节性强的行业（如零售、旅游）该估算偏差较大
@@ -90,7 +96,7 @@ class BaseAnalyzer(ABC):
                 f"【{self.market_name}-{self.stock_name}】指标 '{metric}' 缺失可比期数据，"
                 f"使用线性年化(月份={latest_date.month})，季节性行业结果可能不准确"
             )
-            return fin_ts.loc[latest_date, metric] / (latest_date.month / 12.0)
+            return fin_ts.loc[latest_date, metric] / (latest_date.month / 12.0), 'low'
 
     def process(self):
         """统一主流程入口：财务清洗 → TTM 计算 → 估值推演 → 历史分位数"""
@@ -105,10 +111,13 @@ class BaseAnalyzer(ABC):
         latest_date = fin_ts.index[0]
         logger.debug(f"【{self.market_name}-{self.stock_name}】最新财报日期: {latest_date.strftime('%Y-%m-%d')}")
 
-        # 2. TTM 指标计算
-        ttm_net_profit = self._calc_ttm(fin_ts, '归母净利润')
-        ttm_revenue = self._calc_ttm(fin_ts, '营业总收入')
-        logger.debug(f"【{self.market_name}-{self.stock_name}】TTM 归母净利润: {ttm_net_profit:.2f}, TTM 营业总收入: {ttm_revenue:.2f}")
+        # 2. TTM 指标计算（附带置信度标记）
+        ttm_net_profit, conf_profit = self._calc_ttm(fin_ts, '归母净利润')
+        ttm_revenue, conf_revenue = self._calc_ttm(fin_ts, '营业总收入')
+        # 取两者中较低的置信度作为整体 TTM 置信度
+        _conf_order = {'high': 2, 'medium': 1, 'low': 0}
+        ttm_confidence = min(conf_profit, conf_revenue, key=lambda c: _conf_order.get(c, 0))
+        logger.debug(f"【{self.market_name}-{self.stock_name}】TTM 归母净利润: {ttm_net_profit:.2f} ({conf_profit}), TTM 营业总收入: {ttm_revenue:.2f} ({conf_revenue})")
 
         # 3. 年度数据与毛利率计算（自动检测财年月，兼容非12月财年）
         fiscal_month = self._detect_fiscal_year_month(fin_ts)
@@ -166,11 +175,12 @@ class BaseAnalyzer(ABC):
                     logger.debug(f"【{self.market_name}-{self.stock_name}】历史 {val_type.upper()} 分位数: {hist_percentile:.1f}%")
 
         # 6. 组装返回结果
-        logger.info(f"【{self.market_name}-{self.stock_name}】估值分析完成")
+        logger.info(f"【{self.market_name}-{self.stock_name}】估值分析完成 (TTM置信度: {ttm_confidence})")
         return {
             'annual_df': annual_df,
             'ttm_net_profit': ttm_net_profit,
             'ttm_revenue': ttm_revenue,
+            'ttm_confidence': ttm_confidence,
             'current_pe': current_pe,
             'current_ps': current_ps,
             'scenarios': scenarios,

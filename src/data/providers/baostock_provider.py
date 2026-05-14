@@ -11,6 +11,13 @@ src/data/fetcher/baostock_provider.py — Baostock 统一封装层
         df = bp.get_k_data("600519", days_back=120, frequency="d")
         all_stocks = bp.get_all_stocks()
         val_df = bp.get_valuation_history("600519", days_back=365*5)
+
+线程安全说明:
+    Baostock 库内部使用单一全局 TCP socket，非线程安全。
+    本模块通过两层锁机制保证安全：
+      1. _bs_session_lock: 保护 login/logout 引用计数（进程级唯一 session）
+      2. _bs_lock: 序列化所有 bs.query_* API 调用
+    多线程/多 with 块可以安全嵌套使用，只有最后一个退出时才真正 logout。
 """
 from __future__ import annotations
 
@@ -24,10 +31,53 @@ from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
 
-# Baostock 库内部使用单一全局 TCP socket，非线程安全。
-# 所有 bs.* 调用（login / logout / query_*）必须在此锁保护下串行执行，
-# 否则多线程并发会导致 socket 数据交叉读取、Bad file descriptor 等致命错误。
+# Baostock 全局 socket 序列化锁：所有 bs.query_* 调用必须在此锁下执行
 _bs_lock = threading.Lock()
+
+# ── 进程级 session 引用计数 ──
+# 解决多线程场景下一个线程 logout 导致其他线程 socket 失效的致命 bug
+_bs_session_lock = threading.Lock()
+_bs_ref_count = 0        # 当前活跃使用者数量
+_bs_logged_in = False    # 全局 login 状态
+
+
+def _bs_acquire() -> bool:
+    """
+    增加引用计数，必要时执行 bs.login()。
+
+    Returns:
+        True 表示 login 成功或已 login
+    """
+    global _bs_ref_count, _bs_logged_in
+    with _bs_session_lock:
+        if _bs_ref_count == 0 and not _bs_logged_in:
+            with _bs_lock:
+                lg = bs.login()
+            if lg.error_code != "0":
+                logger.warning(f"Baostock 登录失败: {lg.error_msg}")
+                return False
+            _bs_logged_in = True
+            logger.debug("Baostock 全局 session 已登录")
+        _bs_ref_count += 1
+        logger.debug(f"Baostock session 引用 +1 → {_bs_ref_count}")
+    return True
+
+
+def _bs_release() -> None:
+    """减少引用计数，最后一个使用者退出时执行 bs.logout()。"""
+    global _bs_ref_count, _bs_logged_in
+    with _bs_session_lock:
+        _bs_ref_count = max(0, _bs_ref_count - 1)
+        logger.debug(f"Baostock session 引用 -1 → {_bs_ref_count}")
+        if _bs_ref_count == 0 and _bs_logged_in:
+            try:
+                with _bs_lock:
+                    bs.logout()
+                logger.debug("Baostock 全局 session 已登出（最后一个使用者退出）")
+            except Exception as e:
+                logger.debug(f"Baostock logout 异常（可忽略）: {e}")
+            finally:
+                _bs_logged_in = False
 
 
 # ========================
@@ -90,7 +140,12 @@ _WEEKLY_MONTHLY_FIELDS = "date,open,high,low,close,volume,amount,turn,pctChg"
 
 class BaostockProvider:
     """
-    Baostock 数据提供器（支持上下文管理器自动 login/logout）。
+    Baostock 数据提供器（支持上下文管理器）。
+
+    内部使用进程级引用计数管理 login/logout 生命周期：
+      - 多个线程 / 多个 with 块可以安全并发使用
+      - 只有最后一个 with 块退出时才真正 logout
+      - 所有 bs.query_* 调用通过 _bs_lock 串行化
 
     用法:
         with BaostockProvider() as bp:
@@ -98,27 +153,23 @@ class BaostockProvider:
     """
 
     def __init__(self):
-        self._logged_in = False
+        self._acquired = False
 
     def login(self) -> BaostockProvider:
-        """登录 Baostock 服务器（线程安全）。"""
-        if not self._logged_in:
-            with _bs_lock:
-                lg = bs.login()
-            if lg.error_code != "0":
-                logger.warning(f"Baostock 登录失败: {lg.error_msg}")
+        """获取 Baostock session（引用计数 +1，首次时 login）。"""
+        if not self._acquired:
+            ok = _bs_acquire()
+            if ok:
+                self._acquired = True
             else:
-                self._logged_in = True
-                logger.debug("Baostock 登录成功")
+                logger.warning("Baostock session 获取失败")
         return self
 
     def logout(self) -> None:
-        """登出 Baostock 服务器（线程安全）。"""
-        if self._logged_in:
-            with _bs_lock:
-                bs.logout()
-            self._logged_in = False
-            logger.debug("Baostock 登出成功")
+        """释放 Baostock session（引用计数 -1，最后一个时 logout）。"""
+        if self._acquired:
+            _bs_release()
+            self._acquired = False
 
     def __enter__(self) -> BaostockProvider:
         return self.login()

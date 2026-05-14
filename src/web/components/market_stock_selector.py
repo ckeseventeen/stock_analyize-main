@@ -38,7 +38,7 @@ def market_stock_selector(
     show_market: bool = True,
     show_manual_override: bool = True,
     show_valuation_params: bool = True,
-    sidebar: "st.sidebar" = None,  # type hint only
+    sidebar: st.sidebar = None,  # type hint only
 ) -> dict:
     """
     统一的市场+股票选择器组件。

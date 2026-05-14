@@ -6,8 +6,6 @@ src/web/watchlist_ops.py — 关注标的 CRUD 操作
 """
 from __future__ import annotations
 
-from pathlib import Path
-
 from src.web.config_ops import (
     MARKET_CONFIG_PATHS,
     PATH_BACKTEST_PRESETS,
@@ -17,7 +15,6 @@ from src.web.config_ops import (
     atomic_save_yaml,
     load_yaml,
 )
-
 
 # ========================
 # 关注标的（watchlist）CRUD

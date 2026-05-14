@@ -1,7 +1,9 @@
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 import akshare as ak
 import pandas as pd
+import yaml
 
 from src.data.providers.baostock_provider import BaostockProvider
 from src.utils.logger import get_logger
@@ -81,8 +83,6 @@ class AStockDataFetcher(BaseDataFetcher):
     def _load_tdx_servers(cls) -> list[tuple[str, int]]:
         """从配置加载 TDX 服务器列表，加载失败则使用默认值"""
         try:
-            import yaml
-            from pathlib import Path
             cfg_path = Path(__file__).resolve().parents[2] / "config" / "data_source.yaml"
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as f:

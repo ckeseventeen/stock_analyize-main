@@ -11,6 +11,11 @@ src/web/utils.py — Streamlit 前端共享工具（向后兼容聚合层）
 from __future__ import annotations
 
 # ========================
+# 本文件保留的轻量工具（不值得单独拆模块）
+# ========================
+import pandas as pd
+
+# ========================
 # 从 config_ops 导入（路径常量 + YAML 读写 + 通用工具）
 # ========================
 from src.web.config_ops import (  # noqa: F401
@@ -30,8 +35,8 @@ from src.web.config_ops import (  # noqa: F401
     PATH_HK_STOCK,
     PATH_INDICATORS,
     PATH_PRICE_ALERTS,
-    PATH_SCREEN,
     PATH_SCRAPER,
+    PATH_SCREEN,
     PATH_US_STOCK,
     PROJECT_ROOT,
     _resolve_dotted,
@@ -77,12 +82,6 @@ from src.web.watchlist_ops import (  # noqa: F401
     set_active_indicator_profile,
     update_stock_in_market,
 )
-
-# ========================
-# 本文件保留的轻量工具（不值得单独拆模块）
-# ========================
-
-import pandas as pd
 
 
 def list_stocks_from_market_config(market: str, ttl: int = 300) -> list[dict]:

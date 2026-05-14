@@ -1,20 +1,22 @@
-# matplotlib 全局配置：无头模式 + 中文字体栈（需在 import pyplot 之前设置）
 import os as _os
-_os.environ.setdefault("MPLBACKEND", "Agg")
-import matplotlib as _mpl  # noqa: E402
-_mpl.use("Agg")
-_mpl.rcParams["font.sans-serif"] = [
-    "SimHei", "Microsoft YaHei", "Hiragino Sans GB", "PingFang HK",
-    "Heiti TC", "STHeiti", "Arial Unicode MS", "DejaVu Sans",
-]
-_mpl.rcParams["axes.unicode_minus"] = False
 
+# matplotlib 全局配置：无头模式 + 中文字体栈（需在 import pyplot 之前设置）
+_os.environ.setdefault("MPLBACKEND", "Agg")
+
+import matplotlib as _mpl  # noqa: E402
 import matplotlib.dates as mdates  # noqa: E402
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np
 import pandas as pd
 
 from src.utils.logger import get_logger
+
+_mpl.use("Agg")
+_mpl.rcParams["font.sans-serif"] = [
+    "SimHei", "Microsoft YaHei", "Hiragino Sans GB", "PingFang HK",
+    "Heiti TC", "STHeiti", "Arial Unicode MS", "DejaVu Sans",
+]
+_mpl.rcParams["axes.unicode_minus"] = False
 
 logger = get_logger(__name__)
 

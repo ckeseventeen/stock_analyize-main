@@ -5,10 +5,9 @@ pages/9_调度管理.py — 后台调度器管理面板
 """
 from __future__ import annotations
 
+import pandas as pd
 import streamlit as st
 
-from src.web.components.confirm import confirm_action
-from src.web.utils import CONFIG_DIR
 from src.automation.scheduler_manager import (
     get_job_history,
     get_status,
@@ -18,6 +17,8 @@ from src.automation.scheduler_manager import (
     stop,
     trigger_job,
 )
+from src.web.components.confirm import confirm_action
+from src.web.utils import CONFIG_DIR
 
 st.set_page_config(page_title="调度管理", page_icon="⏰", layout="wide")
 
@@ -125,8 +126,6 @@ st.subheader("📜 最近执行记录")
 history = get_job_history(limit=50)
 
 if history:
-    import pandas as pd
-
     df = pd.DataFrame(history)
     # 状态列上色
     def _color_status(val):

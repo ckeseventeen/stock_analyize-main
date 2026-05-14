@@ -26,7 +26,6 @@ import streamlit as st  # noqa: E402
 
 from src.web.components.search import searchable_select  # noqa: E402
 from src.web.components.state import (  # noqa: E402
-    is_stale,
     load_result,
     save_result,
     stale_warning,

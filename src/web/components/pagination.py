@@ -12,8 +12,8 @@ src/web/components/pagination.py — 带分页的 DataFrame 展示
 """
 from __future__ import annotations
 
-import streamlit as st
 import pandas as pd
+import streamlit as st
 
 
 def paginated_dataframe(

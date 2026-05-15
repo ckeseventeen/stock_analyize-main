@@ -19,6 +19,7 @@ if str(_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
+from src.web.config_ops import validate_user_path  # noqa: E402
 from src.web.utils import (  # noqa: E402
     PATH_SCREEN,
     df_to_csv_bytes,
@@ -38,9 +39,15 @@ st.sidebar.markdown("**配置文件**")
 config_path_input = st.sidebar.text_input(
     "YAML 路径",
     value=str(PATH_SCREEN),
-    help="默认使用 config/screen_config.yaml",
+    help="默认使用 config/screen_config.yaml；仅允许 config/ 与 output/ 内的文件",
 )
-config_path = Path(config_path_input)
+
+# B5/SEC2 修复：校验用户路径，防止路径穿越
+try:
+    config_path = validate_user_path(config_path_input)
+except ValueError as exc:
+    st.sidebar.error(f"⚠️ 配置路径不合法：{exc}")
+    st.stop()
 
 # ========================
 # 侧边栏：板块/指数范围

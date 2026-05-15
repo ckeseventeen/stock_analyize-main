@@ -210,3 +210,15 @@ site/
 *.log
 tmp/
 temp/
+
+# ========================
+# SEC1 — 含密钥的本地覆盖配置（永远不提交）
+# ========================
+config/alerts.local.yaml
+config/alerts.*.local.yaml
+config/*.secrets.yaml
+.env.local
+.env.*.local
+cache/scheduler.pid
+cache/*.lock
+*.tmp.json

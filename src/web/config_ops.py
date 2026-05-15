@@ -57,6 +57,51 @@ MARKET_CONFIG_PATHS = {
 
 
 # ========================
+# 路径安全（B5/SEC2 修复：防止路径穿越）
+# ========================
+
+def validate_user_path(user_path: str | Path, allowed_roots: list[Path] | None = None) -> Path:
+    """
+    校验用户输入的文件路径，防止路径穿越。
+
+    Args:
+        user_path: 用户提供的路径
+        allowed_roots: 允许的根目录列表，None 默认仅允许 CONFIG_DIR 和 OUTPUT_DIR
+
+    Returns:
+        归一化后的绝对路径
+
+    Raises:
+        ValueError: 路径不在白名单根目录内，或包含可疑模式
+    """
+    if allowed_roots is None:
+        allowed_roots = [CONFIG_DIR, OUTPUT_DIR]
+
+    candidate = Path(user_path).expanduser()
+    # 拒绝明显恶意输入
+    s = str(user_path)
+    for bad in ("..\\..", "../..", "/etc/", "C:\\Windows\\", "\x00"):
+        if bad in s:
+            raise ValueError(f"路径包含可疑模式 '{bad}'，拒绝：{user_path}")
+
+    try:
+        resolved = candidate.resolve()
+    except OSError as e:
+        raise ValueError(f"无法解析路径: {user_path} ({e})")
+
+    # 必须落在白名单根目录内
+    for root in allowed_roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return resolved
+        except ValueError:
+            continue
+
+    allowed_str = ", ".join(str(r) for r in allowed_roots)
+    raise ValueError(f"路径必须位于以下目录内: {allowed_str}；用户输入: {user_path}")
+
+
+# ========================
 # YAML 读写
 # ========================
 

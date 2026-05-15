@@ -1,6 +1,7 @@
 from src.strategy.backtest.base_strategy import BaseStrategy
 from src.strategy.backtest.factor_strategy import FactorRebalanceStrategy
 from src.strategy.backtest.ma_crossover import MACrossoverStrategy
+from src.strategy.backtest.ml_strategy import MLRebalanceStrategy
 from src.strategy.backtest.report import BacktestReport
 from src.strategy.backtest.rule_based import RuleBasedStrategy
 from src.strategy.backtest.runner import BacktestRunner
@@ -19,6 +20,7 @@ STRATEGY_REGISTRY: dict[str, type[BaseStrategy]] = {
     "factor_rebalance": FactorRebalanceStrategy,
     "rule_based": RuleBasedStrategy,
     "screener_rule": ScreenerRuleStrategy,
+    "ml_rebalance": MLRebalanceStrategy,
 }
 
 STRATEGY_LABELS: dict[str, str] = {
@@ -26,6 +28,7 @@ STRATEGY_LABELS: dict[str, str] = {
     "factor_rebalance": "因子再平衡 (Factor Rebalance)",
     "rule_based": "自定义规则 (YAML DSL)",
     "screener_rule": "筛选器组件桥接 (Screener Logic)",
+    "ml_rebalance": "ML 预测轮动 (B 路径自学习)",
 }
 
 # 每项 schema: {key, label, type, default, min?, max?, step?, help?}
@@ -86,6 +89,18 @@ STRATEGY_PARAM_SCHEMAS: dict[str, list[dict]] = {
         {"key": "sell_logic", "label": "卖出逻辑", "type": "str", "default": "any"},
         {"key": "position_size", "label": "仓位比例", "type": "float", "default": 0.95},
     ],
+    "ml_rebalance": [
+        {"key": "rebalance_days", "label": "调仓周期 (天)", "type": "int",
+         "default": 20, "min": 5, "max": 60, "step": 1,
+         "help": "ML 模型预测的标签是未来 20 日超额收益，建议保持一致"},
+        {"key": "buy_threshold", "label": "买入阈值 (预测超额% >=)", "type": "float",
+         "default": 1.0, "step": 0.5,
+         "help": "预测未来超额收益高于此值时建仓"},
+        {"key": "sell_threshold", "label": "卖出阈值 (预测超额% <=)", "type": "float",
+         "default": -1.0, "step": 0.5,
+         "help": "预测未来超额收益低于此值时清仓"},
+        {"key": "position_size", "label": "仓位比例", "type": "float", "default": 0.95},
+    ],
 }
 
 
@@ -94,6 +109,8 @@ __all__ = [
     "MACrossoverStrategy",
     "FactorRebalanceStrategy",
     "RuleBasedStrategy",
+    "ScreenerRuleStrategy",
+    "MLRebalanceStrategy",
     "BacktestRunner",
     "BacktestReport",
     "STRATEGY_REGISTRY",

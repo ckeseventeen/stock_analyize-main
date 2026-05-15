@@ -7,6 +7,7 @@ src/data/fetcher/cache_manager.py — 数据缓存管理器
 import hashlib
 import os
 import pickle
+import struct
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -16,6 +17,11 @@ import pandas as pd
 from src.utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# B17 修复：缓存文件魔术头，用于检测文件类型与版本，防止 pickle 损坏数据被静默返回
+# 格式：8 字节 = b"SACACHE\x01"（最后 1 字节是格式版本号）
+_CACHE_MAGIC = b"SACACHE\x01"
+_CACHE_HEADER_LEN = 8
 
 
 class CacheManager:
@@ -78,6 +84,16 @@ class CacheManager:
 
         try:
             with open(path, 'rb') as f:
+                # B17：先校验魔术头，再 pickle.load
+                header = f.read(_CACHE_HEADER_LEN)
+                if header != _CACHE_MAGIC:
+                    logger.warning(
+                        f"缓存文件头校验失败（可能损坏或为旧版本格式）[{key}]，"
+                        f"自动删除并视为 miss"
+                    )
+                    path.unlink(missing_ok=True)
+                    self._misses += 1
+                    return None
                 data = pickle.load(f)
             # 命中时更新时间戳，供 LRU 淘汰使用
             now_ts = datetime.now().timestamp()
@@ -87,36 +103,70 @@ class CacheManager:
             return data
         except Exception as e:
             logger.warning(f"缓存读取失败 [{key}]: {e}")
+            # 损坏的缓存文件直接删除，避免反复尝试读取
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
             self._misses += 1
             return None
 
     def set(self, key: str, data: Any) -> None:
-        """写入缓存（写入后检查容量，超限时淘汰最旧文件）"""
+        """
+        写入缓存（写入后检查容量，超限时淘汰最旧文件）。
+
+        B17：在 pickle 之前写入魔术头，便于读取时检测损坏。
+        改为 tmp + rename 的原子写，防止写一半被读到。
+        """
         path = self._cache_path(key)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
         try:
-            with open(path, 'wb') as f:
+            with open(tmp_path, 'wb') as f:
+                f.write(_CACHE_MAGIC)
                 pickle.dump(data, f)
+            os.replace(tmp_path, path)
             self._enforce_capacity()
             logger.debug(f"缓存写入成功: {key}")
         except Exception as e:
+            # 清理 tmp 残留
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             logger.warning(f"缓存写入失败 [{key}]: {e}")
 
     def _enforce_capacity(self) -> None:
         """
         淘汰多余缓存文件（LRU：按最后修改时间从旧到新淘汰），
         直到总大小 <= max_bytes 或只剩一个文件。
+
+        O3 优化：先用 stat() 累加总大小，超限才排序，避免每次写入都做 O(n log n) 排序。
         """
-        files = sorted(self._dir.glob("*.pkl"), key=lambda f: f.stat().st_mtime)
-        total = sum(f.stat().st_size for f in files)
+        # 第一遍：只 stat() 累加，O(n)
+        entries: list[tuple[float, int, Path]] = []
+        total = 0
+        for f in self._dir.glob("*.pkl"):
+            try:
+                st = f.stat()
+                entries.append((st.st_mtime, st.st_size, f))
+                total += st.st_size
+            except OSError:
+                continue
         if total <= self._max_bytes:
             return
+
+        # 仅在超限时排序
+        entries.sort(key=lambda x: x[0])
         removed = 0
-        for f in files:
+        for mtime, size, f in entries:
             if total <= self._max_bytes:
                 break
-            total -= f.stat().st_size
-            f.unlink(missing_ok=True)
-            removed += 1
+            try:
+                f.unlink(missing_ok=True)
+                total -= size
+                removed += 1
+            except OSError:
+                continue
         if removed:
             logger.info(f"缓存容量控制: 淘汰 {removed} 个旧文件, 当前缓存大小 {total / 1e6:.1f}MB")
 

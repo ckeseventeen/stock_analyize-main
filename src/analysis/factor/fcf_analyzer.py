@@ -1,20 +1,54 @@
 import pandas as pd
 
+from src.utils.logger import get_logger
+
+logger = get_logger("fcf_analyzer")
+
 
 class FCFAnalyzer:
     """
     FCF (Free Cash Flow) 分析计算与评分逻辑
+
+    B4 修复：构造时检查输入频率（年度 vs 季度），季度数据自动注解 annualized=False
+    并在 FCF Yield 计算时按需 × 4，避免低估 4 倍。
     """
 
-    def __init__(self, df: pd.DataFrame, market_cap: float):
+    def __init__(self, df: pd.DataFrame, market_cap: float, *, annualized: bool | None = None):
         """
-        df 需要包含列: operating_cash_flow, capex, revenue, net_profit
-        market_cap: 当前总市值
+        Args:
+            df: 需要包含列 operating_cash_flow, capex, revenue, net_profit
+            market_cap: 当前总市值
+            annualized: 输入数据是否已年化（年度 / TTM）。None 时自动检测：
+                - 索引为 DatetimeIndex 且相邻间隔 < 200 天 → 季度数据
+                - 否则视为年度
+                FCF Yield 计算在季度数据上会自动 × 4 年化。
         """
         self.df = df.copy()
         self.market_cap = market_cap
         self.scores = {}
         self.summary = {}
+        self.annualized = self._detect_annualized() if annualized is None else bool(annualized)
+        if not self.annualized:
+            logger.info(
+                "FCFAnalyzer 检测到输入为季度数据，FCF Yield 将按 × 4 年化"
+            )
+
+    def _detect_annualized(self) -> bool:
+        """根据时间索引间隔判断输入是否已年化（年度/TTM）"""
+        if self.df.empty:
+            return True
+        idx = self.df.index
+        if not isinstance(idx, pd.DatetimeIndex) or len(idx) < 2:
+            # 没有可解析的日期索引，按"已年化"的安全假设处理（保留旧行为）
+            return True
+        try:
+            sorted_idx = idx.sort_values()
+            deltas = sorted_idx.to_series().diff().dropna()
+            median_days = deltas.dt.days.median()
+            # < 200 天的中位间隔强烈暗示季度数据
+            return median_days >= 200
+        except Exception:
+            return True
 
     def calculate_metrics(self) -> pd.DataFrame:
         if self.df.empty:
@@ -75,7 +109,12 @@ class FCFAnalyzer:
         score_growth = 10 # 默认分
         if len(self.df) >= 2:
             prev_fcf = self.df.iloc[-2]['fcf']
-            if prev_fcf > 0:
+            # B15 修复：prev_fcf 过小时（< 总资产 0.1% 的经验阈值，这里用绝对值 1e6 元 = 100 万兜底），
+            # 增长率会爆炸（如 prev=1 → 增长 99 倍），评分失真。改为：
+            #   - prev_fcf < 1e6（百万级以下，对上市公司基本是噪音）：用绝对差额而非比率判断
+            #   - 其他场景按原逻辑
+            MIN_PREV_FCF = 1e6  # 100 万人民币/美元，过滤掉数据噪音
+            if prev_fcf > MIN_PREV_FCF:
                 growth = (fcf - prev_fcf) / prev_fcf
                 if growth > 0.10:
                     score_growth = 20
@@ -83,17 +122,21 @@ class FCFAnalyzer:
                     score_growth = 15
                 else:
                     score_growth = 5
+            elif prev_fcf > 0:
+                # 微小正值的过去 FCF：只看当前是否显著正
+                score_growth = 20 if fcf > MIN_PREV_FCF else (15 if fcf > prev_fcf else 5)
             else:
+                # prev_fcf <= 0
                 if fcf > 0:
                     score_growth = 20 # 扭亏为盈
                 else:
                     score_growth = 0  # 持续为负
 
         # 5. FCF Yield 性价比 (20)
-        # 年化处理（简单起见，这里假设输入数据已是年度或TTM。如果是单季，FCF yield 应该乘以4，但为了通用，先直接除股市值）
-        # 如果是季度数据，建议外部将其 TTM 化后传入，此处直接用 FCF / Market Cap
+        # B4 修复：根据 self.annualized 自动决定是否 × 4 年化
         if self.market_cap > 0:
-            fcf_yield = (fcf / self.market_cap) * 100
+            annual_fcf = fcf if self.annualized else fcf * 4
+            fcf_yield = (annual_fcf / self.market_cap) * 100
         else:
             fcf_yield = 0.0
 

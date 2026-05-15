@@ -28,6 +28,7 @@ class ScreenerRuleStrategy(BaseStrategy):
         ("buy_logic", "all"),
         ("sell_logic", "any"),
         ("position_size", 0.95),
+        # 继承自 BaseStrategy：warmup_bars / log_level
     )
 
     def __init__(self):
@@ -42,21 +43,51 @@ class ScreenerRuleStrategy(BaseStrategy):
         self._bar_idx = 0
 
     def _init_conditions(self, configs: list[dict]) -> list[BaseCondition]:
+        """
+        构建条件对象。
+
+        B10 修复：过滤掉 SPOT_ONLY_TYPES（如 market_cap、pe_range、stop_loss 等），
+        这些条件依赖 Spot 截面数据，在回测里拿不到数据会永远返回 False，导致信号永不触发。
+        B21 修复：未知类型直接 raise ValueError，避免用户拼错配置后默默无效。
+        """
+        from src.analysis.screening.config_schema import _PARAM_MAP, SPOT_ONLY_TYPES
+
         objs = []
-        from src.analysis.screening.config_schema import _PARAM_MAP
+        skipped_spot: list[str] = []
+        unknown: list[str] = []
         for cfg in configs:
             ctype = cfg.get("type")
-            if ctype in CONDITION_REGISTRY:
-                cls = CONDITION_REGISTRY[ctype]
-                param_map = _PARAM_MAP.get(ctype, {})
-                kwargs = {}
-                for yaml_key, init_key in param_map.items():
-                    if yaml_key in cfg:
-                        kwargs[init_key] = cfg[yaml_key]
-                try:
-                    objs.append(cls(**kwargs))
-                except Exception as e:
-                    logger.error(f"构建条件 {ctype} 失败: {e}")
+            if not ctype:
+                logger.warning(f"回测条件缺少 type 字段，跳过: {cfg}")
+                continue
+            if ctype in SPOT_ONLY_TYPES:
+                skipped_spot.append(ctype)
+                continue
+            if ctype not in CONDITION_REGISTRY:
+                unknown.append(ctype)
+                continue
+            cls = CONDITION_REGISTRY[ctype]
+            param_map = _PARAM_MAP.get(ctype, {})
+            kwargs = {}
+            for yaml_key, init_key in param_map.items():
+                if yaml_key in cfg:
+                    kwargs[init_key] = cfg[yaml_key]
+            try:
+                objs.append(cls(**kwargs))
+            except Exception as e:
+                logger.error(f"构建条件 {ctype} 失败: {e}")
+
+        if skipped_spot:
+            logger.warning(
+                f"回测条件包含 Spot-only 类型并已跳过（截面数据在回测中不可用）: "
+                f"{skipped_spot}。如需基本面筛选，请在筛选阶段处理，回测里只用技术条件。"
+            )
+        if unknown:
+            # B21：直接抛错，配置拼写错误必须暴露
+            raise ValueError(
+                f"未知的回测条件类型: {unknown}。"
+                f"可用类型见 CONDITION_REGISTRY: {sorted(CONDITION_REGISTRY.keys())}"
+            )
         return objs
 
     # 滑动窗口最大回溯长度（避免O(n²)的累计切片）
@@ -108,16 +139,20 @@ class ScreenerRuleStrategy(BaseStrategy):
         sell_sig = self._sell_signals[self._bar_idx]
         self._bar_idx += 1
 
+        # S2：预热期内不交易（让长周期指标先填满）
+        if not self.is_warmup_done():
+            return
+
         if not self.position:
             if buy_sig:
-                price = self.data.close[0]
-                if price <= 0:
-                    return
-                size = int(self.broker.getcash() * self.params.position_size / price)
-                if size > 0:
-                    self.buy(size=size)
-                    self.log(f"筛选器买入信号 -> {size} 股 @ {price:.2f}")
+                # B3：用 order_target_percent，由 Backtrader 用下一 bar 开盘价算 size，
+                # 避免 close[0] 估算导致的仓位偏差
+                order = self.buy_target_percent(target=self.params.position_size)
+                if order is not None:
+                    self.log(
+                        f"筛选器买入信号 -> 目标仓位 {self.params.position_size:.0%}"
+                    )
         else:
             if sell_sig:
-                self.close()
-                self.log(f"筛选器卖出信号 -> 全部卖出 @ {self.data.close[0]:.2f}")
+                self.close_all()
+                self.log("筛选器卖出信号 -> 全部卖出（下一 bar 开盘成交）")

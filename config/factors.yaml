@@ -36,6 +36,12 @@ profiles:
         enabled: false
         params:
           ma_period: 20
+      # ML 预测因子（B 路径自学习）：未来 20 日相对沪深 300 超额收益预测
+      # 需要先训练：python -m src.ml.cli train
+      # 调度器会按 scheduler.yaml 中的 ml_retrain job 月度自动重训
+      - type: ml_score
+        enabled: false   # 默认关闭，训练完模型后置 true 启用
+        params: {}
   value_oriented:
     factors:
       - type: pe_ttm

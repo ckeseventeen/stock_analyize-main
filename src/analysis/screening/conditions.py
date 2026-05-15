@@ -196,10 +196,19 @@ class WeeklyMACDBottomDivergenceCondition(BaseCondition):
     requires_ohlcv = True
     ohlcv_period = "weekly"
 
-    def __init__(self, lookback_bars: int = 60, zero_axis_filter: bool = False, multi_level_check: bool = False):
+    def __init__(self, lookback_bars: int = 60, zero_axis_filter: bool = False,
+                 multi_level_check: bool = False,
+                 order: int = 2, max_bars_since_trough: int = 4):
+        """
+        B19/S7 修复：order 和 max_bars_since_trough 改为可配，YAML 可覆盖。
+        - order: 局部极值识别窗口（前后多少根 K 线没有更低点即认定为底）
+        - max_bars_since_trough: 背离必须发生在最近多少根 K 线内
+        """
         self.lookback_bars = lookback_bars
         self.zero_axis_filter = zero_axis_filter
         self.multi_level_check = multi_level_check
+        self.order = order
+        self.max_bars_since_trough = max_bars_since_trough
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         return True  # Spot阶段无法判断，放行到OHLCV阶段
@@ -211,11 +220,10 @@ class WeeklyMACDBottomDivergenceCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_macd()
             detector = MACDDivergenceDetector(ta.get_dataframe())
-            # 对于周线，order=2 即可（前后2周没有更低点即为底），且背离必须发生在最近4周内
             return detector.detect_bottom_divergence(
                 lookback_bars=self.lookback_bars,
-                order=2,
-                max_bars_since_trough=4,
+                order=self.order,
+                max_bars_since_trough=self.max_bars_since_trough,
                 zero_axis_filter=self.zero_axis_filter,
                 multi_level_check=self.multi_level_check
             )
@@ -231,10 +239,17 @@ class DailyMACDBottomDivergenceCondition(BaseCondition):
     requires_ohlcv = True
     ohlcv_period = "daily"
 
-    def __init__(self, lookback_bars: int = 120, zero_axis_filter: bool = False, multi_level_check: bool = False):
+    def __init__(self, lookback_bars: int = 120, zero_axis_filter: bool = False,
+                 multi_level_check: bool = False,
+                 order: int = 5, max_bars_since_trough: int = 5):
+        """
+        B19/S7 修复：参数与 Weekly 对齐，order/max_bars_since_trough 可配。
+        """
         self.lookback_bars = lookback_bars
         self.zero_axis_filter = zero_axis_filter
         self.multi_level_check = multi_level_check
+        self.order = order
+        self.max_bars_since_trough = max_bars_since_trough
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
         return True
@@ -246,11 +261,10 @@ class DailyMACDBottomDivergenceCondition(BaseCondition):
             ta = TechnicalAnalyzer(ohlcv_df)
             ta.add_macd()
             detector = MACDDivergenceDetector(ta.get_dataframe())
-            # 对于日线，order=5（前后1周没有更低点即为底），背离必须发生在最近5个交易日内
             return detector.detect_bottom_divergence(
                 lookback_bars=self.lookback_bars,
-                order=5,
-                max_bars_since_trough=5,
+                order=self.order,
+                max_bars_since_trough=self.max_bars_since_trough,
                 zero_axis_filter=self.zero_axis_filter,
                 multi_level_check=self.multi_level_check
             )
@@ -1147,6 +1161,58 @@ class VolumePriceDivergenceCondition(BaseCondition):
             return False
 
 
+class MLTopKCondition(BaseCondition):
+    """
+    ML 预测排名 Top-K 筛选条件（B 路径自学习）。
+
+    工作方式：
+      - Spot 阶段：所有候选股放行
+      - Full 阶段：用 daily_df 算 ML 预测分，缓存到 spot_row['_ml_score']
+      - 实际筛选发生在 evaluate_full：用每只股票的 ml_score 排名，取 top_k
+
+    注意：因为筛选条件接口是逐股调用，本条件单独评估时无法"排名"，
+          需要 screener 在 pass2 后做一次批量重排（已在 screener.py 处理）。
+    """
+    name = "ml_top_k"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, top_k: int = 50, min_score: float | None = None):
+        """
+        Args:
+            top_k: 取预测分前 K 名
+            min_score: 同时要求 ml_score >= min_score（None 不限制）
+        """
+        self.top_k = int(top_k)
+        self.min_score = min_score
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 250:
+            return False
+        try:
+            from src.ml.predictor import get_predictor
+            predictor = get_predictor()
+            if predictor is None:
+                logger.warning("ml_top_k 条件需要 ML 模型，未训练，跳过该条件（视为通过）")
+                return True
+            score = predictor.predict_from_daily_df(ohlcv_df)
+            # 把分数挂到 spot_row 上，供 screener 做最终 top-K 排名
+            try:
+                spot_row["_ml_score"] = score
+            except Exception:
+                pass
+            if self.min_score is not None and score < self.min_score:
+                return False
+            # 真正的 top-K 截断在 screener pass2 完成后进行；这里先放行
+            return True
+        except Exception as e:
+            logger.debug(f"ml_top_k 计算失败: {e}")
+            return False
+
+
 class NorthboundFlowCondition(BaseCondition):
     """
     北向资金持续净买入筛选
@@ -1227,6 +1293,7 @@ CONDITION_REGISTRY: dict[str, type] = {
     "trailing_stop": TrailingStopCondition,
     "volume_price_divergence": VolumePriceDivergenceCondition,
     "northbound_flow": NorthboundFlowCondition,
+    "ml_top_k": MLTopKCondition,
 }
 
 

@@ -8,6 +8,10 @@ src/automation/monitor/base.py — 监控任务抽象基类
   3. 生成 AlertEvent 列表
   4. 通过 dispatch() 推送（带去重）
   5. 落盘明细 CSV（供前端展示）
+
+并发安全（B1/B14 修复）：
+  - CSV 写入由 file_lock 串行化，scheduler + Web 进程并发写不会损坏
+  - 表头判断从 TOCTOU 改为：始终读取首行确认（仅在写入时持锁内完成）
 """
 from __future__ import annotations
 
@@ -18,6 +22,7 @@ from pathlib import Path
 import pandas as pd
 
 from src.automation.alert import AlertChannel, AlertEvent, AlertStateStore, dispatch
+from src.utils.file_lock import file_lock
 from src.utils.logger import get_logger
 
 logger = get_logger("monitor")
@@ -128,13 +133,23 @@ class BaseMonitor(ABC):
         }
 
     def _append_csv(self, records: list[dict]) -> None:
-        """把事件明细追加写入 output/{name}_events.csv"""
+        """
+        把事件明细追加写入 output/{name}_events.csv
+
+        B1/B14 修复：用文件锁串行化多进程写入。
+        表头判断从 "path.exists()" 改为 "持锁后看文件大小"，避免 TOCTOU。
+        """
         path = self.output_dir / f"{self.name}_events.csv"
+        lock_path = path.with_suffix(path.suffix + ".lock")
         df = pd.DataFrame(records)
-        # 文件已存在：不写 header，追加
-        write_header = not path.exists()
         try:
-            df.to_csv(path, mode="a", header=write_header, index=False, encoding="utf-8-sig")
+            with file_lock(lock_path):
+                # 持锁后再判断：路径存在 + 文件大小 > 0 才认为已有表头
+                write_header = not path.exists() or path.stat().st_size == 0
+                df.to_csv(
+                    path, mode="a", header=write_header,
+                    index=False, encoding="utf-8-sig",
+                )
             logger.debug(f"[{self.name}] 事件明细已追加: {path}")
         except Exception as e:
             logger.error(f"[{self.name}] 事件 CSV 写入失败: {e}")

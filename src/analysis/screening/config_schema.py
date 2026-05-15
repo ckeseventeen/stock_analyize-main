@@ -23,11 +23,15 @@ _PARAM_MAP = {
         "lookback_bars": "lookback_bars",
         "zero_axis_filter": "zero_axis_filter",
         "multi_level_check": "multi_level_check",
+        "order": "order",
+        "max_bars_since_trough": "max_bars_since_trough",
     },
     "daily_macd_divergence": {
         "lookback_bars": "lookback_bars",
         "zero_axis_filter": "zero_axis_filter",
         "multi_level_check": "multi_level_check",
+        "order": "order",
+        "max_bars_since_trough": "max_bars_since_trough",
     },
     "rsi_oversold": {"threshold": "threshold", "period": "period"},
     "rsi_overbought": {"threshold": "threshold", "period": "period"},
@@ -109,6 +113,10 @@ _PARAM_MAP = {
         "lookback_days": "lookback_days",
         "min_net_buy": "min_net_buy",
     },
+    "ml_top_k": {
+        "top_k": "top_k",
+        "min_score": "min_score",
+    },
 }
 
 # 不适合回测的基本面/排除类条件（仅在实时 Spot 筛选时有效）
@@ -143,12 +151,28 @@ def list_strategies(config_path: str) -> dict[str, str]:
     return {sid: cfg.get("name", sid) for sid, cfg in strategies_cfg.items()}
 
 
-def _build_conditions(conditions_config: list[dict], sid: str = "") -> list[BaseCondition]:
-    """从条件配置列表构建条件对象列表"""
+def _build_conditions(conditions_config: list[dict], sid: str = "",
+                       strict: bool | None = None) -> list[BaseCondition]:
+    """
+    从条件配置列表构建条件对象列表。
+
+    B21 修复：未知类型默认仍然 warning + skip（保留向后兼容），
+    但若环境变量 SCREENER_STRICT=1 或 strict=True 则抛错，便于 CI 检测。
+
+    Args:
+        strict: True 抛 ValueError；False/None 警告并跳过；
+                None 时读 SCREENER_STRICT 环境变量
+    """
+    import os
+    if strict is None:
+        strict = os.environ.get("SCREENER_STRICT", "0") == "1"
+
     result = []
+    unknown_types: list[str] = []
     for cond_dict in conditions_config:
         cond_type = cond_dict.get("type", "")
         if cond_type not in CONDITION_REGISTRY:
+            unknown_types.append(cond_type)
             logger.warning(f"[{sid}] 未知筛选条件类型: {cond_type}，跳过")
             continue
 
@@ -166,6 +190,14 @@ def _build_conditions(conditions_config: list[dict], sid: str = "") -> list[Base
             logger.debug(f"解析筛选条件 [{sid}]: {cond_type} -> {condition}")
         except Exception as e:
             logger.error(f"构建筛选条件 [{sid}:{cond_type}] 失败: {e}")
+            if strict:
+                raise
+
+    if unknown_types and strict:
+        raise ValueError(
+            f"[{sid}] 配置包含未知条件类型: {unknown_types}。"
+            f"可用类型: {sorted(CONDITION_REGISTRY.keys())}"
+        )
     return result
 
 

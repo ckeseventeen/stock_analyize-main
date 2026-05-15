@@ -388,7 +388,12 @@ def _parse_ashare_df(
     actual_date_col = _pick([date_col, "实际披露时间", "日期", "时间"])
 
     if not code_col or not actual_date_col:
-        logger.debug(f"[{event_type}] 缺失关键列，跳过：{df.columns.tolist()}")
+        # B16 修复：从 debug 改为 warning，akshare 改字段时及早暴露而非静默失败
+        logger.warning(
+            f"[{event_type}] akshare 返回列结构不符合预期，缺失代码或日期列。"
+            f"实际列名: {df.columns.tolist()}。"
+            f"akshare 接口可能已更新，请检查 src/data/providers/earnings_fetcher.py 的列名映射。"
+        )
         return pd.DataFrame(columns=COLUMNS)
 
     out = pd.DataFrame({
@@ -402,9 +407,10 @@ def _parse_ashare_df(
     })
 
     # 业绩预告附加：预告类型 + 变动幅度
+    # B16 修复：_pick 接收 list 而非 str（原代码 _pick("预告类型") 会把字符串当 iterable）
     if event_type == "业绩预告":
-        type_col = _pick("预告类型")
-        change_col = _pick("预告净利润变动幅度") or _pick("变动幅度")
+        type_col = _pick(["预告类型"])
+        change_col = _pick(["预告净利润变动幅度"]) or _pick(["变动幅度"])
         parts = []
         if type_col:
             parts.append(df[type_col].astype(str))

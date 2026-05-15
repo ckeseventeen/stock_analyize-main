@@ -18,9 +18,10 @@ class BaseAnalyzer(ABC):
     """
 
     def __init__(self, raw_fin, hist_val, market_data, stock_config):
-        self.raw_fin = raw_fin.copy()
-        # 深拷贝历史估值数据，防止 process() 中 set_index 等操作污染原始数据
-        self.hist_val = hist_val.copy() if hist_val is not None else pd.DataFrame()
+        # O7：去掉一份不必要的全局 .copy()，process() 内部需要 mutate 时局部 copy 即可
+        # 旧版本：raw_fin.copy() + hist_val.copy()，这里只在 _clean_financial_data 等会 mutate 的位置 copy
+        self.raw_fin = raw_fin
+        self.hist_val = hist_val if hist_val is not None else pd.DataFrame()
         self.market_data = market_data
         self.config = stock_config
         self.market_name = self.config.get("market_name", self.config.get("market", "未知市场"))
@@ -41,17 +42,44 @@ class BaseAnalyzer(ABC):
 
     def _detect_fiscal_year_month(self, fin_ts: pd.DataFrame) -> int:
         """
-        自动检测财年结束月份
-        A股 = 12月，美股苹果 = 9月，微软 = 6月 等
-        逻辑：取出现在最多不同年份中的月份
+        自动检测财年结束月份。
+
+        逻辑：
+          1. 季报数据 Q1/Q2/Q3/Q4 都会在多年中出现 → 用"年份覆盖数"区分不出谁是财年末。
+          2. 真财年末的特征：YTD 累计金额最大（年报值 = 全年值，季报是部分累计）。
+          3. 因此按"每月 metric 平均值"取最大的月份作为财年末（用归母净利润，缺失则用第一列）。
+          4. 兜底：A 股 / 港股按 12 月，最稀疏情况返回 12。
+
+        修复 bug B7（src/core/analyzer.py:42-54）：
+          原算法在四个季度月份的 `years` 计数相同时，tie-breaker 会偏向 12 月，
+          导致苹果（9月财年）/微软（6月财年）的季报被误判为年报，TTM 错 4 倍。
         """
         if fin_ts.empty:
             return 12
-        month_year_counts = {}
-        for m in fin_ts.index.month.unique():
-            years = fin_ts[fin_ts.index.month == m].index.year.nunique()
-            month_year_counts[m] = years
-        return max(month_year_counts, key=lambda m: (month_year_counts[m], m == 12, m))
+
+        # 选用于判断的列：优先归母净利润，再退到营业总收入，再退到第一列
+        metric_col = None
+        for candidate in ("归母净利润", "营业总收入"):
+            if candidate in fin_ts.columns:
+                metric_col = candidate
+                break
+        if metric_col is None and len(fin_ts.columns) > 0:
+            metric_col = fin_ts.columns[0]
+        if metric_col is None:
+            return 12
+
+        # 取绝对值后按月分组求均值；财年末（年报）金额通常远大于季报
+        # 注意：归母净利润可能为负，用绝对值后比较"规模"
+        series = pd.to_numeric(fin_ts[metric_col], errors="coerce").abs()
+        if series.dropna().empty:
+            return 12
+
+        month_means = series.groupby(fin_ts.index.month).mean()
+        if month_means.empty or month_means.isna().all():
+            return 12
+
+        # 选金额最大的月份
+        return int(month_means.idxmax())
 
     def _calc_ttm(self, fin_ts: pd.DataFrame, metric: str) -> tuple[float, str]:
         """
@@ -77,7 +105,15 @@ class BaseAnalyzer(ABC):
             return fin_ts.loc[latest_date, metric], 'high'
 
         # 计算可比期
-        last_year_same_period = latest_date.replace(year=y_latest - 1)
+        # B6: latest_date.replace() 在 2024-02-29 → 2023-02-29 时会抛 ValueError（非闰年）
+        # 改为用同月+对应索引匹配，避开 .replace() 的闰年陷阱
+        try:
+            last_year_same_period = latest_date.replace(year=y_latest - 1)
+        except ValueError:
+            # 闰年回退：找去年同月最近的财报日期
+            cand = fin_ts[(fin_ts.index.year == y_latest - 1) & (fin_ts.index.month == latest_date.month)]
+            last_year_same_period = cand.index[0] if not cand.empty else None
+
         last_year_end = pd.Timestamp(year=y_latest - 1, month=fiscal_month, day=28)
         # 模糊匹配：财报日期可能是28/29/30/31号
         matches = fin_ts[(fin_ts.index.year == y_latest - 1) & (fin_ts.index.month == fiscal_month)]
@@ -85,6 +121,8 @@ class BaseAnalyzer(ABC):
             last_year_end = matches.index[0]
 
         try:
+            if last_year_same_period is None:
+                raise KeyError("闰年同期不存在")
             ytd_current = fin_ts.loc[latest_date, metric]
             ytd_last = fin_ts.loc[last_year_same_period, metric]
             annual_last = fin_ts.loc[last_year_end, metric]
@@ -96,7 +134,9 @@ class BaseAnalyzer(ABC):
                 f"【{self.market_name}-{self.stock_name}】指标 '{metric}' 缺失可比期数据，"
                 f"使用线性年化(月份={latest_date.month})，季节性行业结果可能不准确"
             )
-            return fin_ts.loc[latest_date, metric] / (latest_date.month / 12.0), 'low'
+            # 按 fiscal_month 计算"自上一财年末已过去的月数"，而非粗暴用 month/12
+            months_elapsed = ((latest_date.month - fiscal_month) % 12) or 12
+            return fin_ts.loc[latest_date, metric] * 12.0 / months_elapsed, 'low'
 
     def process(self):
         """统一主流程入口：财务清洗 → TTM 计算 → 估值推演 → 历史分位数"""
@@ -117,6 +157,8 @@ class BaseAnalyzer(ABC):
         # 取两者中较低的置信度作为整体 TTM 置信度
         _conf_order = {'high': 2, 'medium': 1, 'low': 0}
         ttm_confidence = min(conf_profit, conf_revenue, key=lambda c: _conf_order.get(c, 0))
+        # B13/S4：季节性提示。conf=low 意味着使用了线性年化，对季节性行业（零售、白酒、教培）误差大
+        seasonality_flag = conf_profit == 'low' or conf_revenue == 'low'
         logger.debug(f"【{self.market_name}-{self.stock_name}】TTM 归母净利润: {ttm_net_profit:.2f} ({conf_profit}), TTM 营业总收入: {ttm_revenue:.2f} ({conf_revenue})")
 
         # 3. 年度数据与毛利率计算（自动检测财年月，兼容非12月财年）
@@ -175,17 +217,37 @@ class BaseAnalyzer(ABC):
                     logger.debug(f"【{self.market_name}-{self.stock_name}】历史 {val_type.upper()} 分位数: {hist_percentile:.1f}%")
 
         # 6. 组装返回结果
-        logger.info(f"【{self.market_name}-{self.stock_name}】估值分析完成 (TTM置信度: {ttm_confidence})")
+        # S8：分位数置信度。样本 < 252 天（约 1 年）认为低置信度，<504 中等，否则高
+        hist_sample_size = len(hist_val) if 'hist_val' in dir() and hasattr(hist_val, '__len__') else 0
+        try:
+            hist_sample_size = len(hist_val)
+        except Exception:
+            hist_sample_size = 0
+        if hist_sample_size >= 504:
+            percentile_confidence = 'high'
+        elif hist_sample_size >= 252:
+            percentile_confidence = 'medium'
+        else:
+            percentile_confidence = 'low'
+
+        logger.info(
+            f"【{self.market_name}-{self.stock_name}】估值分析完成 "
+            f"(TTM置信度: {ttm_confidence}, 分位置信度: {percentile_confidence}, "
+            f"季节性提示: {seasonality_flag})"
+        )
         return {
             'annual_df': annual_df,
             'ttm_net_profit': ttm_net_profit,
             'ttm_revenue': ttm_revenue,
             'ttm_confidence': ttm_confidence,
+            'seasonality_flag': seasonality_flag,        # B13/S4
             'current_pe': current_pe,
             'current_ps': current_ps,
             'scenarios': scenarios,
             'hist_val': hist_val,
             'hist_percentile': hist_percentile,
+            'hist_sample_size': hist_sample_size,         # S8
+            'percentile_confidence': percentile_confidence,  # S8
             'price': price,
             'stock_name': self.stock_name,
             'market_name': self.market_name
@@ -198,10 +260,8 @@ class AStockAnalyzer(BaseAnalyzer):
 
     def _clean_financial_data(self) -> pd.DataFrame:
         """清洗A股财务数据：转置指标行列、解析日期、清理中文数值单位"""
-        raw_fin = self.raw_fin
-
-        # 强制去除重复的列名，防止 df['指标'] 变成 DataFrame
-        raw_fin = raw_fin.loc[:, ~raw_fin.columns.duplicated()].copy()
+        # O7：在 mutate 入口处做唯一一次 copy，整个函数后续操作不再 .copy()
+        raw_fin = self.raw_fin.loc[:, ~self.raw_fin.columns.duplicated()].copy()
 
         if '选项' in raw_fin.columns:
             raw_fin.drop(columns=['选项'], inplace=True, errors='ignore')
@@ -245,11 +305,21 @@ class AStockAnalyzer(BaseAnalyzer):
         # 注意：不能用字符串替换处理中文单位（'1.5亿'→'1.500000000'→NaN），
         # 必须用数值乘法保证带小数的中文金额正确转换
         def _convert_chinese_units(val):
-            """将含中文单位的字符串转为数值：'1.5亿'→1.5e8, '3.2万'→3.2e4"""
-            s = str(val).replace(',', '').replace('None', '').strip()
+            """
+            将含中文单位的字符串转为数值。
+
+            支持：'1.5万亿'→1.5e12, '1.5亿'→1.5e8, '3.2万'→3.2e4, '1234元'→1234
+
+            B8 修复：原版本对 '1.5万亿' 命中 '亿 in s' → replace('亿','') → '1.5万' → float fail → NaN。
+            必须先判 '万亿'，再判 '亿' / '万'。
+            """
+            s = str(val).replace(',', '').replace('None', '').replace('元', '').strip()
             if not s or s == '-' or s == 'nan':
                 return np.nan
             try:
+                # 顺序敏感：先长后短
+                if '万亿' in s:
+                    return float(s.replace('万亿', '')) * 1e12
                 if '亿' in s:
                     return float(s.replace('亿', '')) * 1e8
                 if '万' in s:

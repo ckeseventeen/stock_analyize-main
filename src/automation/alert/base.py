@@ -6,16 +6,82 @@ src/automation/alert/base.py — 告警通道抽象基类
 """
 from __future__ import annotations
 
+import ipaddress
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urlparse
 
 import requests
 
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")
+
+
+# SEC3 修复：SSRF 防护白名单
+# 已知的合法推送服务域名后缀，其他域名要么明确放行（user override）要么拒绝
+_ALERT_DOMAIN_WHITELIST = (
+    "sct.ftqq.com",        # Server酱
+    "sctapi.ftqq.com",
+    "day.app",             # Bark 官方
+    "api.day.app",
+    "pushplus.plus",       # PushPlus
+    "www.pushplus.plus",
+)
+
+_BLOCKED_HOSTS = (
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "169.254.169.254",    # AWS/GCP metadata endpoint
+    "metadata.google.internal",
+    "metadata",
+)
+
+
+def _validate_url(url: str, allow_private: bool = False) -> bool:
+    """
+    SEC3 修复：校验告警 URL，防止 SSRF。
+
+    Args:
+        url: 待校验的 URL
+        allow_private: True 时允许私网 IP（用于自建 Bark/Gotify 服务器，需用户显式开启）
+
+    Returns:
+        True = 合法可访问
+    """
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    # 阻止云元数据端点（即使 allow_private 也禁止）
+    if host in _BLOCKED_HOSTS:
+        logger.warning(f"[alert SSRF] 拒绝访问元数据/本地地址: {host}")
+        return False
+    # 私网 IP 校验
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_link_local:
+            logger.warning(f"[alert SSRF] 拒绝访问环回/链路本地: {host}")
+            return False
+        if (ip.is_private or ip.is_reserved) and not allow_private:
+            logger.warning(f"[alert SSRF] 拒绝访问私网/保留地址（如需启用置 allow_private=True）: {host}")
+            return False
+    except ValueError:
+        # 不是 IP，是域名 — 检查白名单（如果 host 不在白名单且 allow_private=False，warning 但不拒绝，因为用户可能用自定义服务）
+        if not allow_private and not any(host == d or host.endswith("." + d) for d in _ALERT_DOMAIN_WHITELIST):
+            logger.warning(
+                f"[alert SSRF] URL 域名 '{host}' 不在已知白名单内，"
+                f"如非攻击请检查配置或将其加入白名单"
+            )
+    return True
 
 
 # ========================
@@ -151,14 +217,18 @@ class AlertChannel(ABC):
             return env_val
         return (cfg_value or "").strip()
 
-    @staticmethod
-    def _http_post(url: str, **kwargs) -> requests.Response:
-        """封装 POST + 默认超时"""
+    @classmethod
+    def _http_post(cls, url: str, allow_private: bool = False, **kwargs) -> requests.Response:
+        """封装 POST + 默认超时 + SSRF 校验"""
+        if not _validate_url(url, allow_private=allow_private):
+            raise ValueError(f"URL 未通过 SSRF 校验: {url}")
         kwargs.setdefault("timeout", 10)
         return requests.post(url, **kwargs)
 
-    @staticmethod
-    def _http_get(url: str, **kwargs) -> requests.Response:
-        """封装 GET + 默认超时"""
+    @classmethod
+    def _http_get(cls, url: str, allow_private: bool = False, **kwargs) -> requests.Response:
+        """封装 GET + 默认超时 + SSRF 校验"""
+        if not _validate_url(url, allow_private=allow_private):
+            raise ValueError(f"URL 未通过 SSRF 校验: {url}")
         kwargs.setdefault("timeout", 10)
         return requests.get(url, **kwargs)

@@ -1,5 +1,6 @@
 from src.analysis.factor.base import BaseFactor
 from src.analysis.factor.engine import FACTOR_REGISTRY, FactorEngine, build_engine_from_config, register_factor
+from src.analysis.factor.ml_factor import MLScoreFactor
 from src.analysis.factor.momentum import Return5D, Return20D, Return60D, Return120D, ReturnFactor
 from src.analysis.factor.quality import AmplitudeFactor, GrossMarginFactor, RevenueGrowthFactor, ROEFactor
 from src.analysis.factor.technical import MACDDivergenceFactor, PriceAboveMAFactor, RSIFactor
@@ -30,6 +31,9 @@ register_factor("rsi", RSIFactor)
 register_factor("macd_bottom_divergence", MACDDivergenceFactor)
 register_factor("price_above_ma", PriceAboveMAFactor)
 
+# ML 预测因子（依赖 cache/ml_models/lgbm_latest.joblib，未训练时返回 NaN）
+register_factor("ml_score", MLScoreFactor)
+
 
 __all__ = [
     "BaseFactor", "FactorEngine", "FACTOR_REGISTRY",
@@ -38,4 +42,5 @@ __all__ = [
     "ReturnFactor", "Return5D", "Return20D", "Return60D", "Return120D",
     "RSIFactor", "MACDDivergenceFactor", "PriceAboveMAFactor",
     "ROEFactor", "GrossMarginFactor", "RevenueGrowthFactor", "AmplitudeFactor",
+    "MLScoreFactor",
 ]

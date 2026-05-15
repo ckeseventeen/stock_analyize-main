@@ -8,17 +8,23 @@ src/automation/alert/state.py — 告警状态存储（去重）
 文件路径：./cache/alert_state.json
 JSON 结构：
   {
-    "600519:price_below_1500:2026-04-15": {"fired_at": "2026-04-15T09:30:00"},
+    "600519:price_below_1500:2026-04-15": {"fired_at": "2026-04-15T01:30:00+00:00"},
     ...
   }
+
+并发安全（B2 修复）：
+  - 同进程多线程：threading.Lock
+  - 多进程：file_lock（fcntl/msvcrt 跨平台），读改写整体原子
+  - 时间戳改为 UTC + 时区感知 ISO（B9 修复），避免容器/宿主机 TZ 不一致
 """
 from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from src.utils.file_lock import file_lock
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")
@@ -28,6 +34,29 @@ _DEFAULT_STATE_PATH = Path("./cache/alert_state.json")
 
 # 文件读写锁（同进程多线程安全）
 _lock = threading.Lock()
+
+
+def _utcnow() -> datetime:
+    """统一时区感知 UTC 时间，避免本地 TZ 漂移"""
+    return datetime.now(timezone.utc)
+
+
+def _parse_dt(s: str) -> datetime | None:
+    """
+    向后兼容解析 ISO 时间戳。
+
+    - 新格式：含时区 (e.g. "2026-04-15T01:30:00+00:00") → 直接 fromisoformat
+    - 旧格式：naive (e.g. "2026-04-15T09:30:00") → 兜底当作本地时间转 UTC
+    - 损坏：返回 None
+    """
+    try:
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            # 旧记录无时区，按本地时区处理后转 UTC
+            dt = dt.astimezone(timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        return None
 
 
 class AlertStateStore:
@@ -48,10 +77,10 @@ class AlertStateStore:
         """
         self._path = Path(path) if path else _DEFAULT_STATE_PATH
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._cache: dict[str, dict] = self._load()
+        self._lock_path = self._path.with_suffix(self._path.suffix + ".lock")
 
-    def _load(self) -> dict[str, dict]:
-        """从磁盘加载状态；文件不存在或损坏时返回空字典"""
+    def _load_unlocked(self) -> dict[str, dict]:
+        """从磁盘加载状态；文件不存在或损坏时返回空字典。调用方必须先持锁。"""
         if not self._path.exists():
             return {}
         try:
@@ -65,12 +94,12 @@ class AlertStateStore:
             logger.warning(f"告警状态文件读取失败，使用空状态: {e}")
             return {}
 
-    def _save(self) -> None:
-        """持久化到磁盘（原子写：先写临时文件再 rename）"""
-        tmp = self._path.with_suffix(".tmp")
+    def _save_unlocked(self, cache: dict[str, dict]) -> None:
+        """原子写：tmp + replace。调用方必须先持锁。"""
+        tmp = self._path.with_suffix(self._path.suffix + ".tmp")
         try:
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self._cache, f, ensure_ascii=False, indent=2)
+                json.dump(cache, f, ensure_ascii=False, indent=2)
             tmp.replace(self._path)
         except Exception as e:
             logger.error(f"告警状态文件写入失败: {e}", exc_info=True)
@@ -86,22 +115,26 @@ class AlertStateStore:
         Returns:
             True 表示仍在冷却，应跳过推送；False 表示可推送
         """
-        with _lock:
-            record = self._cache.get(event_key)
+        with _lock, file_lock(self._lock_path):
+            cache = self._load_unlocked()
+            record = cache.get(event_key)
             if not record:
                 return False
-            try:
-                fired_at = datetime.fromisoformat(record["fired_at"])
-            except Exception:
-                # 数据损坏，视为未触发
+            fired_at = _parse_dt(record.get("fired_at", ""))
+            if fired_at is None:
                 return False
-            return datetime.now() - fired_at < timedelta(hours=cooldown_hours)
+            return _utcnow() - fired_at < timedelta(hours=cooldown_hours)
 
     def mark_fired(self, event_key: str) -> None:
-        """记录事件已触发（更新时间戳）"""
-        with _lock:
-            self._cache[event_key] = {"fired_at": datetime.now().isoformat(timespec="seconds")}
-            self._save()
+        """
+        记录事件已触发（更新时间戳）。
+
+        B2/B9 修复：跨进程串行化 + UTC 时间戳。
+        """
+        with _lock, file_lock(self._lock_path):
+            cache = self._load_unlocked()
+            cache[event_key] = {"fired_at": _utcnow().isoformat(timespec="seconds")}
+            self._save_unlocked(cache)
 
     def clear_expired(self, retention_days: int = 30) -> int:
         """
@@ -110,23 +143,21 @@ class AlertStateStore:
         Returns:
             清理的条目数
         """
-        cutoff = datetime.now() - timedelta(days=retention_days)
-        with _lock:
+        cutoff = _utcnow() - timedelta(days=retention_days)
+        with _lock, file_lock(self._lock_path):
+            cache = self._load_unlocked()
             to_remove = []
-            for key, record in self._cache.items():
-                try:
-                    fired_at = datetime.fromisoformat(record["fired_at"])
-                    if fired_at < cutoff:
-                        to_remove.append(key)
-                except Exception:
+            for key, record in cache.items():
+                fired_at = _parse_dt(record.get("fired_at", ""))
+                if fired_at is None or fired_at < cutoff:
                     to_remove.append(key)
             for k in to_remove:
-                del self._cache[k]
+                del cache[k]
             if to_remove:
-                self._save()
+                self._save_unlocked(cache)
             return len(to_remove)
 
     def all_records(self) -> dict[str, dict]:
         """返回全量状态快照（供前端告警历史页展示）"""
-        with _lock:
-            return dict(self._cache)
+        with _lock, file_lock(self._lock_path):
+            return dict(self._load_unlocked())

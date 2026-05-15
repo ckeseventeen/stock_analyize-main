@@ -3,6 +3,8 @@ src/analysis/technical/indicators.py — 技术指标计算器
 
 基于 ta 库封装常用技术指标，支持中英文列名自动识别。
 """
+import functools
+import os
 from pathlib import Path
 
 import numpy as np
@@ -22,10 +24,19 @@ def _default_indicator_config_path() -> Path:
     return Path(__file__).resolve().parents[3] / "config" / "indicators.yaml"
 
 
+# O4 修复：lru_cache 避免回测循环里频繁重读 YAML
+# key = (profile_name, abs_config_path, mtime)，mtime 变化时缓存自动失效
+@functools.lru_cache(maxsize=16)
+def _load_indicator_profile_cached(profile: str | None, config_path: str, mtime: float) -> dict:
+    return _load_indicator_profile_impl(profile, Path(config_path))
+
+
 def load_indicator_profile(profile: str | None = None,
                            config_path: Path | str | None = None) -> dict:
     """
     从 indicators.yaml 读取 profile 参数；缺失时返回硬编码默认值。
+
+    O4 优化：用 mtime-aware lru_cache，回测循环里重复调用接近 O(1)。
 
     返回结构（所有键都保证存在）：
         {
@@ -36,6 +47,16 @@ def load_indicator_profile(profile: str | None = None,
             "moving_averages": {"periods": [...]},
         }
     """
+    path = Path(config_path) if config_path else _default_indicator_config_path()
+    try:
+        mtime = os.path.getmtime(path) if path.exists() else 0.0
+    except OSError:
+        mtime = 0.0
+    return _load_indicator_profile_cached(profile, str(path), mtime)
+
+
+def _load_indicator_profile_impl(profile: str | None, path: Path) -> dict:
+    """实际的 YAML 解析逻辑（由 lru_cache 包装层调用）"""
     defaults = {
         "macd": {"fast": 12, "slow": 26, "signal": 9},
         "rsi": {"period": 14},
@@ -44,7 +65,6 @@ def load_indicator_profile(profile: str | None = None,
         "moving_averages": {"periods": [5, 10, 20, 60, 120, 250]},
     }
 
-    path = Path(config_path) if config_path else _default_indicator_config_path()
     if not path.exists():
         return defaults
 

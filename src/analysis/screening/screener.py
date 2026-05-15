@@ -56,6 +56,8 @@ class StockScreener:
         self._conditions: list[BaseCondition] = []
         self._request_delay: float = float(request_delay)
         self._max_workers: int = max(1, int(max_workers))
+        # B 路径：ML 预测分缓存 code -> score，用于 ml_top_k 条件的最终排名
+        self._ml_scores: dict[str, float] = {}
 
     def add_condition(self, condition: BaseCondition) -> "StockScreener":
         """链式添加筛选条件（AND组合）"""
@@ -124,8 +126,31 @@ class StockScreener:
             logger.info("筛选结果为空")
             return pd.DataFrame()
 
+        # B 路径：若包含 ml_top_k 条件，做 top-K 截断（按 ml_score 排序）
+        ml_top_k_cond = next(
+            (c for c in self._conditions if getattr(c, "name", "") == "ml_top_k"),
+            None,
+        )
+        if ml_top_k_cond is not None and self._ml_scores:
+            code_col = "代码" if "代码" in candidates.columns else "code"
+            candidates = candidates.copy()
+            candidates["ml_score"] = candidates[code_col].astype(str).map(self._ml_scores)
+            # 按 ml_score 降序取 top_k
+            top_k = int(getattr(ml_top_k_cond, "top_k", 50))
+            before = len(candidates)
+            candidates = candidates.sort_values("ml_score", ascending=False, na_position="last").head(top_k)
+            logger.info(f"ml_top_k 截断: {before} → {len(candidates)} (top_k={top_k})")
+
         # 整理输出列
         result = self._format_output(candidates)
+
+        # 如果有 ML 分，把它带到输出列（便于查看）
+        if "ml_score" in candidates.columns and "ml_score" not in result.columns:
+            code_col = "代码" if "代码" in result.columns else "code"
+            code_to_score = dict(zip(candidates[
+                "代码" if "代码" in candidates.columns else "code"
+            ].astype(str), candidates["ml_score"]))
+            result["ml_score"] = result[code_col].astype(str).map(code_to_score)
 
         # 排序和截断
         if sort_by in result.columns:
@@ -198,34 +223,54 @@ class StockScreener:
         return weekly_df, daily_df
 
     def _evaluate_one(self, idx, row, ohlcv_conditions, need_weekly, need_daily):
-        """单只候选股评估（线程池任务单元）"""
+        """
+        单只候选股评估（线程池任务单元）。
+
+        B18 修复：返回值新增 reason 字段，区分"数据拉取失败" vs "条件未通过"。
+        Returns:
+            (idx, passed: bool, name, code, reason: str)
+              reason ∈ {"ok", "no_data", "cond_failed:<name>", "error:<msg>"}
+        """
         code = str(row.get("代码", "")).strip()
         name = str(row.get("名称", "")).strip()
         if not code:
-            return idx, False, name, code
+            return idx, False, name, code, "no_code"
 
         try:
             weekly_df, daily_df = self._fetch_ohlcv_pair(code, need_weekly, need_daily)
         except Exception as e:
             logger.debug(f"{code} K线获取异常: {e}")
-            return idx, False, name, code
+            return idx, False, name, code, f"error:{type(e).__name__}"
+
+        # 区分：K 线数据为空（拉取失败） vs 条件未通过
+        if (need_weekly and (weekly_df is None or weekly_df.empty)) or \
+           (need_daily and (daily_df is None or daily_df.empty)):
+            return idx, False, name, code, "no_data"
 
         # CPU: 逐条件判断（可在线程内独立执行，释放 GIL）
         all_pass = True
+        fail_reason = "ok"
         for cond in ohlcv_conditions:
             ohlcv_df = weekly_df if cond.ohlcv_period == "weekly" else daily_df
             try:
                 if not cond.evaluate_full(row, ohlcv_df):
                     all_pass = False
+                    fail_reason = f"cond_failed:{cond.name}"
                     break
+                # B 路径：捕获 ml_top_k 条件计算出的预测分
+                if getattr(cond, "name", "") == "ml_top_k":
+                    score = row.get("_ml_score")
+                    if score is not None and pd.notna(score):
+                        self._ml_scores[code] = float(score)
             except Exception as e:
                 logger.debug(f"{code} 条件 {cond.name} 异常: {e}")
                 all_pass = False
+                fail_reason = f"error:{cond.name}:{type(e).__name__}"
                 break
 
         if self._request_delay > 0:
             time.sleep(self._request_delay)
-        return idx, all_pass, name, code
+        return idx, all_pass, name, code, fail_reason
 
     def _pass2_ohlcv_filter(self, candidates: pd.DataFrame,
                              ohlcv_conditions: list[BaseCondition]) -> pd.DataFrame:
@@ -267,14 +312,18 @@ class StockScreener:
         passed_indices: list = []
         done = 0
 
+        # B18: 统计失败原因分布
+        reason_counter: dict[str, int] = {}
+
         workers = min(self._max_workers, total)
         if workers <= 1:
             # 串行路径
             for idx, row in candidates.iterrows():
-                idx_, ok, name, code = self._evaluate_one(
+                idx_, ok, name, code, reason = self._evaluate_one(
                     idx, row, ohlcv_conditions, need_weekly, need_daily,
                 )
                 done += 1
+                reason_counter[reason] = reason_counter.get(reason, 0) + 1
                 if ok:
                     passed_indices.append(idx_)
                     logger.info(f"  ✓ {name}({code}) 通过所有K线条件")
@@ -293,8 +342,9 @@ class StockScreener:
                     for idx, row in candidates.iterrows()
                 }
                 for fut in as_completed(futures):
-                    idx_, ok, name, code = fut.result()
+                    idx_, ok, name, code, reason = fut.result()
                     done += 1
+                    reason_counter[reason] = reason_counter.get(reason, 0) + 1
                     if ok:
                         passed_indices.append(idx_)
                         logger.info(f"  ✓ {name}({code}) 通过所有K线条件")
@@ -309,6 +359,13 @@ class StockScreener:
         logger.info(f"  Phase B（评估）耗时 {elapsed:.1f}s "
                     f"(平均 {elapsed / max(total, 1) * 1000:.1f}ms/只)")
         logger.info(f"第二轮完成：{total} 只 → {len(passed_indices)} 只")
+        # B18：在日志显示失败原因分布，方便诊断"是数据问题还是条件太严"
+        no_data_count = reason_counter.get("no_data", 0)
+        if no_data_count > 0:
+            logger.warning(
+                f"  其中 {no_data_count} 只因 K 线数据为空被剔除"
+                f"（可能数据源失败或新股，建议复查）"
+            )
         return candidates.loc[passed_indices].copy()
 
     @staticmethod

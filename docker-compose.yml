@@ -14,10 +14,12 @@ services:
       - DB_NAME=stock_db
       - DB_USER=stock_user
       - DB_PASSWORD=${DB_PASSWORD:-stock_password}
+      - SCHEDULER_DISABLED=1            # B24/SEC6: 仅在 scheduler 服务里跑调度器
     volumes:
-      - ./config:/app/config:ro          # 配置文件（只读挂载）
-      - ./output:/app/output             # 输出结果
-      - ./logs:/app/logs                 # 日志
+      - ./config:/app/config             # SEC5: 改 RW，允许 Web/CLI 写 YAML
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./cache:/app/cache               # 共享告警状态、PID 锁、缓存
     depends_on:
       db:
         condition: service_healthy
@@ -38,11 +40,12 @@ services:
       - DB_NAME=stock_db
       - DB_USER=stock_user
       - DB_PASSWORD=${DB_PASSWORD:-stock_password}
-      - SCHEDULER_ENABLED=true
+      - SCHEDULER_ENABLED=true           # 只有这个容器跑调度器
     volumes:
-      - ./config:/app/config:ro
+      - ./config:/app/config             # SEC5: RW，scheduler 也可能更新缓存配置
       - ./output:/app/output
       - ./logs:/app/logs
+      - ./cache:/app/cache               # 共享告警状态、PID 锁
     depends_on:
       db:
         condition: service_healthy
@@ -61,9 +64,11 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - DB_HOST=db
+      - SCHEDULER_DISABLED=1            # B24/SEC6: webui 内不再自动启动调度器，避免与 scheduler 服务双启动
     volumes:
-      - ./config:/app/config:ro
+      - ./config:/app/config             # SEC5: RW，Web UI 需要写 YAML（关注列表、预警规则）
       - ./output:/app/output
+      - ./cache:/app/cache               # 共享告警状态（必须 RW）
     command: ["streamlit", "run", "src/web/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
     networks:
       - stock_net

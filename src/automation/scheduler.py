@@ -19,13 +19,16 @@ src/automation/scheduler.py — APScheduler 任务调度器
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
+import time
 from pathlib import Path
 from typing import Any, Callable
 
 import yaml
 
+from src.utils.file_lock import acquire_pid_lock, release_pid_lock
 from src.utils.logger import get_logger
 
 logger = get_logger("scheduler")
@@ -229,12 +232,57 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
     return _run
 
 
+def _build_ml_retrain_callable(job_cfg: dict) -> Callable[[], Any]:
+    """构造 ML 月度重训 Job：拉数据 + 训练 + 重置 predictor 单例（B 路径）"""
+
+    horizon = int(job_cfg.get("label_horizon_days", 20))
+    start_date = str(job_cfg.get("start_date", "2020-01-01"))
+    max_codes = job_cfg.get("max_codes")
+    num_rounds = int(job_cfg.get("num_boost_round", 500))
+    n_splits = int(job_cfg.get("n_splits", 5))
+
+    def _run():
+        from src.ml.dataset_builder import DatasetBuilder
+        from src.ml.predictor import reset_predictor
+        from src.ml.trainer import MLTrainer
+
+        try:
+            logger.info(f"[ml_retrain] 开始重训：horizon={horizon}d, start={start_date}")
+            builder = DatasetBuilder(label_horizon_days=horizon)
+            dataset = builder.build(
+                start_date=start_date,
+                end_date=None,
+                max_codes=int(max_codes) if max_codes else None,
+            )
+            if dataset.empty:
+                logger.error("[ml_retrain] 数据集为空，跳过训练")
+                return
+            builder.save(dataset)
+
+            trainer = MLTrainer(n_splits=n_splits)
+            meta = trainer.train(
+                dataset,
+                label_col=f"y_excess_ret_{horizon}d",
+                num_boost_round=num_rounds,
+            )
+            reset_predictor()
+            logger.info(
+                f"[ml_retrain] 完成: IC={meta['cv_ic_mean']:.4f}, "
+                f"RMSE={meta['cv_rmse_mean']:.4f}, n={meta['n_samples']}"
+            )
+        except Exception as e:
+            logger.error(f"[ml_retrain] 异常: {e}", exc_info=True)
+
+    return _run
+
+
 # Job 类型 → (可调用工厂, 默认触发方式)
 JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
     "price_monitor": _build_price_monitor_callable,
     "earnings_monitor": _build_earnings_monitor_callable,
     "scraper": _build_scraper_callable,
     "screener": _build_screener_callable,
+    "ml_retrain": _build_ml_retrain_callable,
 }
 
 
@@ -322,22 +370,70 @@ def build_scheduler(config: dict, scheduler_cls=None):
             continue
 
         try:
-            func = builder(job_cfg)
+            raw_func = builder(job_cfg)
+            # B23：包装一层 timing wrapper，运行时间超过阈值或触发器间隔的 80% 就告警
+            interval_seconds = _estimate_interval_seconds(job_cfg)
+            warn_threshold = max(60, interval_seconds * 0.8) if interval_seconds else None
+            func = _wrap_with_timing(raw_func, job_id or job_type, warn_threshold)
+
             trigger_type, trigger_kwargs = _parse_trigger(job_cfg)
+            # B23：misfire_grace_time 改为可配，默认放大到 300s 适配抓取/筛选这种慢任务
+            misfire_grace = int(job_cfg.get("misfire_grace_time", 300))
             scheduler.add_job(
                 func,
                 trigger=trigger_type,
                 id=job_id or f"{job_type}_{len(jobs)}",
                 max_instances=1,  # 同名 Job 不并发
-                misfire_grace_time=120,  # 错过触发窗口 120s 内仍补发
+                misfire_grace_time=misfire_grace,
                 coalesce=True,  # 多次错过合并为一次
                 **trigger_kwargs,
             )
-            logger.info(f"[scheduler] 已注册 Job: {job_id} ({job_type}) → {trigger_type}={trigger_kwargs}")
+            logger.info(
+                f"[scheduler] 已注册 Job: {job_id} ({job_type}) → {trigger_type}={trigger_kwargs}, "
+                f"misfire_grace={misfire_grace}s"
+            )
         except Exception as e:
             logger.error(f"[scheduler] Job [{job_id}] 注册失败: {e}", exc_info=True)
 
     return scheduler
+
+
+def _estimate_interval_seconds(job_cfg: dict) -> float | None:
+    """估算 Job 触发间隔（秒），用于运行时长告警"""
+    iv = job_cfg.get("interval_minutes")
+    if iv:
+        try:
+            return float(iv) * 60.0
+        except (ValueError, TypeError):
+            return None
+    # cron 难以精确估算，返回 None 即可（不做时长告警）
+    return None
+
+
+def _wrap_with_timing(func: Callable[[], Any], job_name: str,
+                     warn_threshold: float | None) -> Callable[[], Any]:
+    """
+    Job 执行计时 + 超时告警包装。
+
+    B23：单次 Job 超过 warn_threshold（默认触发器间隔 80%）时记 warning，
+    便于运维及早发现"任务跑不完"的退化。
+    """
+
+    def _wrapped():
+        start = time.monotonic()
+        try:
+            return func()
+        finally:
+            elapsed = time.monotonic() - start
+            if warn_threshold and elapsed > warn_threshold:
+                logger.warning(
+                    f"[scheduler] Job '{job_name}' 耗时 {elapsed:.1f}s，"
+                    f"超过预警阈值 {warn_threshold:.0f}s（可能影响下一次触发）"
+                )
+            else:
+                logger.debug(f"[scheduler] Job '{job_name}' 完成，耗时 {elapsed:.1f}s")
+
+    return _wrapped
 
 
 # ========================
@@ -348,7 +444,7 @@ _current_scheduler = None  # 模块级引用，便于 signal handler 访问
 _scheduler_lock = __import__("threading").Lock()
 
 
-def _install_signal_handlers(scheduler) -> None:
+def _install_signal_handlers(scheduler, pid_lock_path: Path | None = None) -> None:
     """安装 SIGTERM / SIGINT 处理器，实现优雅停止（等待 Job 完成）"""
     global _current_scheduler
     with _scheduler_lock:
@@ -359,12 +455,17 @@ def _install_signal_handlers(scheduler) -> None:
         with _scheduler_lock:
             sched = _current_scheduler
         if sched is None:
+            if pid_lock_path:
+                release_pid_lock(pid_lock_path)
             sys.exit(0)
         try:
             sched.shutdown(wait=True)
             logger.info("调度器已停止")
         except Exception as e:
             logger.error(f"停止调度器异常: {e}")
+        finally:
+            if pid_lock_path:
+                release_pid_lock(pid_lock_path)
         sys.exit(0)
 
     # Windows 上只能处理 SIGINT/SIGTERM（不支持 SIGHUP 等）
@@ -383,6 +484,9 @@ def _install_signal_handlers(scheduler) -> None:
 def main(config_path: str | None = None) -> None:
     """
     命令行入口：加载配置 → 构建调度器 → 安装信号处理 → 启动（阻塞）
+
+    SEC6 修复：用 PID 锁防止双启动（Web 进程 + scheduler 进程重复初始化）。
+    锁文件 cache/scheduler.pid，进程退出时自动释放。
     """
     parser = argparse.ArgumentParser(description="Stock Analyze 任务调度器")
     parser.add_argument(
@@ -391,17 +495,40 @@ def main(config_path: str | None = None) -> None:
         default=str(DEFAULT_CONFIG),
         help="调度器配置文件路径（默认 ./config/scheduler.yaml）",
     )
+    parser.add_argument(
+        "--pid-file",
+        type=str,
+        default="./cache/scheduler.pid",
+        help="PID 锁文件路径（用于防止双启动）",
+    )
+    parser.add_argument(
+        "--no-lock",
+        action="store_true",
+        help="跳过 PID 锁检查（仅供测试/调试）",
+    )
     args, _ = parser.parse_known_args()
     cfg_path = config_path or args.config
 
-    logger.info(f"========== 调度器启动，配置: {cfg_path} ==========")
+    pid_lock = Path(args.pid_file)
+    if not args.no_lock:
+        if not acquire_pid_lock(pid_lock):
+            existing = pid_lock.read_text().strip() if pid_lock.exists() else "?"
+            logger.error(
+                f"调度器已在运行（PID={existing}，锁文件 {pid_lock}）。"
+                f"如确认已停止，删除该文件后重启；或加 --no-lock 跳过。"
+            )
+            sys.exit(2)
+
+    logger.info(f"========== 调度器启动，配置: {cfg_path}，PID={os.getpid()} ==========")
     config = _load_yaml(cfg_path)
     scheduler = build_scheduler(config)
 
-    _install_signal_handlers(scheduler)
+    _install_signal_handlers(scheduler, pid_lock if not args.no_lock else None)
 
     if not scheduler.get_jobs():
         logger.error("无任何有效 Job，调度器退出")
+        if not args.no_lock:
+            release_pid_lock(pid_lock)
         return
 
     logger.info(f"已注册 {len(scheduler.get_jobs())} 个 Job，开始阻塞执行...")
@@ -409,6 +536,9 @@ def main(config_path: str | None = None) -> None:
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("用户中断，调度器退出")
+    finally:
+        if not args.no_lock:
+            release_pid_lock(pid_lock)
 
 
 if __name__ == "__main__":

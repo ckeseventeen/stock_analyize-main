@@ -92,3 +92,19 @@ jobs:
     alerts_config: "./config/alerts.yaml"
     output_dir: "./output"
     # strategies: ["double_breakout", "box_breakout_only"]  # 可选：指定策略列表
+
+  # ---------- ML 模型月度重训（B 路径自学习） ----------
+  # 每月 1 号 18:00 触发：拉沪深 300 历史 + 算特征 + 训练 LightGBM + 写入 lgbm_latest.joblib
+  # 训练耗时取决于股票池大小，一般 10-30 分钟
+  # 第一次启用前请先 `python -m src.ml.cli train` 完成初次训练
+  - id: ml_retrain
+    type: ml_retrain
+    enable: false              # 默认关闭，确认数据稳定后置 true
+    cron: "0 18 1 * *"          # 每月 1 号 18:00
+    timezone: "Asia/Shanghai"
+    misfire_grace_time: 3600    # 重训慢，宽限 1 小时
+    label_horizon_days: 20
+    start_date: "2020-01-01"
+    num_boost_round: 500
+    n_splits: 5
+    # max_codes: 100             # 可选：调试时限制股票数

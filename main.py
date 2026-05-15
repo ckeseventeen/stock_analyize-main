@@ -222,12 +222,16 @@ def run_screener(args, strategy_ids: list[str] | None = None):
         print(f"\n共 {len(results)} 只股票符合筛选条件")
         print("=" * 80)
 
-        # 保存CSV
+        # 保存CSV（B22 修复：带时间戳避免覆盖历史结果）
         output_dir = "./output"
         os.makedirs(output_dir, exist_ok=True)
-        csv_path = os.path.join(output_dir, "screen_result.csv")
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        csv_path = os.path.join(output_dir, f"screen_result_{timestamp}.csv")
         results.to_csv(csv_path, index=False, encoding="utf-8-sig")
-        logger.info(f"筛选结果已保存至: {csv_path}")
+        # 同时写一份不带时间戳的 "latest" 副本，方便程序读取最新结果
+        latest_path = os.path.join(output_dir, "screen_result_latest.csv")
+        results.to_csv(latest_path, index=False, encoding="utf-8-sig")
+        logger.info(f"筛选结果已保存至: {csv_path}（latest: {latest_path}）")
 
     logger.info("========== 股票筛选系统执行完成 ==========")
 
@@ -370,12 +374,17 @@ def main():
 
     args = parser.parse_args()
 
-    # 分发：优先级  监控 > 抓取 > 筛选 > 估值分析
+    # 分发：B12 修复 —— 多个任务类型可以同时传入，会按 "监控 → 抓取 → 筛选" 顺序执行（非互斥）。
+    # 若没有任何特殊模式，则跑默认估值分析。注释和实际行为一致。
+    ran_any = False
+
     if args.monitor_type:
         run_monitor(args)
+        ran_any = True
 
     if args.scrape_type:
         run_scrape(args)
+        ran_any = True
 
     if args.screen:
         # 如果是命令行运行，目前只支持传一个策略 ID（可选）
@@ -383,9 +392,10 @@ def main():
         if hasattr(args, "strategy_id") and args.strategy_id:
             strategy_ids = [args.strategy_id]
         run_screener(args, strategy_ids=strategy_ids)
+        ran_any = True
 
     # 如果没有任何特殊模式，则执行默认的估值分析模式
-    if not (args.monitor_type or args.scrape_type or args.screen):
+    if not ran_any:
         # 估值分析模式（默认）
         if args.market == "all":
             run_markets = list(MARKET_MAPPING.keys())

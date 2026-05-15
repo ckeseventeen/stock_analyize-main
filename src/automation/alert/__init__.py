@@ -32,6 +32,27 @@ CHANNEL_REGISTRY: dict[str, type[AlertChannel]] = {
 }
 
 
+def _check_secret_in_yaml(name: str, ch_cfg: dict) -> None:
+    """
+    SEC1 修复：启动时检测 alerts.yaml 是否包含明文密钥。
+
+    任意密钥字段非空 + 不是环境变量占位符 → 警告（提示用户切换到环境变量）。
+    """
+    secret_keys = ("sendkey", "key", "token")
+    suspicious = []
+    for k in secret_keys:
+        v = ch_cfg.get(k)
+        if isinstance(v, str) and v.strip() and not v.strip().startswith("${"):
+            # 非空且非 ${ENV_VAR} 占位符 → 怀疑泄露
+            suspicious.append(k)
+    if suspicious:
+        logger.warning(
+            f"⚠️ [SEC1] 通道 '{name}' 的 alerts.yaml 包含明文密钥字段: {suspicious}。"
+            f"建议改用环境变量（SERVERCHAN_KEY / BARK_KEY / PUSHPLUS_TOKEN）"
+            f"或将密钥写入 config/alerts.local.yaml（已在 .gitignore 排除）。"
+        )
+
+
 def build_channels(config: dict) -> list[AlertChannel]:
     """
     从 alerts.yaml 解析后的 dict 构建启用的通道列表。
@@ -56,6 +77,8 @@ def build_channels(config: dict) -> list[AlertChannel]:
         ch_cfg = channels_cfg.get(name) or {}
         if not ch_cfg.get("enable", False):
             continue
+        # SEC1：检测密钥泄露风险
+        _check_secret_in_yaml(name, ch_cfg)
         try:
             ch = cls(ch_cfg)
             if ch.enabled:  # 构造函数内可能因缺密钥而自动禁用

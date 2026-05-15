@@ -39,12 +39,19 @@ setup_matplotlib_chinese()
 ensure_project_dirs()
 
 # 自动启动后台调度器（幂等：进程级单例，Streamlit rerun 不会重复启动）
-try:
-    from src.automation.scheduler_manager import start as _start_scheduler
-    _start_scheduler()
-except Exception as _e:
+# B24/SEC6 修复：环境变量 SCHEDULER_DISABLED=1 时跳过，
+# 避免与独立 `python -m src.automation.scheduler` 进程双启动（典型场景：docker-compose 部署）
+import os as _os
+if _os.environ.get("SCHEDULER_DISABLED", "0") == "1":
     import logging as _logging
-    _logging.getLogger("scheduler_mgr").warning(f"调度器自动启动失败（不影响前端使用）: {_e}")
+    _logging.getLogger("scheduler_mgr").info("SCHEDULER_DISABLED=1，跳过 Streamlit 内嵌调度器自动启动")
+else:
+    try:
+        from src.automation.scheduler_manager import start as _start_scheduler
+        _start_scheduler()
+    except Exception as _e:
+        import logging as _logging
+        _logging.getLogger("scheduler_mgr").warning(f"调度器自动启动失败（不影响前端使用）: {_e}")
 
 # Streamlit 页面全局设置
 st.set_page_config(

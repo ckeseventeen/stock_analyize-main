@@ -57,7 +57,10 @@ class FactorEngine:
 
     def compute(self, stocks_data: dict[str, dict]) -> pd.DataFrame:
         """
-        批量计算所有因子
+        批量计算所有因子。
+
+        S9 修复：合成多因子前校验每只股票的输入 DataFrame 时序索引是否一致，
+        不一致时记录 warning，调用方据此判断结果可信度。
 
         Args:
             stocks_data: {股票代码: {"spot": Series, "daily_df": DataFrame, "weekly_df": DataFrame}}
@@ -66,11 +69,33 @@ class FactorEngine:
             DataFrame，索引为股票代码，列为各因子值
         """
         results = {}
+        misaligned: list[str] = []
         for code, data in stocks_data.items():
             row = {}
+            # S9：检查 daily_df / weekly_df 的最新日期是否一致
+            if isinstance(data, dict):
+                daily = data.get("daily_df")
+                weekly = data.get("weekly_df")
+                if (daily is not None and hasattr(daily, "index") and len(daily) > 0
+                    and weekly is not None and hasattr(weekly, "index") and len(weekly) > 0):
+                    try:
+                        d_max = pd.to_datetime(daily.index[-1])
+                        w_max = pd.to_datetime(weekly.index[-1])
+                        # 周线最大日期落后日线超过 14 天视为不对齐
+                        if abs((d_max - w_max).days) > 14:
+                            misaligned.append(code)
+                    except Exception:
+                        pass
+
             for factor in self.factors:
                 row[factor.name] = factor.safe_calculate(data)
             results[code] = row
+
+        if misaligned:
+            logger.warning(
+                f"S9：以下股票日线/周线数据时序不对齐（最大差异 > 14 天），"
+                f"多因子合成结果可信度低: {misaligned[:10]}{'...' if len(misaligned) > 10 else ''}"
+            )
 
         df = pd.DataFrame.from_dict(results, orient="index")
         df.index.name = "代码"

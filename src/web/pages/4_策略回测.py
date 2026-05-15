@@ -23,6 +23,7 @@ from src.web.utils import setup_matplotlib_chinese  # noqa: E402
 setup_matplotlib_chinese()
 
 import backtrader as bt  # noqa: F401, E402
+import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 import yaml as _yaml  # noqa: E402
@@ -33,9 +34,11 @@ from src.strategy.backtest import (
     STRATEGY_PARAM_SCHEMAS,
     STRATEGY_REGISTRY,
     BacktestRunner,
+    run_all_strategies,
 )
 from src.web.components.state import load_result, save_result  # noqa: E402
 from src.web.utils import (
+    MARKET_LABELS,
     PATH_BACKTEST_PRESETS,
     list_backtest_presets,
     list_stocks_from_market_config,
@@ -47,6 +50,248 @@ from src.web.utils import (
 st.set_page_config(page_title="策略回测", page_icon="📈", layout="wide")
 st.title("📈 策略回测 (Backtest)")
 st.caption("基于 Backtrader 的量化策略验证。可从「策略配置」页编辑策略后一键回测，也可从预设加载。")
+
+
+# ========================
+# 模式切换：多策略对比（默认） vs 单策略调参
+# ========================
+
+_mode = st.radio(
+    "回测模式",
+    options=["🆚 多策略对比", "🔧 单策略调参"],
+    horizontal=True,
+    help="多策略对比：选一个标的后所有策略一键跑完对比 KPI / 收益曲线 / 买卖点；单策略调参：精细调一个策略的参数",
+    key="bt_mode",
+)
+
+
+# ============================================================================
+# 多策略对比模式
+# ============================================================================
+
+if _mode == "🆚 多策略对比":
+
+    st.markdown("---")
+
+    # 顶部三栏：市场 / 标的 / 历史长度
+    col_m, col_s, col_d = st.columns([1, 2, 1])
+    with col_m:
+        cmp_market = st.selectbox(
+            "市场", options=list(MARKET_LABELS.keys()),
+            format_func=lambda k: MARKET_LABELS.get(k, k),
+            key="cmp_market",
+        )
+    with col_s:
+        cmp_stocks = list_stocks_from_market_config(cmp_market) or []
+        if cmp_stocks:
+            opts = ["<手动输入>"] + [f"{s.get('name')} ({s.get('code')})" for s in cmp_stocks]
+            picked = st.selectbox("选择标的", options=range(len(opts)),
+                                   format_func=lambda i: opts[i], key="cmp_pick")
+            if picked == 0:
+                cmp_code = st.text_input("股票代码", value="600519", key="cmp_code")
+                cmp_name = st.text_input("股票名称", value="", key="cmp_name")
+            else:
+                row = cmp_stocks[picked - 1]
+                cmp_code = str(row.get("code", ""))
+                cmp_name = str(row.get("name", ""))
+                st.caption(f"📌 已选：**{cmp_name}** ({cmp_code})")
+        else:
+            cmp_code = st.text_input("股票代码", value="600519", key="cmp_code")
+            cmp_name = st.text_input("股票名称", value="", key="cmp_name")
+    with col_d:
+        cmp_days = st.number_input(
+            "回测天数", min_value=100, max_value=5000, value=1000, step=100,
+            help="建议 ≥ 500 天，让 MA250/ML warmup 等长指标生效",
+            key="cmp_days",
+        )
+
+    # 高级设置（折叠）
+    with st.expander("⚙️ 高级设置（资金 / 手续费 / 选要跑的策略）"):
+        col_c, col_co = st.columns(2)
+        with col_c:
+            cmp_cash = st.number_input("初始资金", min_value=10000, value=100000,
+                                        step=10000, key="cmp_cash")
+        with col_co:
+            cmp_comm = st.number_input("手续费率", min_value=0.0, max_value=0.01,
+                                        value=0.00025, step=0.0001, format="%.4f",
+                                        key="cmp_comm")
+
+        all_keys = list(STRATEGY_REGISTRY.keys())
+        chosen_strategies = st.multiselect(
+            "要跑的策略（默认全部）",
+            options=all_keys,
+            default=all_keys,
+            format_func=lambda k: STRATEGY_LABELS.get(k, k),
+            help="ml_rebalance 在模型未训练时会自动跳过并提示",
+            key="cmp_strats",
+        )
+
+    run_cmp = st.button("▶️ 一键跑所有策略", type="primary", width="stretch",
+                        key="cmp_run")
+
+    if run_cmp:
+        if not cmp_code.strip():
+            st.error("请输入股票代码")
+            st.stop()
+        if not chosen_strategies:
+            st.error("至少选一个策略")
+            st.stop()
+
+        # 拉数据
+        with st.spinner(f"正在拉取 {cmp_code} 近 {cmp_days} 天日线数据..."):
+            try:
+                provider = ScreenerDataProvider()
+                df = provider.get_daily_ohlcv(cmp_code.strip(), days_back=int(cmp_days),
+                                              market=cmp_market)
+            except Exception as e:
+                st.error(f"数据拉取失败: {e}")
+                st.exception(e)
+                st.stop()
+
+        if df is None or df.empty:
+            st.error(f"未能获取 {cmp_code} 的数据，请检查代码 / 网络")
+            st.stop()
+
+        # 跑所有策略（带进度条）
+        progress_bar = st.progress(0.0, text="启动...")
+        status_lines = st.empty()
+        progress_log: list[str] = []
+
+        def _cb(idx, total, label, status):
+            icon = {"running": "⏳", "done": "✅", "skipped": "⚠️", "error": "❌"}.get(status, "•")
+            progress_log.append(f"{icon} {label}")
+            progress_bar.progress((idx + 1) / total, text=f"{idx + 1}/{total} {label}")
+            status_lines.markdown("  \n".join(progress_log))
+
+        with st.spinner("正在并行运行所有策略..."):
+            cmp_result = run_all_strategies(
+                df, stock_code=cmp_code.strip(), market=cmp_market,
+                initial_cash=float(cmp_cash), commission=float(cmp_comm),
+                strategy_keys=chosen_strategies,
+                progress_cb=_cb,
+            )
+
+        progress_bar.empty()
+
+        # ---------------- KPI 汇总 ----------------
+        st.subheader("📊 策略对比 KPI")
+        summary = cmp_result.summary_df()
+        st.dataframe(
+            summary.style.format({
+                "总收益率(%)": "{:+.2f}",
+                "年化收益率(%)": "{:+.2f}",
+                "夏普": "{:.3f}",
+                "最大回撤(%)": "{:.2f}",
+                "胜率(%)": "{:.1f}",
+            }, na_rep="—"),
+            width="stretch", hide_index=True,
+        )
+
+        # ---------------- 累计收益曲线 ----------------
+        st.subheader("📈 累计收益曲线对比（含 Buy & Hold 基准）")
+        eq = cmp_result.equity_curves_df()
+        if eq is None or eq.empty:
+            st.info("无成功跑通的策略，下方展开各策略详情看具体原因。")
+        else:
+            fig = go.Figure()
+            for col in eq.columns:
+                fig.add_trace(go.Scatter(
+                    x=eq.index, y=eq[col], mode="lines", name=col,
+                    line=dict(width=2 if col == "Buy & Hold" else 1.5,
+                              dash="dash" if col == "Buy & Hold" else "solid"),
+                ))
+            fig.update_layout(
+                xaxis_title="日期", yaxis_title="组合市值",
+                hovermode="x unified",
+                height=500,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            st.plotly_chart(fig, width="stretch")
+
+        # ---------------- 单策略详情（折叠）----------------
+        st.subheader("🔍 各策略详情")
+        for r in cmp_result.results:
+            badge = "✅" if r.success else ("⚠️" if r.skipped else "❌")
+            header = f"{badge} {r.label}"
+            if r.success and r.report:
+                header += (f" — 总收益 {r.report.get('总收益率(%)'):+.2f}% / "
+                          f"夏普 {r.report.get('夏普比率'):.2f} / "
+                          f"交易 {r.report.get('总交易次数')} 次")
+            with st.expander(header):
+                if not r.success:
+                    st.warning(r.skip_reason or r.error or "未知原因")
+                    if r.params_used:
+                        st.caption("使用的参数：")
+                        st.code(_yaml.safe_dump(r.params_used, allow_unicode=True), language="yaml")
+                    continue
+
+                rep = r.report or {}
+                # KPI 卡片
+                k1, k2, k3, k4 = st.columns(4)
+                k1.metric("最终资产", f"¥ {rep.get('最终资产'):,.2f}",
+                          f"{rep.get('总收益率(%)'):+.2f}%")
+                k2.metric("年化", f"{rep.get('年化收益率(%)'):+.2f}%")
+                k3.metric("最大回撤", f"{rep.get('最大回撤(%)'):.2f}%", delta_color="inverse")
+                k4.metric("夏普 / 胜率", f"{rep.get('夏普比率'):.2f}",
+                          f"胜率 {rep.get('胜率(%)'):.1f}%")
+
+                # 买卖点 K 线图
+                trades_df = rep.get("trades")
+                if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                    fig_k = go.Figure()
+                    # K 线
+                    fig_k.add_trace(go.Candlestick(
+                        x=df.index,
+                        open=df["open"], high=df["high"], low=df["low"], close=df["close"],
+                        name="K线", showlegend=False,
+                    ))
+                    # 买入点
+                    buys = trades_df[trades_df["side"] == "buy"]
+                    if not buys.empty:
+                        fig_k.add_trace(go.Scatter(
+                            x=pd.to_datetime(buys["datetime"]),
+                            y=buys["price"],
+                            mode="markers", name="买入",
+                            marker=dict(symbol="triangle-up", size=12, color="red"),
+                        ))
+                    # 卖出点
+                    sells = trades_df[trades_df["side"] == "sell"]
+                    if not sells.empty:
+                        fig_k.add_trace(go.Scatter(
+                            x=pd.to_datetime(sells["datetime"]),
+                            y=sells["price"],
+                            mode="markers", name="卖出",
+                            marker=dict(symbol="triangle-down", size=12, color="green"),
+                        ))
+                    fig_k.update_layout(
+                        xaxis_rangeslider_visible=False, height=400,
+                        legend=dict(orientation="h"),
+                    )
+                    st.plotly_chart(fig_k, width="stretch",
+                                    key=f"k_{r.key}")
+
+                    # 交易明细表
+                    st.dataframe(
+                        trades_df.assign(datetime=pd.to_datetime(trades_df["datetime"]).astype(str)),
+                        width="stretch", hide_index=True, height=200,
+                    )
+                else:
+                    st.caption("该策略未产生任何交易。")
+
+                # 参数信息
+                with st.expander("📋 使用的参数"):
+                    st.code(_yaml.safe_dump(r.params_used, allow_unicode=True), language="yaml")
+
+    else:
+        st.info("👆 配置标的后点「一键跑所有策略」。各策略默认参数已预置（rule_based / screener_rule 也有合理 YAML 起点）。")
+
+    st.stop()
+
+
+# ============================================================================
+# 以下为「单策略调参」原有逻辑（未做修改）
+# ============================================================================
+import pandas as pd  # noqa: E402, F401
 
 
 # ========================

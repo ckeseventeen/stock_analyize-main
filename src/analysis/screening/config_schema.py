@@ -163,9 +163,9 @@ def _build_conditions(conditions_config: list[dict], sid: str = "",
         strict: True 抛 ValueError；False/None 警告并跳过；
                 None 时读 SCREENER_STRICT 环境变量
     """
-    import os
     if strict is None:
-        strict = os.environ.get("SCREENER_STRICT", "0") == "1"
+        from src.core.settings import settings
+        strict = settings.screener_strict
 
     result = []
     unknown_types: list[str] = []

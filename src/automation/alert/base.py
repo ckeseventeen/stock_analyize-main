@@ -207,11 +207,21 @@ class AlertChannel(ABC):
 
         Args:
             cfg_value: YAML 中配置的值
-            env_var: 对应的环境变量名
+            env_var: 对应的环境变量名（保留兼容老调用）
 
         Returns:
             解析后的密钥；都没有时返回空字符串
         """
+        # 优先走统一 settings 单例（PR 1）；旧 env_var 名称兼容查询
+        try:
+            from src.core.settings import settings
+            key_attr = env_var.lower()
+            val = getattr(settings, key_attr, "")
+            if val:
+                return val.strip() if isinstance(val, str) else str(val)
+        except Exception:
+            pass
+        # 兜底：直接读 os.environ
         env_val = os.environ.get(env_var, "").strip()
         if env_val:
             return env_val

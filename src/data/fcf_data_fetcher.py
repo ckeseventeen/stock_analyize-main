@@ -140,17 +140,25 @@ class FCFDataFetcher:
     @classmethod
     def fetch(cls, market: str, code: str, is_annual: bool = True) -> pd.DataFrame:
         """
-        统一入口。
-        market: "a", "hk", "us"
+        统一入口（PR 1：用 market_registry 派发，加新市场只需注册一次）。
         """
-        if market == 'a':
+        from src.core.market_registry import get_market
+
+        try:
+            spec = get_market(market)
+        except KeyError as e:
+            raise ValueError(f"不支持的市场类型: {market}") from e
+
+        if spec.key == "a":
             return cls.fetch_a_share(code, is_annual)
-        elif market == 'hk':
-            # 港股代码转换，例如 00700 -> 0700.HK
+        if spec.yfinance_suffix == ".HK":
+            # 港股：00700 → 0700.HK（按市场注册的 pad_width + suffix）
             code_pure = str(code).split('.')[0].lstrip('0') or '0'
-            yf_symbol = f"{code_pure.zfill(4)}.HK"
+            yf_symbol = f"{code_pure.zfill(4)}{spec.yfinance_suffix}"
             return cls.fetch_yfinance_share(yf_symbol, is_annual)
-        elif market == 'us':
+        if spec.key == "us":
             return cls.fetch_yfinance_share(code, is_annual)
-        else:
-            raise ValueError(f"不支持的市场类型: {market}")
+        # 未来新市场：默认走 yfinance + suffix
+        suffix = spec.yfinance_suffix
+        yf_symbol = f"{str(code).split('.')[0]}{suffix}" if suffix else str(code)
+        return cls.fetch_yfinance_share(yf_symbol, is_annual)

@@ -42,18 +42,18 @@ PATH_BACKTEST_PRESETS = CONFIG_DIR / "backtest_presets.yaml"
 ALERT_STATE_PATH = CACHE_DIR / "alert_state.json"
 ALERT_LOG_PATH = LOGS_DIR / "alerts.log"
 
-# 市场元数据
-MARKET_LABELS = {
-    "a": "A 股",
-    "hk": "港股",
-    "us": "美股",
-}
-
-MARKET_CONFIG_PATHS = {
-    "a": PATH_A_STOCK,
-    "hk": PATH_HK_STOCK,
-    "us": PATH_US_STOCK,
-}
+# 市场元数据（向后兼容入口）
+# 实际数据来源已迁移到 src/core/market_registry.py，
+# 这里只是 re-export 让旧代码 `from src.web.utils import MARKET_LABELS` 继续工作。
+# 加新市场请到 market_registry.py，不要改这里。
+try:
+    from src.core.market_registry import list_markets as _list_markets
+    MARKET_LABELS = {spec.key: spec.label for spec in _list_markets()}
+    MARKET_CONFIG_PATHS = {spec.key: spec.config_path for spec in _list_markets()}
+except Exception:
+    # 启动早期或循环 import 时的兜底：保留旧硬编码
+    MARKET_LABELS = {"a": "A 股", "hk": "港股", "us": "美股"}
+    MARKET_CONFIG_PATHS = {"a": PATH_A_STOCK, "hk": PATH_HK_STOCK, "us": PATH_US_STOCK}
 
 
 # ========================

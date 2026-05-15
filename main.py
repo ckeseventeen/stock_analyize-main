@@ -5,35 +5,30 @@ import time
 import pandas as pd
 import yaml
 
-from src.core.analyzer import AStockAnalyzer, HKStockAnalyzer, USStockAnalyzer
-from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
+from src.core.market_registry import get_market, market_keys
 from src.core.visualizer import Visualizer
 from src.utils.logger import setup_logger
 
 # 全局日志初始化
 logger = setup_logger()
 
-# 市场映射表：添加新市场只需在此增加条目 + 对应 fetcher/analyzer 类 + YAML 配置文件
-MARKET_MAPPING = {
-    "a": {
-        "name": "A股",
-        "config_path": "./config/stocks/a_stock.yaml",
-        "fetcher_class": AStockDataFetcher,
-        "analyzer_class": AStockAnalyzer
-    },
-    "hk": {
-        "name": "港股",
-        "config_path": "./config/stocks/hk_stock.yaml",
-        "fetcher_class": HKStockDataFetcher,
-        "analyzer_class": HKStockAnalyzer
-    },
-    "us": {
-        "name": "美股",
-        "config_path": "./config/stocks/us_stock.yaml",
-        "fetcher_class": USStockDataFetcher,
-        "analyzer_class": USStockAnalyzer
-    }
-}
+# 市场映射表（PR 1 重构）：从 market_registry 派生
+# 加新市场到 src/core/market_registry.py，不要改这里
+def _build_market_mapping() -> dict:
+    """从注册中心构造 main.py 期望的 MARKET_MAPPING 形式（向后兼容）"""
+    mapping = {}
+    for key in market_keys():
+        spec = get_market(key)
+        mapping[key] = {
+            "name": spec.label,
+            "config_path": str(spec.config_path),
+            "fetcher_class": spec.fetcher_cls(),
+            "analyzer_class": spec.analyzer_cls(),
+        }
+    return mapping
+
+
+MARKET_MAPPING = _build_market_mapping()
 
 
 def load_config(file_path: str) -> dict:

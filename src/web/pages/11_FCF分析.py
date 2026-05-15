@@ -66,8 +66,14 @@ with st.sidebar:
         default_code = selected["code"]
         default_name = selected["name"]
     else:
-        default_code = "600519" if market == "a" else "0700" if market == "hk" else "AAPL"
-        default_name = "贵州茅台" if market == "a" else "腾讯控股" if market == "hk" else "Apple"
+        # PR 1：从市场注册中心读默认值
+        from src.core.market_registry import get_market
+        try:
+            _spec = get_market(market)
+            default_code = _spec.default_picker_code
+            default_name = _spec.default_picker_name
+        except KeyError:
+            default_code, default_name = "", ""
 
     code = st.text_input("股票代码", value=default_code)
     name = st.text_input("股票名称", value=default_name)
@@ -92,16 +98,13 @@ with st.sidebar:
 # 获取市值 Helper
 # ========================
 def _get_market_cap(market: str, code: str) -> float:
+    """PR 1：用 market_registry 替代三段 if，加新市场不用改这里"""
+    from src.core.market_registry import get_market
     try:
-        if market == 'a':
-            with AStockDataFetcher() as fetcher:
-                return fetcher.get_current_market_data(code).get("market_cap", 0.0)
-        elif market == 'hk':
-            with HKStockDataFetcher() as fetcher:
-                return fetcher.get_current_market_data(code).get("market_cap", 0.0)
-        elif market == 'us':
-            with USStockDataFetcher() as fetcher:
-                return fetcher.get_current_market_data(code).get("market_cap", 0.0)
+        spec = get_market(market)
+        FetcherCls = spec.fetcher_cls()
+        with FetcherCls() as fetcher:
+            return fetcher.get_current_market_data(code).get("market_cap", 0.0)
     except Exception as e:
         st.warning(f"获取市值失败: {e}")
     return 0.0

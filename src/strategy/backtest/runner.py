@@ -22,6 +22,57 @@ from src.utils.logger import get_logger
 
 logger = get_logger("backtest_runner")
 
+
+# ============================================================================
+# 自定义 Analyzer：抓取每笔交易 + 每日权益曲线（多策略对比页需要）
+# ============================================================================
+
+class TradeRecorder(bt.Analyzer):
+    """记录每笔买卖订单（成交价 / 数量 / 时间）"""
+
+    def start(self):
+        self.trades: list[dict] = []
+
+    def notify_order(self, order):
+        if order.status != order.Completed:
+            return
+        try:
+            dt = self.strategy.data.datetime.datetime(0)
+        except Exception:
+            dt = None
+        self.trades.append({
+            "datetime": dt,
+            "side": "buy" if order.isbuy() else "sell",
+            "price": float(order.executed.price),
+            "size": float(order.executed.size),
+            "value": float(order.executed.price * order.executed.size),
+            "commission": float(order.executed.comm),
+        })
+
+    def get_analysis(self):
+        return self.trades
+
+
+class EquityCurve(bt.Analyzer):
+    """每个 bar 记录一次组合总市值（用于绘制权益曲线）"""
+
+    def start(self):
+        self.points: list[dict] = []
+
+    def next(self):
+        try:
+            dt = self.strategy.data.datetime.datetime(0)
+        except Exception:
+            dt = None
+        self.points.append({
+            "datetime": dt,
+            "value": float(self.strategy.broker.getvalue()),
+            "cash": float(self.strategy.broker.getcash()),
+        })
+
+    def get_analysis(self):
+        return self.points
+
 # akshare 中文列名 -> backtrader 标准列名
 _COL_MAP = {
     "日期": "date",
@@ -178,6 +229,9 @@ class BacktestRunner:
         cerebro.addanalyzer(bt.analyzers.DrawDown, _name="drawdown")
         cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
         cerebro.addanalyzer(bt.analyzers.Returns, _name="returns")
+        # 多策略对比页需要：每笔交易明细 + 权益曲线
+        cerebro.addanalyzer(TradeRecorder, _name="trade_recorder")
+        cerebro.addanalyzer(EquityCurve, _name="equity_curve")
 
         logger.info(
             f"回测启动: 策略={self._strategy_class.__name__}, "
@@ -221,6 +275,17 @@ class BacktestRunner:
         returns = strat.analyzers.returns.get_analysis()
         annual_return = returns.get("rnorm100", 0) or 0
 
+        # 交易明细 + 权益曲线（多策略对比用）
+        trade_records = strat.analyzers.trade_recorder.get_analysis() or []
+        equity_points = strat.analyzers.equity_curve.get_analysis() or []
+
+        trades_df = pd.DataFrame(trade_records) if trade_records else pd.DataFrame(
+            columns=["datetime", "side", "price", "size", "value", "commission"]
+        )
+        equity_df = pd.DataFrame(equity_points) if equity_points else pd.DataFrame(
+            columns=["datetime", "value", "cash"]
+        )
+
         report = {
             "策略": self._strategy_class.__name__,
             "初始资金": self._initial_cash,
@@ -232,6 +297,9 @@ class BacktestRunner:
             "总交易次数": total_trades,
             "胜率(%)": round(win_rate, 2),
             "预热bar数": self._warmup_bars,
+            # 多策略对比用的明细
+            "trades": trades_df,
+            "equity_curve": equity_df,
         }
 
         logger.info(

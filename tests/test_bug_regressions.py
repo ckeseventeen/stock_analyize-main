@@ -147,7 +147,7 @@ class TestB4FCFAnnualization:
 
         analyzer = FCFAnalyzer(df, market_cap=1000e8)
         # 自动检测：相邻间隔 ~90 天 → annualized=False
-        assert analyzer.annualized == False, "应识别为季度数据"
+        assert not analyzer.annualized, "应识别为季度数据"
 
         analyzer.calculate_metrics()
         sc = analyzer.generate_scorecard()
@@ -165,7 +165,7 @@ class TestB4FCFAnnualization:
         }, index=annual_idx)
 
         analyzer = FCFAnalyzer(df, market_cap=1000e8)
-        assert analyzer.annualized == True
+        assert analyzer.annualized is True
         analyzer.calculate_metrics()
         sc = analyzer.generate_scorecard()
         # 年度 FCF = 100-20 = 80亿；Yield = 80/1000 = 8% → 满分

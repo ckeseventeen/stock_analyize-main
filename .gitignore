@@ -222,3 +222,13 @@ config/*.secrets.yaml
 cache/scheduler.pid
 cache/*.lock
 *.tmp.json
+
+# ========================
+# 运行时缓存与状态（不进版本）
+# ========================
+cache/
+.mypy_cache/
+*.pkl
+*.parquet
+cache/ml_models/
+cache/ml_dataset/

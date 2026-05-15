@@ -22,8 +22,8 @@ def _build_market_mapping() -> dict:
         mapping[key] = {
             "name": spec.label,
             "config_path": str(spec.config_path),
-            "fetcher_class": spec.fetcher_cls(),
-            "analyzer_class": spec.analyzer_cls(),
+            "fetcher_class": spec.fetcher_cls,
+            "analyzer_class": spec.analyzer_cls,
         }
     return mapping
 

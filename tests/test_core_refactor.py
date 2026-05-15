@@ -282,12 +282,12 @@ class TestMarketRegistry:
 
     def test_fetcher_cls_lazy_imports(self):
         spec = get_market("a")
-        cls = spec.fetcher_cls()
+        cls = spec.fetcher_cls
         assert cls.__name__ == "AStockDataFetcher"
 
     def test_analyzer_cls_lazy_imports(self):
         spec = get_market("us")
-        cls = spec.analyzer_cls()
+        cls = spec.analyzer_cls
         assert cls.__name__ in ("USStockAnalyzer", "InternationalStockAnalyzer")
 
 

@@ -46,7 +46,7 @@ class FCFAnalyzer:
             deltas = sorted_idx.to_series().diff().dropna()
             median_days = deltas.dt.days.median()
             # < 200 天的中位间隔强烈暗示季度数据
-            return median_days >= 200
+            return bool(median_days >= 200)
         except Exception:
             return True
 

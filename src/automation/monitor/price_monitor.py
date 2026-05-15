@@ -5,10 +5,15 @@ src/automation/monitor/price_monitor.py — 价格预警监控器
 对满足条件的股票生成 AlertEvent 并推送。
 
 支持的规则类型：
-  - price_below / price_above       : 绝对价格阈值
-  - pct_change_daily                : 当日涨跌幅超 ±X%
-  - pct_from_cost                   : 相对成本价涨跌超 X%
-  - ma_break                        : 跌破/突破 N 日均线
+  - price_below / price_above       : 绝对价格阈值（🔔 价格类）
+  - pct_change_daily                : 当日涨跌幅超 ±X%（🔔 价格类）
+  - pct_from_cost                   : 相对成本价涨跌超 X%（🔔 价格类）
+  - ma_break                        : 跌破/突破 N 日均线（🔔 价格类）
+  - signal                          : 买点信号，桥接 28 个筛选条件（📈 买点类）
+                                       示例：
+                                         type: signal
+                                         signal: weekly_macd_divergence
+                                         params: {lookback_bars: 60}
 """
 from __future__ import annotations
 
@@ -21,6 +26,21 @@ from src.automation.monitor.base import BaseMonitor
 from src.utils.logger import get_logger
 
 logger = get_logger("monitor")
+
+
+# 哪些 signal condition 需要周线 K，哪些只需日线。
+# 调用方据此判断要不要额外拉一份 weekly_df。
+def _signal_needs_weekly(condition_type: str) -> bool:
+    """从 CONDITION_REGISTRY 取该条件需要的 K 线周期"""
+    try:
+        from src.analysis.screening.conditions import CONDITION_REGISTRY
+        cls = CONDITION_REGISTRY.get(condition_type)
+        if cls is None:
+            return False
+        # 类属性 ohlcv_period: "daily" / "weekly"
+        return getattr(cls, "ohlcv_period", "daily") == "weekly"
+    except Exception:
+        return False
 
 
 # ========================
@@ -40,6 +60,8 @@ class _RuleEvaluator:
         prev_close: float | None = None,
         daily_df: pd.DataFrame | None = None,
         cost_basis: float | None = None,
+        weekly_df: pd.DataFrame | None = None,
+        spot_row: pd.Series | None = None,
     ) -> tuple[bool, str]:
         rtype = rule.get("type", "").lower()
 
@@ -91,6 +113,93 @@ class _RuleEvaluator:
                 return True, f"当前价 {price:.2f} 跌破 MA{ma_period} = {ma:.2f}"
             if direction == "above" and price > ma:
                 return True, f"当前价 {price:.2f} 突破 MA{ma_period} = {ma:.2f}"
+            return False, ""
+
+        # ---------------- signal: 桥接 28 个筛选条件作为买点 ----------------
+        if rtype == "signal":
+            signal_type = str(rule.get("signal", "")).lower().strip()
+            if not signal_type:
+                logger.warning("signal 规则缺少 'signal' 字段（指定哪个 condition_type）")
+                return False, ""
+            try:
+                from src.analysis.screening.conditions import CONDITION_REGISTRY
+                from src.analysis.screening.config_schema import (
+                    _PARAM_MAP,
+                    SPOT_ONLY_TYPES,
+                )
+            except ImportError as e:
+                logger.warning(f"signal 条件依赖加载失败: {e}")
+                return False, ""
+
+            if signal_type in SPOT_ONLY_TYPES:
+                logger.warning(
+                    f"signal '{signal_type}' 是 Spot-only 条件（不依赖 K 线），"
+                    f"用作买点意义不大；建议用 ma_break / price_below 等价格规则代替"
+                )
+                return False, ""
+
+            cls = CONDITION_REGISTRY.get(signal_type)
+            if cls is None:
+                logger.warning(f"未知 signal 类型 '{signal_type}'；可用：{sorted(CONDITION_REGISTRY)}")
+                return False, ""
+
+            # 选 K 线：weekly 条件用 weekly_df，否则用 daily_df
+            ohlcv_period = getattr(cls, "ohlcv_period", "daily")
+            target_df = weekly_df if ohlcv_period == "weekly" else daily_df
+            if target_df is None or target_df.empty:
+                return False, ""
+
+            # 列名归一化（Condition 内部多数能识别中英文，但提前归一更稳）
+            try:
+                from src.core.columns import normalize_ohlcv_columns
+                target_df = normalize_ohlcv_columns(target_df)
+            except Exception:
+                pass
+
+            # 用 _PARAM_MAP 把 yaml 风格的 params 翻译成 init kwargs
+            param_map = _PARAM_MAP.get(signal_type, {})
+            raw_params = dict(rule.get("params") or {})
+            init_kwargs = {}
+            for yaml_key, init_key in param_map.items():
+                if yaml_key in raw_params:
+                    init_kwargs[init_key] = raw_params[yaml_key]
+            # 也允许直接传 init key（向后兼容）
+            for k, v in raw_params.items():
+                if k not in param_map and k not in init_kwargs:
+                    init_kwargs[k] = v
+
+            try:
+                cond = cls(**init_kwargs)
+            except Exception as e:
+                logger.warning(f"signal '{signal_type}' 实例化失败 (params={init_kwargs}): {e}")
+                return False, ""
+
+            # spot_row：尽量构造（用最新价 + 昨收占位即可）
+            row = spot_row if spot_row is not None else pd.Series({"代码": "", "最新价": price})
+
+            try:
+                triggered = bool(cond.evaluate_full(row, target_df))
+            except Exception as e:
+                logger.debug(f"signal '{signal_type}' 评估异常: {e}")
+                return False, ""
+
+            if triggered:
+                # 用统一 SIGNAL_DIRECTION 决定方向
+                from src.analysis.screening.conditions import (
+                    CONDITION_LABELS,
+                    get_signal_direction,
+                    signal_emoji,
+                )
+                direction = get_signal_direction(signal_type, raw_params)
+                emoji = signal_emoji(direction)
+                tag = {
+                    "buy":     "买点信号",
+                    "sell":    "卖点信号",
+                    "neutral": "技术信号",
+                }.get(direction, "技术信号")
+                friendly = CONDITION_LABELS.get(signal_type, signal_type)
+                params_brief = ", ".join(f"{k}={v}" for k, v in raw_params.items()) or "默认参数"
+                return True, f"{emoji} {tag}：{friendly}（{params_brief}）"
             return False, ""
 
         logger.warning(f"未知规则类型: {rtype}，忽略")
@@ -261,24 +370,64 @@ class PriceMonitor(BaseMonitor):
                 logger.debug(f"[{market}-{code}] 跳过：无实时价")
                 continue
 
-            # 2. 如果有 ma_break 规则，才拉日线
+            # 2. 智能按需拉 K 线：判断需要日线 / 周线
+            needs_daily = any(c.get("type") == "ma_break" for c in conditions)
+            needs_weekly = False
+            for c in conditions:
+                if c.get("type") == "signal":
+                    sig = str(c.get("signal", "")).lower()
+                    if _signal_needs_weekly(sig):
+                        needs_weekly = True
+                    else:
+                        needs_daily = True
+
             daily_df = None
-            if any(c.get("type") == "ma_break" for c in conditions):
+            weekly_df = None
+            if needs_daily or needs_weekly:
                 daily_df = self._fetch_ohlcv(code, market)
+            # 周线由日线重采样
+            if needs_weekly and daily_df is not None and not daily_df.empty:
+                try:
+                    weekly_df = self._resample_weekly(daily_df)
+                except Exception as e:
+                    logger.debug(f"[{market}-{code}] 周线重采样失败: {e}")
 
             # 3. 遍历条件，任一满足即生成事件
             today = datetime.now().strftime("%Y-%m-%d")
+            # 构造一个最简 spot_row，避免 signal 评估时拿不到代码
+            spot_row = pd.Series({"代码": code, "名称": name, "最新价": price})
+
             for cond in conditions:
                 triggered, desc = _RuleEvaluator.evaluate(
-                    cond, price, prev_close, daily_df, cost_basis
+                    cond, price, prev_close, daily_df, cost_basis,
+                    weekly_df=weekly_df, spot_row=spot_row,
                 )
                 if not triggered:
                     continue
 
                 rule_type = cond.get("type", "unknown")
-                event_key = f"{code}:{rule_type}:{today}"
+                # signal 规则用 signal 名做事件 key 区分（同一股票多个 signal 互不冲突）
+                if rule_type == "signal":
+                    from src.analysis.screening.conditions import (
+                        get_signal_direction,
+                        signal_emoji,
+                    )
+                    sig_id = str(cond.get("signal", "")).lower() or "unknown"
+                    direction = get_signal_direction(sig_id, cond.get("params") or {})
+                    emoji = signal_emoji(direction)
+                    tag = {
+                        "buy":     "买点信号",
+                        "sell":    "卖点信号",
+                        "neutral": "技术信号",
+                    }.get(direction, "技术信号")
+                    event_key = f"{code}:signal:{sig_id}:{today}"
+                    title = f"{emoji} {name} {tag}：{sig_id}"
+                    event_type = f"signal_{direction}_{sig_id}"
+                else:
+                    event_key = f"{code}:{rule_type}:{today}"
+                    title = f"🔔 {name} 价格预警：{rule_type}"
+                    event_type = f"price_{rule_type}"
 
-                title = f"{name} 价格预警: {rule_type}"
                 body_lines = [
                     desc,
                     f"股票: {name} ({code})  市场: {market.upper()}",
@@ -294,7 +443,43 @@ class PriceMonitor(BaseMonitor):
                     event_key=event_key,
                     stock_code=code,
                     stock_name=name,
-                    event_type=f"price_{rule_type}",
+                    event_type=event_type,
                 ))
 
         return events
+
+    @staticmethod
+    def _resample_weekly(daily_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        日线 → 周线 OHLCV 重采样（W-FRI）。容忍中英文列名。
+        """
+        df = daily_df.copy()
+        # 列名归一化为中文（与下游 Condition 兼容）
+        rename_zh = {
+            "open": "开盘", "high": "最高", "low": "最低",
+            "close": "收盘", "volume": "成交量", "date": "日期",
+        }
+        df = df.rename(columns={k: v for k, v in rename_zh.items() if k in df.columns})
+
+        # 找日期列
+        date_col = "日期" if "日期" in df.columns else None
+        if date_col:
+            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+            df = df.dropna(subset=[date_col]).set_index(date_col)
+        elif not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index, errors="coerce")
+
+        agg = {}
+        if "开盘" in df.columns:
+            agg["开盘"] = "first"
+        if "最高" in df.columns:
+            agg["最高"] = "max"
+        if "最低" in df.columns:
+            agg["最低"] = "min"
+        if "收盘" in df.columns:
+            agg["收盘"] = "last"
+        if "成交量" in df.columns:
+            agg["成交量"] = "sum"
+
+        wk = df.resample("W-FRI").agg(agg).dropna(how="all")
+        return wk

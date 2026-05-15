@@ -91,6 +91,16 @@ class SchemaForm:
             )
 
         if ftype == "int":
+            # 支持 widget=slider（要求 min/max 都有）
+            if (field.get("widget") == "slider"
+                    and "min" in field and "max" in field):
+                return st.slider(
+                    label,
+                    min_value=int(field["min"]), max_value=int(field["max"]),
+                    value=int(default) if default is not None else int(field["min"]),
+                    step=int(field.get("step", 1)),
+                    key=widget_key, help=help_text,
+                )
             return st.number_input(
                 label, value=int(default) if default is not None else 0,
                 min_value=int(field["min"]) if "min" in field else None,
@@ -100,6 +110,16 @@ class SchemaForm:
             )
 
         if ftype == "float":
+            if (field.get("widget") == "slider"
+                    and "min" in field and "max" in field):
+                return st.slider(
+                    label,
+                    min_value=float(field["min"]), max_value=float(field["max"]),
+                    value=float(default) if default is not None else float(field["min"]),
+                    step=float(field.get("step", 0.05)),
+                    format=field.get("format", "%.2f"),
+                    key=widget_key, help=help_text,
+                )
             return st.number_input(
                 label, value=float(default) if default is not None else 0.0,
                 min_value=float(field["min"]) if "min" in field else None,

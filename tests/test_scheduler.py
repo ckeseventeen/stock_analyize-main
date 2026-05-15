@@ -141,9 +141,10 @@ class TestBuildScheduler:
 class TestJobBuilders:
     def test_all_builders_registered(self):
         # B 路径自学习扩展：新增 ml_retrain builder
+        # 批量信号扫描扩展：新增 batch_signal builder
         assert set(JOB_BUILDERS.keys()) == {
             "price_monitor", "earnings_monitor", "scraper",
-            "screener", "ml_retrain",
+            "screener", "ml_retrain", "batch_signal",
         }
 
     def test_price_monitor_callable_runs_without_rules(self, tmp_path, monkeypatch):

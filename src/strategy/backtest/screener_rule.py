@@ -25,9 +25,11 @@ class ScreenerRuleStrategy(BaseStrategy):
     params = (
         ("buy_conditions", []),
         ("sell_conditions", []),
-        ("buy_logic", "all"),
+        ("buy_logic", "any"),         # 修复：原 "all" 默认几乎互斥
         ("sell_logic", "any"),
         ("position_size", 0.95),
+        # 新增可调：滑动窗口最大回溯长度
+        ("max_lookback", 300),
         # 继承自 BaseStrategy：warmup_bars / log_level
     )
 
@@ -90,9 +92,6 @@ class ScreenerRuleStrategy(BaseStrategy):
             )
         return objs
 
-    # 滑动窗口最大回溯长度（避免O(n²)的累计切片）
-    _MAX_LOOKBACK = 300  # 覆盖最长需求（如 250 均线 + 一些余量）
-
     def _precompute_signals(self, condition_objs: list[BaseCondition], logic: str) -> list[bool]:
         if not condition_objs:
             return [False] * len(self.data)
@@ -108,12 +107,13 @@ class ScreenerRuleStrategy(BaseStrategy):
 
         signals = []
         total = len(df)
+        max_lookback = int(self.params.max_lookback)
 
         # 逐 bar 预计算，使用滑动窗口而非全量切片，将 O(n²) 优化为 O(n)
         for i in range(total):
             bar_spot = df.iloc[i]
-            # 只取最近 _MAX_LOOKBACK 根 K 线，而非从第 0 根开始
-            start_idx = max(0, i - self._MAX_LOOKBACK + 1)
+            # 只取最近 max_lookback 根 K 线
+            start_idx = max(0, i - max_lookback + 1)
             bar_history = df.iloc[start_idx:i + 1]
 
             cond_results = []

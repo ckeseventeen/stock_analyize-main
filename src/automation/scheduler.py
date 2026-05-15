@@ -56,27 +56,33 @@ def _load_yaml(path: Path | str) -> dict:
         return {}
 
 
-def _build_price_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
-    """构造一个 price_monitor 可调用对象（闭包捕获 config）"""
+def _build_buy_sell_alerts_callable(job_cfg: dict) -> Callable[[], Any]:
+    """
+    买/卖预警 Job —— 替代旧 price_monitor + batch_signal。
+
+    读取 config/price_alerts.yaml 的 buy_alerts / sell_alerts，逐条评估。
+    每条规则可以是单股盯盘（填 code）或批量扫描（填 scopes）。
+    """
 
     def _run():
-        """调度器调用入口：重新读取配置 + 执行一次"""
         from src.automation.alert import AlertStateStore, build_channels
-        from src.automation.monitor.price_monitor import PriceMonitor
+        from src.automation.monitor.buy_sell_alerts import BuySellAlertMonitor
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         rules_cfg = _load_yaml(job_cfg.get("rules_config", "./config/price_alerts.yaml"))
-        rules = rules_cfg.get("rules", []) or []
+        buy_alerts = rules_cfg.get("buy_alerts", []) or []
+        sell_alerts = rules_cfg.get("sell_alerts", []) or []
         default_cd = int(rules_cfg.get("default_cooldown_hours", 24))
 
-        if not rules:
-            logger.info("[price_monitor] 规则为空，跳过本次执行")
+        if not buy_alerts and not sell_alerts:
+            logger.info("[buy_sell_alerts] 无任何买卖预警规则，跳过")
             return
 
         channels = build_channels(alerts_cfg)
         store = AlertStateStore()
-        monitor = PriceMonitor(
-            rules=rules,
+        monitor = BuySellAlertMonitor(
+            buy_alerts=buy_alerts,
+            sell_alerts=sell_alerts,
             channels=channels,
             state_store=store,
             cooldown_hours=default_cd,
@@ -278,7 +284,7 @@ def _build_ml_retrain_callable(job_cfg: dict) -> Callable[[], Any]:
 
 # Job 类型 → (可调用工厂, 默认触发方式)
 JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
-    "price_monitor": _build_price_monitor_callable,
+    "buy_sell_alerts": _build_buy_sell_alerts_callable,
     "earnings_monitor": _build_earnings_monitor_callable,
     "scraper": _build_scraper_callable,
     "screener": _build_screener_callable,

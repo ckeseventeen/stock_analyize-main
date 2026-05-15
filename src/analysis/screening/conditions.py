@@ -1370,3 +1370,79 @@ CONDITION_LABELS: dict[str, str] = {
     "volume_price_divergence": "量价背离",
     "northbound_flow": "北向资金净买入",
 }
+
+
+# ========================
+# 买卖方向分类（价格预警 / 策略回测都用）
+# ========================
+# 每个 condition 标记是入场（buy） / 出场（sell） / 中性（neutral）
+# 中性 = 可买可卖看方向参数（如 bollinger_breakout 上轨突破偏买，下轨偏卖）
+SIGNAL_DIRECTION: dict[str, str] = {
+    # ──────────── 买点（入场） ────────────
+    "weekly_macd_divergence":  "buy",   # 底背离
+    "daily_macd_divergence":   "buy",
+    "weekly_macd_gold_cross":  "buy",
+    "macd_hist_positive":       "buy",   # MACD 柱翻红
+    "rsi_oversold":             "buy",   # 超卖反弹
+    "ma_gold_cross":            "buy",   # 金叉
+    "kdj_gold_cross":           "buy",
+    "multi_ma_bull":            "buy",   # 均线多头排列
+    "support_ma":               "buy",   # 均线支撑
+    "price_above_ma":           "buy",   # 站上均线
+    "box_breakout":             "buy",   # 箱体突破
+    "box_breakout_volume":      "buy",   # 箱体放量突破
+    "downtrend_breakout":       "buy",   # 下降趋势线突破
+    "volume_break":             "buy",   # 放量突破
+    "northbound_flow":          "buy",   # 北向买入
+    # ──────────── 卖点（出场） ────────────
+    "rsi_overbought":           "sell",  # 超买
+    "ma_death_cross":           "sell",  # 死叉
+    "volume_shrink":            "sell",  # 缩量（疲软）
+    "stop_loss":                "sell",
+    "trailing_stop":            "sell",
+    # ──────────── 中性（看方向参数）────────────
+    "bollinger_breakout":       "neutral",   # direction=upper 买 / lower 卖
+    "volume_price_divergence":  "neutral",   # direction=top 卖 / bottom 买
+    # ──────────── Spot 类（既非买也非卖，是范围筛选） ────────────
+    "market_cap":     "filter",
+    "pe_range":       "filter",
+    "pb_range":       "filter",
+    "price_range":    "filter",
+    "turnover_rate":  "filter",
+    "price_change":   "filter",
+    "roe_filter":     "filter",
+    "exclude_risk":   "filter",
+    "exclude_st":     "filter",
+    "exclude_delisting_risk": "filter",
+    "ml_top_k":       "filter",   # ML 排名筛选
+}
+
+
+def get_signal_direction(condition_type: str, params: dict | None = None) -> str:
+    """
+    返回 signal 的方向：buy / sell / neutral / filter / unknown。
+
+    对 neutral 类型（bollinger_breakout / volume_price_divergence），可传 params
+    进一步根据 direction 字段细化为 buy / sell。
+    """
+    base = SIGNAL_DIRECTION.get(condition_type, "unknown")
+    if base != "neutral" or not params:
+        return base
+    direction = str(params.get("direction", "")).lower()
+    if condition_type == "bollinger_breakout":
+        # upper 突破上轨 = 偏多；lower 跌破下轨 = 偏空
+        return "buy" if direction == "upper" else "sell" if direction == "lower" else "neutral"
+    if condition_type == "volume_price_divergence":
+        # top 顶背离 = 偏空；bottom 底背离 = 偏多
+        return "sell" if direction == "top" else "buy" if direction == "bottom" else "neutral"
+    return base
+
+
+def signal_emoji(direction: str) -> str:
+    """方向 → emoji"""
+    return {
+        "buy": "📈",
+        "sell": "📉",
+        "neutral": "⚖️",
+        "filter": "🔍",
+    }.get(direction, "❓")

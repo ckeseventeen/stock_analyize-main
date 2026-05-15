@@ -33,7 +33,9 @@ _RULE_BASED_DEFAULT: dict[str, Any] = {
     "position_size": 0.95,
 }
 
-# screener_rule 通用默认：RSI 超卖买入 + RSI 超买卖出（最稳健）
+# screener_rule 通用默认：RSI 超卖 或 均线突破 → 买入；RSI 超买 → 卖出
+# 关键：buy_logic 用 "any" 而非 "all"，因为 rsi_oversold (RSI<30) 与 price_above_ma
+# (close > MA20) 几乎互斥（超卖时通常已跌破均线），用 all 几乎永不触发买入。
 _SCREENER_RULE_DEFAULT: dict[str, Any] = {
     "buy_conditions": [
         {"type": "rsi_oversold", "threshold": 30, "period": 14},
@@ -42,7 +44,7 @@ _SCREENER_RULE_DEFAULT: dict[str, Any] = {
     "sell_conditions": [
         {"type": "rsi_overbought", "threshold": 70, "period": 14},
     ],
-    "buy_logic": "all",
+    "buy_logic": "any",       # ← 修复：原 "all" 几乎互斥不触发
     "sell_logic": "any",
     "position_size": 0.95,
 }
@@ -90,3 +92,34 @@ def get_default_params(strategy_key: str) -> dict:
 def get_all_default_strategies() -> dict[str, dict]:
     """返回 {key: params} 字典副本（多策略对比起点）"""
     return {k: dict(v) for k, v in STRATEGY_DEFAULTS.items()}
+
+
+# =============================================================================
+# 策略分类（多策略对比页用于分组展示）
+# =============================================================================
+
+# 分类约定：
+#   - core    : 参数化策略，开箱即用、信号稳定（ma_crossover/ml_rebalance）
+#   - bridge  : DSL/桥接策略，行为高度依赖 YAML 配置（rule_based/screener_rule）
+#   - demo    : 演示性策略，数据不足或参数特殊时退化（factor_rebalance 缺因子数据时）
+STRATEGY_CATEGORY: dict[str, str] = {
+    "ma_crossover": "core",
+    "ml_rebalance": "core",
+    "rule_based": "bridge",
+    "screener_rule": "bridge",
+    "factor_rebalance": "demo",
+}
+
+CATEGORY_LABEL: dict[str, str] = {
+    "core": "📊 核心策略",
+    "bridge": "🔌 桥接策略 (DSL/Conditions)",
+    "demo": "🧪 演示策略",
+}
+
+# 渲染顺序
+CATEGORY_ORDER: list[str] = ["core", "bridge", "demo"]
+
+
+def get_strategy_category(strategy_key: str) -> str:
+    """返回某策略的分类（默认 core）"""
+    return STRATEGY_CATEGORY.get(strategy_key, "core")

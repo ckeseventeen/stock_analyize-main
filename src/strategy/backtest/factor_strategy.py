@@ -19,35 +19,39 @@ class FactorRebalanceStrategy(BaseStrategy):
 
     每隔 rebalance_days 个交易日检查因子值，根据阈值决定持仓。
 
-    因子数据传入方式（二选一）：
-      1. 通过 Backtrader GenericCSVData 的额外列传入（推荐）：
-         在数据加载时添加 PE 列，策略通过 self.data.pe 访问
-      2. 无因子数据时退化为收盘价 vs 阈值（仅作演示，不具实战意义）
+    两种工作模式（自动检测）：
+      1. **真因子模式**（data feed 有 factor_line 列）：
+         比较 `factor_value < buy_threshold` / `> sell_threshold`
+      2. **退化/演示模式**（factor 列不存在）：
+         比较 `close 相对 MA20 的偏离百分比`：
+           - 偏离 ≤ buy_below_ma_pct 时买入（默认 -5%，价跌破 MA20 5%）
+           - 偏离 ≥ sell_above_ma_pct 时卖出（默认 +8%，价超 MA20 8%）
+         这样无论标的价位多少都能产生信号（取代原"close < 15"几乎不可能触发的问题）。
 
-    Params:
-        rebalance_days: 再平衡周期（交易日）
-        buy_threshold: 低于此值时买入（如低PE=15）
-        sell_threshold: 高于此值时卖出（如高PE=30）
-        factor_line: 因子数据在 data feed 中的列名，默认 "pe"
-                     若 data feed 中不存在该列，则退化为使用 close
+    Params 全部 slider 可调，不调用默认值。
     """
 
     params = (
+        # 真因子模式参数
         ("rebalance_days", 20),
         ("buy_threshold", 15.0),
         ("sell_threshold", 30.0),
         ("factor_line", "pe"),
-        ("strict_factor", False),  # B11：True 时缺因子列直接抛错，禁止退化为收盘价
+        ("strict_factor", False),
+        # 退化模式专用参数（基于 close 与 MA20 的偏离百分比）
+        ("ma_period", 20),
+        ("buy_below_ma_pct", -5.0),    # close 跌破 MA20 N% 买入（负数）
+        ("sell_above_ma_pct", 8.0),     # close 超出 MA20 N% 卖出（正数）
+        # 仓位
+        ("position_size", 0.95),
     )
 
     def __init__(self):
         self.bar_count = 0
-        self.pe_sma = bt.indicators.SMA(self.data.close, period=self.params.rebalance_days)
 
         # 检测 data feed 是否包含因子列
         self._use_factor = hasattr(self.data, self.params.factor_line)
         if not self._use_factor:
-            # B11 修复：strict_factor=True 时缺因子直接报错，避免"看似在跑因子回测，实则用收盘价"
             msg = (
                 f"因子策略: data feed 不含 '{self.params.factor_line}' 列。"
                 f"若需真实因子回测，请在 GenericCSVData 中添加该列。"
@@ -55,44 +59,63 @@ class FactorRebalanceStrategy(BaseStrategy):
             if self.params.strict_factor:
                 raise ValueError(msg + " (strict_factor=True 时禁止退化)")
             logger.warning(
-                f"{msg} 当前 strict_factor=False，退化为收盘价 vs 阈值模式（仅供演示）。"
-                f"⚠️ 该模式下回测结果与真实因子策略无关，请勿用于实盘决策。"
+                f"{msg} 当前 strict_factor=False，已切换到"
+                f"「close vs MA{self.params.ma_period}」偏离%模式 "
+                f"(买入 ≤{self.params.buy_below_ma_pct:+.1f}%, 卖出 ≥{self.params.sell_above_ma_pct:+.1f}%)。"
             )
 
-    def _get_factor_value(self) -> float:
-        """获取当前因子值，优先使用因子列，否则退化为收盘价"""
+        # 退化模式需要 MA 参考线
+        self.ma_ref = bt.indicators.SMA(self.data.close, period=int(self.params.ma_period))
+
+    def _get_factor_signal_value(self) -> tuple[float, float, float]:
+        """
+        返回 (current_value, buy_thresh, sell_thresh)：
+          - 真因子模式：直接返回因子值与阈值
+          - 退化模式：返回 (close 相对 MA 偏离百分比, buy_below_ma_pct, sell_above_ma_pct)
+        """
         if self._use_factor:
-            return getattr(self.data, self.params.factor_line)[0]
-        return self.data.close[0]
+            return (float(getattr(self.data, self.params.factor_line)[0]),
+                    float(self.params.buy_threshold),
+                    float(self.params.sell_threshold))
+        # 退化模式
+        close = float(self.data.close[0])
+        ma = float(self.ma_ref[0])
+        if ma <= 0:
+            return (0.0, float(self.params.buy_below_ma_pct), float(self.params.sell_above_ma_pct))
+        dev_pct = (close / ma - 1.0) * 100.0
+        return (dev_pct,
+                float(self.params.buy_below_ma_pct),
+                float(self.params.sell_above_ma_pct))
 
     def next(self):
-        # S2：预热期内不交易
         if not self.is_warmup_done():
             return
 
         self.bar_count += 1
-        if self.bar_count % self.params.rebalance_days != 0:
+        if self.bar_count % int(self.params.rebalance_days) != 0:
             return
 
-        current_factor = self._get_factor_value()
-        factor_name = self.params.factor_line if self._use_factor else "close"
+        value, buy_th, sell_th = self._get_factor_signal_value()
+        mode_tag = self.params.factor_line if self._use_factor else f"close-vs-MA{self.params.ma_period}%"
 
         if not self.position:
-            if current_factor < self.params.buy_threshold:
+            # 真因子：value < buy_th 买入；退化：dev_pct ≤ buy_below_ma_pct 买入
+            triggered = (value < buy_th) if self._use_factor else (value <= buy_th)
+            if triggered:
                 price = self.data.close[0]
                 if price <= 0:
                     return
-                # B3：percent 下单，避免同 bar close 估算偏差
-                order = self.buy_target_percent(target=0.95)
+                order = self.buy_target_percent(target=float(self.params.position_size))
                 if order is not None:
                     self.log(
-                        f"因子信号 -> 目标仓位 95% "
-                        f"({factor_name}={current_factor:.1f} < {self.params.buy_threshold})"
+                        f"因子信号 -> 买入 仓位 {self.params.position_size:.0%} "
+                        f"({mode_tag}={value:+.2f} {'<' if self._use_factor else '≤'} {buy_th:+.2f})"
                     )
         else:
-            if current_factor > self.params.sell_threshold:
+            triggered = (value > sell_th) if self._use_factor else (value >= sell_th)
+            if triggered:
                 self.close_all()
                 self.log(
                     f"因子信号 -> 卖出 "
-                    f"({factor_name}={current_factor:.1f} > {self.params.sell_threshold})"
+                    f"({mode_tag}={value:+.2f} {'>' if self._use_factor else '≥'} {sell_th:+.2f})"
                 )

@@ -16,7 +16,11 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src.strategy.backtest.defaults import get_default_params
+from src.strategy.backtest.defaults import (
+    CATEGORY_ORDER,
+    get_default_params,
+    get_strategy_category,
+)
 from src.strategy.backtest.runner import BacktestRunner
 from src.utils.logger import get_logger
 
@@ -29,6 +33,7 @@ class StrategyResult:
     key: str
     label: str
     success: bool
+    category: str = "core"           # core / bridge / demo（多策略对比页用于分组）
     report: dict | None = None
     error: str | None = None
     skipped: bool = False
@@ -49,14 +54,26 @@ class CompareResult:
     def successful(self) -> list[StrategyResult]:
         return [r for r in self.results if r.success]
 
-    def summary_df(self) -> pd.DataFrame:
-        """每个策略一行的 KPI 汇总表"""
+    def by_category(self) -> dict[str, list[StrategyResult]]:
+        """
+        按分类分组返回结果：{category_key: [StrategyResult, ...]}。
+        分类顺序按 CATEGORY_ORDER；空分类不包含在返回值。
+        """
+        grouped: dict[str, list[StrategyResult]] = {}
+        for r in self.results:
+            grouped.setdefault(r.category, []).append(r)
+        # 按预设顺序输出
+        return {k: grouped[k] for k in CATEGORY_ORDER if k in grouped}
+
+    def summary_df_by_category(self, category: str) -> pd.DataFrame:
+        """某分类下的 KPI 汇总表（用于分组渲染）"""
         rows = []
         for r in self.results:
+            if r.category != category:
+                continue
             if not r.success:
                 rows.append({
-                    "策略": r.label,
-                    "key": r.key,
+                    "策略": r.label, "key": r.key,
                     "状态": "⚠️ 跳过" if r.skipped else "❌ 失败",
                     "说明": r.skip_reason or r.error or "",
                     "总收益率(%)": None, "年化收益率(%)": None,
@@ -65,16 +82,47 @@ class CompareResult:
                 })
                 continue
             rep = r.report or {}
+            n_trades = rep.get("总交易次数", 0) or 0
+            status_icon = "✅" if n_trades > 0 else "⚠️"
             rows.append({
-                "策略": r.label,
-                "key": r.key,
-                "状态": "✅",
-                "说明": "",
+                "策略": r.label, "key": r.key,
+                "状态": status_icon if n_trades > 0 else f"{status_icon} 0 交易",
+                "说明": "" if n_trades > 0 else "未触发任何买卖（参数可能太严或互斥）",
                 "总收益率(%)": rep.get("总收益率(%)"),
                 "年化收益率(%)": rep.get("年化收益率(%)"),
                 "夏普": rep.get("夏普比率"),
                 "最大回撤(%)": rep.get("最大回撤(%)"),
-                "交易数": rep.get("总交易次数"),
+                "交易数": n_trades,
+                "胜率(%)": rep.get("胜率(%)"),
+            })
+        return pd.DataFrame(rows)
+
+    def summary_df(self) -> pd.DataFrame:
+        """每个策略一行的 KPI 汇总表（全部策略，不分组）"""
+        rows = []
+        for r in self.results:
+            if not r.success:
+                rows.append({
+                    "策略": r.label, "key": r.key, "分类": r.category,
+                    "状态": "⚠️ 跳过" if r.skipped else "❌ 失败",
+                    "说明": r.skip_reason or r.error or "",
+                    "总收益率(%)": None, "年化收益率(%)": None,
+                    "夏普": None, "最大回撤(%)": None,
+                    "交易数": None, "胜率(%)": None,
+                })
+                continue
+            rep = r.report or {}
+            n_trades = rep.get("总交易次数", 0) or 0
+            status_icon = "✅" if n_trades > 0 else "⚠️"
+            rows.append({
+                "策略": r.label, "key": r.key, "分类": r.category,
+                "状态": status_icon if n_trades > 0 else f"{status_icon} 0 交易",
+                "说明": "" if n_trades > 0 else "未触发任何买卖（参数可能太严或互斥）",
+                "总收益率(%)": rep.get("总收益率(%)"),
+                "年化收益率(%)": rep.get("年化收益率(%)"),
+                "夏普": rep.get("夏普比率"),
+                "最大回撤(%)": rep.get("最大回撤(%)"),
+                "交易数": n_trades,
                 "胜率(%)": rep.get("胜率(%)"),
             })
         return pd.DataFrame(rows)
@@ -163,6 +211,7 @@ def run_all_strategies(
 
     for idx, key in enumerate(keys):
         label = STRATEGY_LABELS.get(key, key) if hasattr(STRATEGY_LABELS, "get") else key
+        category = get_strategy_category(key)
         if progress_cb:
             try:
                 progress_cb(idx, len(keys), label, "running")
@@ -177,7 +226,7 @@ def run_all_strategies(
             cls = STRATEGY_REGISTRY[key]
         except Exception as e:
             results.append(StrategyResult(
-                key=key, label=label, success=False,
+                key=key, label=label, success=False, category=category,
                 error=f"找不到策略类: {e}",
             ))
             continue
@@ -191,7 +240,7 @@ def run_all_strategies(
                 market=market,
             )
             results.append(StrategyResult(
-                key=key, label=label, success=True,
+                key=key, label=label, success=True, category=category,
                 report=report, params_used=params,
             ))
             if progress_cb:
@@ -204,7 +253,7 @@ def run_all_strategies(
             msg = str(e)
             is_skip = "训练" in msg or "lgbm_latest" in msg
             results.append(StrategyResult(
-                key=key, label=label, success=False,
+                key=key, label=label, success=False, category=category,
                 skipped=is_skip,
                 skip_reason=msg if is_skip else None,
                 error=None if is_skip else msg,
@@ -220,7 +269,7 @@ def run_all_strategies(
             tb = traceback.format_exc(limit=3)
             logger.error(f"[compare] {key} 异常: {e}\n{tb}")
             results.append(StrategyResult(
-                key=key, label=label, success=False,
+                key=key, label=label, success=False, category=category,
                 error=f"{type(e).__name__}: {e}",
                 params_used=params,
             ))

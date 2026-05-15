@@ -245,18 +245,24 @@ def run_monitor(args):
     channels = build_channels(alerts_cfg)
     store = AlertStateStore()
 
-    if mtype == "price":
-        from src.automation.monitor.price_monitor import PriceMonitor
+    if mtype in ("alerts", "buy_sell", "price"):
+        # "price" 保留兼容旧 CLI 命令，新名 alerts / buy_sell
+        from src.automation.monitor.buy_sell_alerts import BuySellAlertMonitor
         cfg = load_config(args.monitor_config or "./config/price_alerts.yaml")
-        rules = cfg.get("rules", []) or []
-        monitor = PriceMonitor(
-            rules=rules,
+        buy_alerts = cfg.get("buy_alerts", []) or []
+        sell_alerts = cfg.get("sell_alerts", []) or []
+        monitor = BuySellAlertMonitor(
+            buy_alerts=buy_alerts,
+            sell_alerts=sell_alerts,
             channels=channels,
             state_store=store,
             cooldown_hours=int(cfg.get("default_cooldown_hours", 24)),
         )
         stats = monitor.run()
-        logger.info(f"价格预警执行完成: 总 {stats['total']} / 已推送 {stats['sent']} / 跳过 {stats['skipped']}")
+        logger.info(
+            f"买卖预警执行完成: 总 {stats['total']} / "
+            f"已推送 {stats['sent']} / 跳过 {stats['skipped']}"
+        )
 
     elif mtype == "earnings":
         from src.automation.monitor.earnings_monitor import EarningsMonitor
@@ -338,10 +344,11 @@ def main():
         help="筛选条件配置文件路径（默认 ./config/screen_config.yaml）"
     )
 
-    # ---- 监控任务（新增）----
+    # ---- 监控任务 ----
     parser.add_argument(
-        "--monitor", dest="monitor_type", type=str, choices=["price", "earnings"],
-        help="启动监控任务：price=价格预警, earnings=财报披露监控"
+        "--monitor", dest="monitor_type", type=str,
+        choices=["alerts", "buy_sell", "price", "earnings"],
+        help="启动监控任务：alerts/buy_sell=买卖信号预警（price 是旧别名）, earnings=财报披露监控"
     )
     parser.add_argument(
         "--monitor-config", type=str, default=None,

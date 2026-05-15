@@ -126,6 +126,31 @@ if _mode == "🆚 多策略对比":
             key="cmp_strats",
         )
 
+    # 参数微调（折叠，每策略一组 slider；不动滑块就用默认值）
+    cmp_custom_params: dict[str, dict] = {}
+    with st.expander("🎛️ 参数微调（不动滑块就用默认值）"):
+        st.caption("拖动滑块覆盖某策略的默认参数。复杂的 YAML/list 字段仍可在「🔧 单策略调参」模式精细编辑。")
+        from src.web.widgets import SchemaForm
+
+        for skey in chosen_strategies:
+            schemas = STRATEGY_PARAM_SCHEMAS.get(skey, [])
+            if not schemas:
+                continue
+            slider_fields = [s for s in schemas if s.get("widget") == "slider"]
+            if not slider_fields:
+                continue
+            with st.expander(f"• {STRATEGY_LABELS.get(skey, skey)} ({len(slider_fields)} 个可调参数)"):
+                form = SchemaForm(slider_fields, key=f"cmp_param_{skey}", columns=2).render()
+                # 只在用户改过的值才覆盖（与 default 不同时记录）
+                overrides = {}
+                for f in slider_fields:
+                    fk = f["key"]
+                    if fk in form and form[fk] != f.get("default"):
+                        overrides[fk] = form[fk]
+                if overrides:
+                    cmp_custom_params[skey] = overrides
+                    st.caption(f"📝 已覆盖：{overrides}")
+
     run_cmp = st.button("▶️ 一键跑所有策略", type="primary", width="stretch",
                         key="cmp_run")
 
@@ -152,6 +177,16 @@ if _mode == "🆚 多策略对比":
             st.error(f"未能获取 {cmp_code} 的数据，请检查代码 / 网络")
             st.stop()
 
+        # 归一化列名：akshare/baostock 返回的中文列名 → 英文标准列名
+        # 这样 K 线图、CompareResult._buy_and_hold_curve、Backtrader 都能用同一份 df
+        from src.core.columns import normalize_ohlcv_columns
+        df = normalize_ohlcv_columns(df)
+        # 兜底：确保 date 列在 index 上，便于 K 线图 x 轴
+        if "date" in df.columns and df.index.name != "date":
+            df = df.copy()
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            df = df.dropna(subset=["date"]).set_index("date")
+
         # 跑所有策略（带进度条）
         progress_bar = st.progress(0.0, text="启动...")
         status_lines = st.empty()
@@ -168,24 +203,46 @@ if _mode == "🆚 多策略对比":
                 df, stock_code=cmp_code.strip(), market=cmp_market,
                 initial_cash=float(cmp_cash), commission=float(cmp_comm),
                 strategy_keys=chosen_strategies,
+                custom_params=cmp_custom_params or None,
                 progress_cb=_cb,
             )
 
         progress_bar.empty()
 
-        # ---------------- KPI 汇总 ----------------
+        # ---------------- KPI 汇总：按分类分组渲染 ----------------
+        from src.strategy.backtest.defaults import CATEGORY_LABEL
+
+        grouped = cmp_result.by_category()
+
         st.subheader("📊 策略对比 KPI")
-        summary = cmp_result.summary_df()
-        st.dataframe(
-            summary.style.format({
-                "总收益率(%)": "{:+.2f}",
-                "年化收益率(%)": "{:+.2f}",
-                "夏普": "{:.3f}",
-                "最大回撤(%)": "{:.2f}",
-                "胜率(%)": "{:.1f}",
-            }, na_rep="—"),
-            width="stretch", hide_index=True,
-        )
+        for cat_key, cat_results in grouped.items():
+            label = CATEGORY_LABEL.get(cat_key, cat_key)
+            st.markdown(f"#### {label}（{len(cat_results)} 个）")
+            sub_df = cmp_result.summary_df_by_category(cat_key)
+            if sub_df.empty:
+                st.caption("（无）")
+                continue
+            # 桥接 / 演示策略下方加一行说明
+            if cat_key == "bridge":
+                st.caption(
+                    "🔌 **桥接策略**行为完全由默认 YAML 驱动 —— "
+                    "信号稀疏属正常，需自行调整 `buy_when` / `buy_conditions` 才能匹配标的特性。"
+                )
+            elif cat_key == "demo":
+                st.caption(
+                    "🧪 **演示策略**：缺少所需的真实数据列（如 PE 因子）时会退化，"
+                    "结果仅供框架验证，不可用于实盘评估。"
+                )
+            st.dataframe(
+                sub_df.style.format({
+                    "总收益率(%)": "{:+.2f}",
+                    "年化收益率(%)": "{:+.2f}",
+                    "夏普": "{:.3f}",
+                    "最大回撤(%)": "{:.2f}",
+                    "胜率(%)": "{:.1f}",
+                }, na_rep="—"),
+                width="stretch", hide_index=True,
+            )
 
         # ---------------- 累计收益曲线 ----------------
         st.subheader("📈 累计收益曲线对比（含 Buy & Hold 基准）")
@@ -208,10 +265,26 @@ if _mode == "🆚 多策略对比":
             )
             st.plotly_chart(fig, width="stretch")
 
-        # ---------------- 单策略详情（折叠）----------------
+        # ---------------- 单策略详情（按分类分组折叠）----------------
         st.subheader("🔍 各策略详情")
-        for r in cmp_result.results:
+
+        # 把每个分类的 results 平铺成 [小标题, r1, r2, ..., 小标题, r3, ...]
+        # 用 "section" 标记小标题位置
+        flat_items: list = []
+        for cat_key, cat_results in grouped.items():
+            flat_items.append(("section", CATEGORY_LABEL.get(cat_key, cat_key)))
+            for r in cat_results:
+                flat_items.append(("result", r))
+
+        for kind, payload in flat_items:
+            if kind == "section":
+                st.markdown(f"##### {payload}")
+                continue
+            r = payload
             badge = "✅" if r.success else ("⚠️" if r.skipped else "❌")
+            # 0 交易也给个警告标
+            if r.success and r.report and (r.report.get("总交易次数", 0) or 0) == 0:
+                badge = "⚠️"
             header = f"{badge} {r.label}"
             if r.success and r.report:
                 header += (f" — 总收益 {r.report.get('总收益率(%)'):+.2f}% / "
@@ -237,7 +310,8 @@ if _mode == "🆚 多策略对比":
 
                 # 买卖点 K 线图
                 trades_df = rep.get("trades")
-                if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                ohlcv_cols_ready = all(c in df.columns for c in ("open", "high", "low", "close"))
+                if isinstance(trades_df, pd.DataFrame) and not trades_df.empty and ohlcv_cols_ready:
                     fig_k = go.Figure()
                     # K 线
                     fig_k.add_trace(go.Candlestick(
@@ -271,6 +345,13 @@ if _mode == "🆚 多策略对比":
                                     key=f"k_{r.key}")
 
                     # 交易明细表
+                    st.dataframe(
+                        trades_df.assign(datetime=pd.to_datetime(trades_df["datetime"]).astype(str)),
+                        width="stretch", hide_index=True, height=200,
+                    )
+                elif isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
+                    # 有交易但 OHLCV 列不全（数据源列名异常），只显示明细
+                    st.warning(f"OHLCV 列不完整（实际列: {list(df.columns)}），无法绘制 K 线，仅显示交易明细")
                     st.dataframe(
                         trades_df.assign(datetime=pd.to_datetime(trades_df["datetime"]).astype(str)),
                         width="stretch", hide_index=True, height=200,
@@ -503,15 +584,26 @@ for schema in schemas:
     key = schema["key"]
     default_val = preset_params.get(key, schema["default"])
     if schema["type"] == "int":
-        val = st.sidebar.number_input(
-            schema["label"],
-            min_value=int(schema.get("min", -10**9)),
-            max_value=int(schema.get("max", 10**9)),
-            value=int(default_val),
-            step=int(schema.get("step", 1)),
-            help=schema.get("help"),
-            key=f"param_{strategy_key}_{key}",
-        )
+        # widget=slider 且 min/max 齐全时用 slider（拖动 = 调参；不拖 = 默认值）
+        if schema.get("widget") == "slider" and "min" in schema and "max" in schema:
+            val = st.sidebar.slider(
+                schema["label"],
+                min_value=int(schema["min"]), max_value=int(schema["max"]),
+                value=int(default_val),
+                step=int(schema.get("step", 1)),
+                help=schema.get("help"),
+                key=f"param_{strategy_key}_{key}",
+            )
+        else:
+            val = st.sidebar.number_input(
+                schema["label"],
+                min_value=int(schema.get("min", -10**9)),
+                max_value=int(schema.get("max", 10**9)),
+                value=int(default_val),
+                step=int(schema.get("step", 1)),
+                help=schema.get("help"),
+                key=f"param_{strategy_key}_{key}",
+            )
         strat_params[key] = int(val)
     elif schema["type"] == "yaml":
         # 嵌套结构（如 rule_based 的 rule_config）用 text_area 编辑
@@ -551,14 +643,34 @@ for schema in schemas:
             key=f"param_{strategy_key}_{key}",
         )
         strat_params[key] = val
-    else:
-        val = st.sidebar.number_input(
+    elif schema["type"] == "bool":
+        val = st.sidebar.checkbox(
             schema["label"],
-            value=float(default_val),
-            step=float(schema.get("step", 0.1)),
+            value=bool(default_val),
             help=schema.get("help"),
             key=f"param_{strategy_key}_{key}",
         )
+        strat_params[key] = bool(val)
+    else:
+        # float（含 widget=slider）
+        if schema.get("widget") == "slider" and "min" in schema and "max" in schema:
+            val = st.sidebar.slider(
+                schema["label"],
+                min_value=float(schema["min"]), max_value=float(schema["max"]),
+                value=float(default_val),
+                step=float(schema.get("step", 0.05)),
+                format=schema.get("format", "%.2f"),
+                help=schema.get("help"),
+                key=f"param_{strategy_key}_{key}",
+            )
+        else:
+            val = st.sidebar.number_input(
+                schema["label"],
+                value=float(default_val),
+                step=float(schema.get("step", 0.1)),
+                help=schema.get("help"),
+                key=f"param_{strategy_key}_{key}",
+            )
         strat_params[key] = float(val)
 
 # rule_based 专属：规则语法帮助

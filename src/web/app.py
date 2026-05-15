@@ -42,6 +42,7 @@ ensure_project_dirs()
 # B24/SEC6 修复：settings.scheduler_disabled 为 True 时跳过，
 # 避免与独立 `python -m src.automation.scheduler` 进程双启动（典型场景：docker-compose 部署）
 from src.core.settings import settings as _settings  # noqa: E402
+
 if _settings.scheduler_disabled:
     import logging as _logging
     _logging.getLogger("scheduler_mgr").info("SCHEDULER_DISABLED=1，跳过 Streamlit 内嵌调度器自动启动")

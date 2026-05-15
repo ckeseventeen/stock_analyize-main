@@ -27,8 +27,6 @@ src/web/widgets/crud_table.py — 通用 CRUD 表格 widget
 """
 from __future__ import annotations
 
-from typing import Any
-
 import pandas as pd
 
 from src.web.widgets.schema_form import SchemaForm
@@ -95,7 +93,6 @@ class CRUDTable:
         # 删除
         if self.items:
             with st.expander("🗑 删除记录"):
-                ids = [str(item.get(self.id_field, idx)) for idx, item in enumerate(self.items)]
                 labels = [self._format_label(item) for item in self.items]
                 if labels:
                     chosen = st.selectbox(

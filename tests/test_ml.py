@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -23,7 +22,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ml.dataset_builder import DatasetBuilder
 from src.ml.trainer import MLTrainer, PurgedWalkForwardSplit
-
 
 # =============================================================================
 # Fixtures

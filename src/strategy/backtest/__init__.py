@@ -14,6 +14,10 @@ from __future__ import annotations
 
 from src.core.plugin import PluginRegistry, autodiscover
 from src.strategy.backtest.base_strategy import BaseStrategy
+
+# 多策略对比器（4_策略回测.py 多策略模式用）
+from src.strategy.backtest.compare import CompareResult, StrategyResult, run_all_strategies
+from src.strategy.backtest.defaults import STRATEGY_DEFAULTS, get_default_params
 from src.strategy.backtest.factor_strategy import FactorRebalanceStrategy
 from src.strategy.backtest.ma_crossover import MACrossoverStrategy
 from src.strategy.backtest.ml_strategy import MLRebalanceStrategy
@@ -21,9 +25,6 @@ from src.strategy.backtest.report import BacktestReport
 from src.strategy.backtest.rule_based import RuleBasedStrategy
 from src.strategy.backtest.runner import BacktestRunner
 from src.strategy.backtest.screener_rule import ScreenerRuleStrategy
-# 多策略对比器（4_策略回测.py 多策略模式用）
-from src.strategy.backtest.compare import CompareResult, StrategyResult, run_all_strategies
-from src.strategy.backtest.defaults import STRATEGY_DEFAULTS, get_default_params
 
 # ========================
 # PluginRegistry：策略注册中心

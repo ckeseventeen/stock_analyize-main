@@ -12,8 +12,6 @@ src/analysis/factor/ml_factor.py — ML 预测因子
 """
 from __future__ import annotations
 
-import pandas as pd
-
 from src.analysis.factor.base import BaseFactor
 from src.utils.logger import get_logger
 

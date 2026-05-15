@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,7 +21,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.core.plugin import PluginRegistry, autodiscover
 from src.core.schema_inspect import derive_schema, instantiate_from_dict
-
 
 # =============================================================================
 # PluginRegistry
@@ -42,17 +40,21 @@ class TestPluginRegistry:
 
     def test_duplicate_raises(self):
         @self.reg.register("dup")
-        class A: pass
+        class A:
+            pass
         with pytest.raises(ValueError, match="已被"):
             @self.reg.register("dup")
-            class B: pass
+            class B:
+                pass
 
     def test_replace_succeeds(self):
         @self.reg.register("rep")
-        class A: pass
+        class A:
+            pass
 
         @self.reg.register("rep", replace=True)
-        class B: pass
+        class B:
+            pass
         assert self.reg.get("rep") is B
 
     def test_get_unknown_raises_with_available(self):
@@ -289,7 +291,6 @@ class TestAutodiscoverIntegration:
         """), encoding="utf-8")
         try:
             # 强制重新 autodiscover
-            from src.core.plugin import autodiscover
             # 卸载之前的 demo（如果有）
             STRATEGY_REGISTRY.unregister("pytest_demo")
             # 重新 import 子模块

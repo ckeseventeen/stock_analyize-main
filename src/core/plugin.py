@@ -26,7 +26,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
-from typing import Callable, Generic, Iterator, TypeVar
+from collections.abc import Iterator
+from typing import Callable, Generic, TypeVar
 
 from src.utils.logger import get_logger
 

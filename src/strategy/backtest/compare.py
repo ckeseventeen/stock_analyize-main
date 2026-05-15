@@ -13,11 +13,10 @@ from __future__ import annotations
 
 import traceback
 from dataclasses import dataclass, field
-from typing import Any
 
 import pandas as pd
 
-from src.strategy.backtest.defaults import get_all_default_strategies, get_default_params
+from src.strategy.backtest.defaults import get_default_params
 from src.strategy.backtest.runner import BacktestRunner
 from src.utils.logger import get_logger
 

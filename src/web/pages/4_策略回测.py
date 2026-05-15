@@ -197,14 +197,14 @@ if _mode == "🆚 多策略对比":
             for col in eq.columns:
                 fig.add_trace(go.Scatter(
                     x=eq.index, y=eq[col], mode="lines", name=col,
-                    line=dict(width=2 if col == "Buy & Hold" else 1.5,
-                              dash="dash" if col == "Buy & Hold" else "solid"),
+                    line={"width": 2 if col == "Buy & Hold" else 1.5,
+                          "dash": "dash" if col == "Buy & Hold" else "solid"},
                 ))
             fig.update_layout(
                 xaxis_title="日期", yaxis_title="组合市值",
                 hovermode="x unified",
                 height=500,
-                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                legend={"orientation": "h", "yanchor": "bottom", "y": 1.02},
             )
             st.plotly_chart(fig, width="stretch")
 
@@ -252,7 +252,7 @@ if _mode == "🆚 多策略对比":
                             x=pd.to_datetime(buys["datetime"]),
                             y=buys["price"],
                             mode="markers", name="买入",
-                            marker=dict(symbol="triangle-up", size=12, color="red"),
+                            marker={"symbol": "triangle-up", "size": 12, "color": "red"},
                         ))
                     # 卖出点
                     sells = trades_df[trades_df["side"] == "sell"]
@@ -261,11 +261,11 @@ if _mode == "🆚 多策略对比":
                             x=pd.to_datetime(sells["datetime"]),
                             y=sells["price"],
                             mode="markers", name="卖出",
-                            marker=dict(symbol="triangle-down", size=12, color="green"),
+                            marker={"symbol": "triangle-down", "size": 12, "color": "green"},
                         ))
                     fig_k.update_layout(
                         xaxis_rangeslider_visible=False, height=400,
-                        legend=dict(orientation="h"),
+                        legend={"orientation": "h"},
                     )
                     st.plotly_chart(fig_k, width="stretch",
                                     key=f"k_{r.key}")
@@ -292,7 +292,6 @@ if _mode == "🆚 多策略对比":
 # 以下为「单策略调参」原有逻辑（未做修改）
 # ============================================================================
 import pandas as pd  # noqa: E402, F401
-
 
 # ========================
 # 顶部：预设加载

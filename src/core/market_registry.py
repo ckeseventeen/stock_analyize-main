@@ -17,10 +17,9 @@ src/core/market_registry.py — 多市场元数据注册中心
 from __future__ import annotations
 
 import importlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -44,12 +43,12 @@ class MarketSpec:
             return s.zfill(self.code_pad_width)
         return s
 
-    @lru_cache(maxsize=1)
+    @property
     def fetcher_cls(self) -> type:
         """惰性 import fetcher 类，避开循环依赖"""
         return _import_attr(self.fetcher_class_path)
 
-    @lru_cache(maxsize=1)
+    @property
     def analyzer_cls(self) -> type:
         """惰性 import analyzer 类"""
         return _import_attr(self.analyzer_class_path)
@@ -143,6 +142,7 @@ def _register_defaults() -> None:
     ))
 
 
+@lru_cache(maxsize=32)
 def _import_attr(spec_path: str):
     """
     解析 'module.path:ClassName' 形式的路径，惰性 import 并返回类对象。

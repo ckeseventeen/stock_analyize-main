@@ -22,7 +22,6 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from src.analysis.factor.fcf_analyzer import FCFAnalyzer
-from src.core.data_fetcher import AStockDataFetcher, HKStockDataFetcher, USStockDataFetcher
 from src.data.fcf_data_fetcher import FCFDataFetcher
 from src.web.components.search import searchable_select  # noqa: E402
 from src.web.components.state import load_result, save_result, stale_warning  # noqa: E402

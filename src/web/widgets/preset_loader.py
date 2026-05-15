@@ -5,8 +5,7 @@ src/web/widgets/preset_loader.py — 预设加载/保存/删除
 """
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Callable
+from typing import Callable
 
 
 class PresetLoader:

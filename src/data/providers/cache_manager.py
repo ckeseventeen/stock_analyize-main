@@ -7,7 +7,6 @@ src/data/fetcher/cache_manager.py — 数据缓存管理器
 import hashlib
 import os
 import pickle
-import struct
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -158,11 +157,11 @@ class CacheManager:
         # 仅在超限时排序
         entries.sort(key=lambda x: x[0])
         removed = 0
-        for mtime, size, f in entries:
+        for _, size, file_path in entries:
             if total <= self._max_bytes:
                 break
             try:
-                f.unlink(missing_ok=True)
+                file_path.unlink(missing_ok=True)
                 total -= size
                 removed += 1
             except OSError:

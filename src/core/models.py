@@ -28,7 +28,7 @@ class Stock:
     ps_range: tuple[float, float, float] | None = None
 
     @classmethod
-    def from_dict(cls, d: dict) -> "Stock":
+    def from_dict(cls, d: dict) -> Stock:
         """从老格式 dict（含 market_name/category_name 等）安全构造"""
         return cls(
             code=str(d.get("code", "")),
@@ -61,7 +61,7 @@ class AlertRule:
     cooldown_hours: int = 24
 
     @classmethod
-    def from_dict(cls, d: dict) -> "AlertRule":
+    def from_dict(cls, d: dict) -> AlertRule:
         return cls(
             code=str(d.get("code", "")),
             name=str(d.get("name", d.get("code", ""))),
@@ -117,7 +117,7 @@ class BacktestReport:
     extra: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_runner_dict(cls, d: dict) -> "BacktestReport":
+    def from_runner_dict(cls, d: dict) -> BacktestReport:
         """从 BacktestRunner.get_report() 返回的中文键 dict 构造"""
         return cls(
             strategy_name=str(d.get("策略", "")),

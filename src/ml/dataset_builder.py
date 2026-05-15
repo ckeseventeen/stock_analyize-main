@@ -17,7 +17,6 @@ src/ml/dataset_builder.py — 训练数据集构建
 """
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta
 from pathlib import Path
 

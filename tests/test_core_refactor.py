@@ -30,7 +30,6 @@ from src.core.columns import (
 from src.core.market_registry import (
     MarketSpec,
     get_market,
-    list_markets,
     market_keys,
     market_labels,
     register_market,
@@ -38,11 +37,9 @@ from src.core.market_registry import (
 from src.core.models import (
     AlertRule,
     BacktestReport,
-    ScreeningResult,
     Signal,
     Stock,
 )
-
 
 # =============================================================================
 # columns.py
@@ -123,7 +120,7 @@ class TestStockModel:
 
     def test_frozen_immutable(self):
         s = Stock(code="A", name="X", market="a")
-        with pytest.raises(Exception):
+        with pytest.raises(AttributeError):
             s.code = "B"  # type: ignore
 
     def test_hashable_as_dict_key(self):

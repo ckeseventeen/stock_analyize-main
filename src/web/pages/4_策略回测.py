@@ -151,6 +151,32 @@ if _mode == "🆚 多策略对比":
                     cmp_custom_params[skey] = overrides
                     st.caption(f"📝 已覆盖：{overrides}")
 
+    # ────────────────────────────────────────────────
+    # 📊 历史复盘（最近 5 次跑过的标的/策略组合）
+    # ────────────────────────────────────────────────
+    _history = st.session_state.get("cmp_history") or []
+    if _history:
+        with st.expander(f"📊 最近 {len(_history)} 次回测复盘", expanded=False):
+            for i, h in enumerate(reversed(_history)):
+                hc1, hc2, hc3 = st.columns([3, 2, 1])
+                with hc1:
+                    st.markdown(f"**{h['stock']}** · {h['market'].upper()} · {h['days']}天")
+                    st.caption(f"⏱ {h['time']} · 策略: {', '.join(h['strategies'])}")
+                with hc2:
+                    if h.get("best_strategy"):
+                        st.metric(
+                            "最佳策略",
+                            h["best_strategy"],
+                            f"{h.get('best_return', 0):+.2f}%",
+                        )
+                with hc3:
+                    if st.button("🔄 重跑", key=f"replay_{i}"):
+                        # 把历史的 stock/market/days 回写 session_state，让用户重新运行
+                        st.session_state["cmp_market"] = h["market"]
+                        st.session_state["cmp_code"] = h["stock"].split(" ")[-1].strip("()")
+                        st.session_state["cmp_days"] = h["days"]
+                        st.rerun()
+
     run_cmp = st.button("▶️ 一键跑所有策略", type="primary", width="stretch",
                         key="cmp_run")
 
@@ -208,6 +234,32 @@ if _mode == "🆚 多策略对比":
             )
 
         progress_bar.empty()
+
+        # ────────────────────────────────────────────
+        # 写入历史（最多 5 条）
+        # ────────────────────────────────────────────
+        try:
+            from datetime import datetime as _dt
+            successful = [r for r in cmp_result.results if r.success]
+            best = max(
+                successful,
+                key=lambda r: (r.report or {}).get("总收益率(%)", -1e9),
+                default=None,
+            )
+            history_entry = {
+                "time": _dt.now().strftime("%H:%M:%S"),
+                "market": cmp_market,
+                "stock": f"{cmp_name} ({cmp_code})" if cmp_name else cmp_code,
+                "days": int(cmp_days),
+                "strategies": list(chosen_strategies),
+                "best_strategy": best.label if best else None,
+                "best_return": (best.report or {}).get("总收益率(%)", 0) if best else 0,
+            }
+            hist = st.session_state.get("cmp_history") or []
+            hist.append(history_entry)
+            st.session_state["cmp_history"] = hist[-5:]
+        except Exception:
+            pass
 
         # ---------------- KPI 汇总：按分类分组渲染 ----------------
         from src.strategy.backtest.defaults import CATEGORY_LABEL
@@ -855,7 +907,7 @@ if not report:
         st.warning("回测结果为空。")
 else:
     success_msg = f"✅ 回测完成：{display_name} ({stock_code})" if display_name else f"✅ 回测完成：{stock_code}"
-    st.success(f"{success_msg} (使用策略: {report.get('策略')})")
+    st.toast(f"{success_msg} (使用策略: {report.get('策略')})", icon="✅")
 
     # --------- 核心指标面板 ---------
     st.subheader("📊 绩效指标摘要")

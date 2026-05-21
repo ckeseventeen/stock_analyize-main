@@ -149,6 +149,10 @@ class BuySellAlertMonitor(BaseMonitor):
         events: list[AlertEvent] = []
 
         for rule in self.buy_alerts:
+            # 跳过 enabled=False 的规则（保留配置但临时不跑）
+            if not rule.get("enabled", True):
+                logger.debug(f"[buy_alert] '{rule.get('id', '?')}' 已禁用，跳过")
+                continue
             try:
                 ev = self._eval_rule(rule, direction="buy")
                 if ev is not None:
@@ -158,6 +162,9 @@ class BuySellAlertMonitor(BaseMonitor):
                              exc_info=True)
 
         for rule in self.sell_alerts:
+            if not rule.get("enabled", True):
+                logger.debug(f"[sell_alert] '{rule.get('id', '?')}' 已禁用，跳过")
+                continue
             try:
                 ev = self._eval_rule(rule, direction="sell")
                 if ev is not None:
@@ -167,6 +174,13 @@ class BuySellAlertMonitor(BaseMonitor):
                              exc_info=True)
 
         return events
+
+    def test_single_rule(self, rule: dict, direction: str) -> AlertEvent | None:
+        """
+        测试单条规则（前端「🧪 测试单条」按钮用）。
+        无视 enabled 字段，不写状态、不发推送，仅评估并返回 AlertEvent（命中）或 None。
+        """
+        return self._eval_rule(rule, direction=direction)
 
     # ------------------------------------------------------------------
     # 单条规则评估
@@ -404,7 +418,6 @@ class BuySellAlertMonitor(BaseMonitor):
         from src.analysis.screening.conditions import (
             CONDITION_LABELS,
             get_signal_direction,
-            signal_emoji,
         )
 
         # direction 是 buy/sell；signal 自身方向用于校验和图标

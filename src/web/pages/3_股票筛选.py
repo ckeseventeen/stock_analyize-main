@@ -35,73 +35,63 @@ st.caption("执行筛选策略并查看结果  |  编辑策略请前往「⚙️
 # 侧边栏：配置文件选择
 # ========================
 
-st.sidebar.markdown("**配置文件**")
-config_path_input = st.sidebar.text_input(
-    "YAML 路径",
-    value=str(PATH_SCREEN),
-    help="默认使用 config/screen_config.yaml；仅允许 config/ 与 output/ 内的文件",
-)
-
-# B5/SEC2 修复：校验用户路径，防止路径穿越
-try:
-    config_path = validate_user_path(config_path_input)
-except ValueError as exc:
-    st.sidebar.error(f"⚠️ 配置路径不合法：{exc}")
-    st.stop()
+# 默认配置路径（用户改 YAML 路径的需求 < 1%，移到高级里）
+config_path = PATH_SCREEN
 
 # ========================
-# 侧边栏：板块/指数范围
+# 侧边栏：板块/指数范围（核心）
 # ========================
-st.sidebar.markdown("---")
-st.sidebar.markdown("**🏷️ 筛选范围（板块/指数）**")
-st.sidebar.caption('可多选，取并集。不选或选「全部A股」表示不限制范围。')
+st.sidebar.markdown("**🏷️ 筛选范围**")
 
 from src.analysis.screening.data_provider import ScreenerDataProvider as _SDP  # noqa: E402
 
-_SCOPE_OPTIONS = _SDP.SCOPE_DEFINITIONS  # {"全部A股": "all", "沪市主板": "sh_main", ...}
+_SCOPE_OPTIONS = _SDP.SCOPE_DEFINITIONS
 
 selected_scope_labels = st.sidebar.multiselect(
-    "选择板块/指数",
+    "板块/指数（多选取并集）",
     options=list(_SCOPE_OPTIONS.keys()),
     default=["全部A股"],
-    help='多选时取并集：如同时选「沪市主板」+「创业板」，则两个板块的股票都纳入筛选范围',
+    help="多选取并集；选「全部A股」 = 全市场扫描",
 )
 
-# 将中文标签转为内部 key
 selected_scope_keys = [_SCOPE_OPTIONS[label] for label in selected_scope_labels]
 
-# 显示当前范围信息
 if not selected_scope_keys or "all" in selected_scope_keys:
-    st.sidebar.success("📊 范围：全部A股")
+    st.sidebar.caption("📊 全部 A 股")
 else:
-    st.sidebar.info(f"📊 范围：{' + '.join(selected_scope_labels)}")
+    st.sidebar.caption(f"📊 {' + '.join(selected_scope_labels)}")
+
+# ========================
+# 高级参数（折叠 — 默认隐藏）
+# ========================
+with st.sidebar.expander("⚙️ 高级参数（一般不用动）"):
+    config_path_input = st.text_input(
+        "自定义 YAML 路径",
+        value=str(PATH_SCREEN),
+        help="仅允许 config/ 与 output/ 内的文件；默认无需改动",
+    )
+    try:
+        config_path = validate_user_path(config_path_input)
+    except ValueError as exc:
+        st.error(f"⚠️ 路径不合法：{exc}")
+        st.stop()
+
+    max_workers = st.slider(
+        "并行 worker 数",
+        min_value=1, max_value=16, value=8, step=1,
+        help="6-10 合适；过高触发限频",
+    )
+    request_delay = st.number_input(
+        "每股请求间隔 (秒)",
+        min_value=0.0, max_value=2.0, value=0.0, step=0.05,
+    )
+    clear_cache = st.checkbox(
+        "忽略缓存（强制重新拉 K 线）", value=False,
+        help="默认使用 .cache/screener 4 小时缓存",
+    )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**⚡ 性能参数**")
-max_workers = st.sidebar.slider(
-    "并行 worker 数",
-    min_value=1, max_value=16, value=8, step=1,
-    help="akshare 批量并发 HTTP 预取 K 线 + Phase B 线程池评估。"
-         "建议 6-10；过高可能触发东方财富限频",
-)
-request_delay = st.sidebar.number_input(
-    "每股请求间隔 (秒)",
-    min_value=0.0, max_value=2.0, value=0.0, step=0.05,
-    help="Phase A 并发预取完成后几乎不用，默认 0",
-)
-clear_cache = st.sidebar.checkbox(
-    "忽略缓存（强制重新拉K线）", value=False,
-    help="默认使用 .cache/screener 中的 4 小时缓存。勾选后会删除缓存重新拉。",
-)
-st.sidebar.info(
-    "💡 **速度说明**\n\n"
-    "新版本改用 akshare 并发批量预取 K 线，"
-    "从 20+ 分钟优化到约 2-3 分钟。\n\n"
-    "⚠️ **首次改动代码后须重启** `streamlit run ...`，否则 Streamlit "
-    "仍会用旧的串行逻辑（Streamlit 只热重载 pages/，不重载 src/）。"
-)
-
-run_btn = st.sidebar.button("▶️ 开始筛选", type="primary", width='stretch')
+run_btn = st.sidebar.button("▶️ 开始筛选", type="primary", width="stretch")
 
 
 # ========================
@@ -195,7 +185,7 @@ if run_btn:
     if results is None or results.empty:
         st.warning("筛选结果为空，未找到符合条件的股票")
     else:
-        st.success(f"✅ 筛选完成：共 {len(results)} 只股票符合条件")
+        st.toast(f"✅ 筛选完成：共 {len(results)} 只股票符合条件", icon="✅")
 
         # 结果表格（支持排序/筛选）
         st.dataframe(results, width='stretch', hide_index=True)

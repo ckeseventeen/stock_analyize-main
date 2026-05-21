@@ -70,6 +70,88 @@ st.set_page_config(
 st.title("📊 多市场股票估值分析平台")
 st.caption("A 股 · 港股 · 美股  |  估值分析 · 筛选 · 预警 · 财报监控 · 资讯抓取")
 
+# ────────────────────────────────────────────────────────
+# 🔍 全局命令栏 - 输入股票代码/名称跳转到分析页
+# ────────────────────────────────────────────────────────
+
+with st.container():
+    cmd_cols = st.columns([1, 4, 1, 2])
+    with cmd_cols[0]:
+        cmd_market = st.selectbox(
+            "市场", options=["a", "hk", "us"],
+            format_func=lambda k: {"a": "A 股", "hk": "港股", "us": "美股"}[k],
+            key="cmd_market",
+            label_visibility="collapsed",
+        )
+    with cmd_cols[1]:
+        cmd_query = st.text_input(
+            "搜索",
+            placeholder="🔍 输入股票代码或名称（如 600519 / 贵州茅台）后按 Enter 直达分析页",
+            key="cmd_query",
+            label_visibility="collapsed",
+        )
+    with cmd_cols[2]:
+        cmd_action = st.selectbox(
+            "动作", options=["分析", "回测", "加关注"],
+            key="cmd_action",
+            label_visibility="collapsed",
+        )
+    with cmd_cols[3]:
+        cmd_go = st.button(
+            "🚀 跳转", type="primary", width="stretch",
+            disabled=not cmd_query.strip(),
+        )
+
+    if cmd_go and cmd_query.strip():
+        # 解析输入：纯数字 = 代码；含中文 = 名称（去关注列表找）
+        q = cmd_query.strip()
+        resolved_code = q
+        resolved_name = ""
+
+        # 名称 → 代码 反查（从关注列表）
+        try:
+            from src.web.utils import list_stocks_from_market_config
+            stocks_list = list_stocks_from_market_config(cmd_market) or []
+            # 优先精确匹配代码
+            match = next((s for s in stocks_list if str(s.get("code", "")) == q), None)
+            if not match:
+                # 再按名称模糊匹配
+                match = next((s for s in stocks_list if q in str(s.get("name", ""))), None)
+            if match:
+                resolved_code = str(match.get("code", q))
+                resolved_name = str(match.get("name", ""))
+        except Exception:
+            pass
+
+        # 写入全局焦点
+        st.session_state["focus_stock"] = {
+            "code": resolved_code,
+            "name": resolved_name,
+            "market": cmd_market,
+        }
+
+        # 跳转
+        target_page = {
+            "分析": "pages/1_估值分析.py",
+            "回测": "pages/4_策略回测.py",
+            "加关注": "pages/12_关注标的.py",
+        }[cmd_action]
+        try:
+            st.switch_page(target_page)
+        except Exception:
+            st.toast(f"已设焦点 {resolved_code}，请手动点击侧栏 {target_page}", icon="🎯")
+
+# 显示当前焦点
+_current_focus = st.session_state.get("focus_stock")
+if _current_focus and _current_focus.get("code"):
+    fc = _current_focus
+    name_str = f"{fc.get('name', '')} ({fc['code']})" if fc.get("name") else fc["code"]
+    st.caption(
+        f"🎯 **当前焦点**：{name_str} · 市场 "
+        f"{ {'a': 'A 股', 'hk': '港股', 'us': '美股'}.get(fc.get('market', 'a'), '?') } "
+        f"（其他页会沿用此焦点）"
+    )
+
 st.markdown("---")
 
 # --- 快速指标卡：统计当前配置中的股票数 ---

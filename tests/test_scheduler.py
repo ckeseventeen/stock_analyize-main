@@ -75,7 +75,7 @@ class TestBuildScheduler:
     def test_disabled_job_skipped(self, background_scheduler_cls):
         cfg = {
             "jobs": [
-                {"id": "j1", "type": "price_monitor", "enable": False, "cron": "*/5 * * * *"},
+                {"id": "j1", "type": "buy_sell_alerts", "enable": False, "cron": "*/5 * * * *"},
             ]
         }
         sch = build_scheduler(cfg, scheduler_cls=background_scheduler_cls)
@@ -90,14 +90,14 @@ class TestBuildScheduler:
         sch = build_scheduler(cfg, scheduler_cls=background_scheduler_cls)
         assert len(sch.get_jobs()) == 0
 
-    def test_register_price_monitor_cron(self, background_scheduler_cls):
+    def test_register_buy_sell_alerts_cron(self, background_scheduler_cls):
         cfg = {
             "jobs": [
                 {
-                    "id": "price_monitor",
-                    "type": "price_monitor",
+                    "id": "buy_sell_alerts",
+                    "type": "buy_sell_alerts",
                     "enable": True,
-                    "cron": "*/5 9-11,13-15 * * MON-FRI",
+                    "cron": "*/15 9-11,13-15 * * MON-FRI",
                     "timezone": "Asia/Shanghai",
                 },
             ]
@@ -105,12 +105,13 @@ class TestBuildScheduler:
         sch = build_scheduler(cfg, scheduler_cls=background_scheduler_cls)
         jobs = sch.get_jobs()
         assert len(jobs) == 1
-        assert jobs[0].id == "price_monitor"
+        assert jobs[0].id == "buy_sell_alerts"
 
     def test_register_multiple_jobs(self, background_scheduler_cls):
         cfg = {
             "jobs": [
-                {"id": "price_monitor", "type": "price_monitor", "cron": "*/5 9-11 * * MON-FRI"},
+                {"id": "buy_sell_alerts", "type": "buy_sell_alerts",
+                 "cron": "*/15 9-11 * * MON-FRI"},
                 {"id": "earnings_monitor", "type": "earnings_monitor", "cron": "30 8 * * *"},
                 {"id": "news_scraper", "type": "scraper",
                  "scraper_type": "news", "interval_minutes": 30},
@@ -118,14 +119,14 @@ class TestBuildScheduler:
         }
         sch = build_scheduler(cfg, scheduler_cls=background_scheduler_cls)
         ids = {j.id for j in sch.get_jobs()}
-        assert ids == {"price_monitor", "earnings_monitor", "news_scraper"}
+        assert ids == {"buy_sell_alerts", "earnings_monitor", "news_scraper"}
 
     def test_invalid_trigger_does_not_crash_scheduler(self, background_scheduler_cls):
         """一个 Job 配置错误不应影响其他 Job 注册"""
         cfg = {
             "jobs": [
-                {"id": "bad", "type": "price_monitor"},  # 无 cron/interval
-                {"id": "good", "type": "price_monitor", "cron": "*/5 * * * *"},
+                {"id": "bad", "type": "buy_sell_alerts"},  # 无 cron/interval
+                {"id": "good", "type": "buy_sell_alerts", "cron": "*/5 * * * *"},
             ]
         }
         sch = build_scheduler(cfg, scheduler_cls=background_scheduler_cls)
@@ -140,22 +141,20 @@ class TestBuildScheduler:
 @pytest.mark.unit
 class TestJobBuilders:
     def test_all_builders_registered(self):
-        # B 路径自学习扩展：新增 ml_retrain builder
-        # 批量信号扫描扩展：新增 batch_signal builder
+        # buy_sell_alerts 统一了原 price_monitor + batch_signal
         assert set(JOB_BUILDERS.keys()) == {
-            "price_monitor", "earnings_monitor", "scraper",
-            "screener", "ml_retrain", "batch_signal",
+            "buy_sell_alerts", "earnings_monitor", "scraper",
+            "screener", "ml_retrain",
         }
 
-    def test_price_monitor_callable_runs_without_rules(self, tmp_path, monkeypatch):
-        """规则文件为空时应安全跳过而非抛异常"""
-        # 写一份空 rules.yaml
+    def test_buy_sell_alerts_callable_runs_without_rules(self, tmp_path, monkeypatch):
+        """空 buy_alerts/sell_alerts 时应安全跳过而非抛异常"""
         rules_path = tmp_path / "rules.yaml"
-        rules_path.write_text("rules: []\n", encoding="utf-8")
+        rules_path.write_text("buy_alerts: []\nsell_alerts: []\n", encoding="utf-8")
         alerts_path = tmp_path / "alerts.yaml"
         alerts_path.write_text("channels: {}\n", encoding="utf-8")
 
-        builder = JOB_BUILDERS["price_monitor"]
+        builder = JOB_BUILDERS["buy_sell_alerts"]
         fn = builder({
             "rules_config": str(rules_path),
             "alerts_config": str(alerts_path),

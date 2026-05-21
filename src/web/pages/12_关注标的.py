@@ -413,6 +413,82 @@ with tab_add:
                         else:
                             st.error(f"❌ {msg}")
 
+    # ────────────────────────────────────────────────
+    # 📋 批量导入（Pri 4）
+    # ────────────────────────────────────────────────
+    st.markdown("---")
+    st.subheader("📋 批量导入（CSV / 粘贴板）")
+    st.caption(
+        "每行一只股票：`代码,名称,板块`（板块可省略，默认「未分类」）。"
+        "支持从 Excel/Numbers 直接粘贴。"
+    )
+
+    with st.form("batch_import_form"):
+        bulk_text = st.text_area(
+            "粘贴股票数据",
+            height=150,
+            placeholder=(
+                "600519,贵州茅台,白酒\n"
+                "000858,五粮液,白酒\n"
+                "300750,宁德时代,新能源\n"
+                "000333,美的集团,家电"
+            ),
+            help="可粘贴 CSV、TSV 或带 Tab 的 Excel 内容",
+        )
+        ci1, ci2 = st.columns([1, 1])
+        with ci1:
+            default_category = st.text_input(
+                "未指定板块时的默认值",
+                value="（未分类）",
+                key="bulk_default_cat",
+            )
+        with ci2:
+            skip_existing = st.checkbox(
+                "跳过已存在的代码（推荐）",
+                value=True,
+                key="bulk_skip_existing",
+            )
+        bulk_submit = st.form_submit_button("📥 批量导入", type="primary")
+
+        if bulk_submit and bulk_text.strip():
+            existing = list_stocks_from_market_config(market) or []
+            existing_codes = {str(s.get("code", "")) for s in existing}
+            added, skipped, failed = 0, 0, []
+            lines = [ln for ln in bulk_text.strip().splitlines() if ln.strip()]
+            for ln in lines:
+                # 支持 ,/\t 分隔
+                parts = [p.strip() for p in ln.replace("\t", ",").split(",")]
+                if not parts or not parts[0]:
+                    continue
+                c = parts[0].lstrip("'")  # 防 Excel 自动加单引号
+                n = parts[1] if len(parts) > 1 else c
+                cat = parts[2] if len(parts) > 2 else default_category
+                if not c:
+                    continue
+                if skip_existing and c in existing_codes:
+                    skipped += 1
+                    continue
+                try:
+                    ok, msg = add_stock_to_market(market, c, n, cat)
+                    if ok:
+                        added += 1
+                        existing_codes.add(c)
+                    else:
+                        failed.append(f"{c}: {msg}")
+                except Exception as e:
+                    failed.append(f"{c}: {e}")
+
+            st.success(f"✅ 批量导入完成：新增 {added}，跳过 {skipped}，失败 {len(failed)}",
+                     icon="📥")
+            if failed:
+                with st.expander(f"⚠️ {len(failed)} 条失败"):
+                    for line in failed[:20]:
+                        st.text(line)
+                    if len(failed) > 20:
+                        st.caption(f"... 还有 {len(failed) - 20} 条")
+            if added > 0:
+                st.rerun()
+
 
 # ==============================================================
 # Tab 3: 编辑标的（改）

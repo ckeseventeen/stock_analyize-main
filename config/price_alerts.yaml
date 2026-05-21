@@ -1,34 +1,27 @@
-# ============================================================================
-# 买入/卖出信号预警配置
-# ============================================================================
-# 全部预警基于"技术信号"（桥接 28 个 CONDITION_REGISTRY），不再有价格触线类。
-# 每条规则可以是：
-#   - 单股盯盘：填 code（如 '600519'）
-#   - 批量扫描：填 scopes（如 [csi300, watchlist]）
-#
-# 命中后：
-#   - buy_alerts 推送 📈 买入预警
-#   - sell_alerts 推送 📉 卖出预警
-# ============================================================================
-
 default_cooldown_hours: 24
-
-# ─────────────────────────────────────────────────
-# 📈 买入预警
-# ─────────────────────────────────────────────────
 buy_alerts:
-  # 示例（从老配置迁移过来，原 scan_rules 中性的 bollinger_breakout 默认为买入）
   - id: TEST01
     name: 沪深300 布林带突破（买入）
-    scopes: [csi300]
+    scopes:
+      - csi300
     signal:
       type: bollinger_breakout
-      params: {direction: upper}    # 上轨突破偏多
+      params:
+        direction: upper
     cooldown_hours: 24
     max_results: 20
     max_codes: 500
-
-# ─────────────────────────────────────────────────
-# 📉 卖出预警
-# ─────────────────────────────────────────────────
+  - id: box_breakout
+    name: 箱体突破
+    enabled: true
+    cooldown_hours: 24
+    max_results: 20
+    max_codes: 500
+    scopes:
+      - csi300
+    signal:
+      type: box_breakout_volume
+      params:
+        lookback_bars: 20
+        breakout_pct: 0.02
 sell_alerts: []

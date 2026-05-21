@@ -46,12 +46,25 @@ remind_days_ahead = int(cfg.get("remind_days_ahead", 3))
 # ========================
 
 with st.sidebar:
-    days_ahead = st.slider("查看未来天数", min_value=7, max_value=90,
-                           value=default_days_ahead, step=1)
+    st.markdown("**⏱ 时间范围**")
+
+    # 快捷预设
+    preset_cols = st.columns(4)
+    for i, (lbl, d) in enumerate([("今日", 1), ("本周", 7), ("本月", 30), ("60 天", 60)]):
+        with preset_cols[i]:
+            if st.button(lbl, key=f"earn_preset_{d}", width="stretch",
+                         help=f"切到未来 {d} 天"):
+                st.session_state["earn_days_ahead"] = d
+                st.rerun()
+
+    _default_days = st.session_state.get("earn_days_ahead", default_days_ahead)
+    days_ahead = st.slider("或自定义", min_value=1, max_value=90,
+                           value=int(_default_days), step=1)
+
     st.markdown("---")
     track_forecasts = st.checkbox("包含业绩预告",
                                   value=cfg.get("track_forecasts", True))
-    refresh = st.button("🔄 刷新数据", type="primary", width='stretch')
+    refresh = st.button("🔄 刷新数据", type="primary", width="stretch")
 
 
 # ========================
@@ -116,7 +129,7 @@ for market, tab in [("a", tab_a), ("hk", tab_hk), ("us", tab_us)]:
                 if st.button("确认移除", key=f"rm_earn_btn_{market}"):
                     ok, msg = remove_code_from_earnings_watchlist(market, to_remove)
                     if ok:
-                        st.success(f"已移除 {to_remove}")
+                        st.toast(f"已移除 {to_remove}", icon="✅")
                         _fetch_calendar.clear()
                         st.rerun()
                     else:

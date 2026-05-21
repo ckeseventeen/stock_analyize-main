@@ -153,7 +153,40 @@ if not current_sid or current_sid not in strategies:
 s_cfg = strategies[current_sid]
 
 # 策略名称编辑
-st.subheader(f"📝 编辑策略: {s_cfg.get('name', current_sid)}")
+title_cols = st.columns([4, 1])
+with title_cols[0]:
+    st.subheader(f"📝 编辑策略: {s_cfg.get('name', current_sid)}")
+with title_cols[1]:
+    # ⚡ 试运行 — 不保存就跑当前编辑中的策略
+    if st.button("⚡ 试运行", help="用当前编辑中的条件跑一次筛选（A 股全集）",
+                 width="stretch", type="secondary"):
+        # 临时写入 yaml + 调 screener
+        try:
+            with st.spinner("试运行中..."):
+                from src.analysis.screening import ScreenerDataProvider, StockScreener
+
+                provider = ScreenerDataProvider()
+                screener = StockScreener(data_provider=provider, max_workers=6)
+                # 手动注入条件（绕过 yaml）
+                from src.analysis.screening.config_schema import _build_conditions
+                conds_now = _build_conditions(
+                    s_cfg.get("conditions", []),
+                    sid=current_sid,
+                )
+                for c_obj in conds_now:
+                    screener.add_condition(c_obj)
+                result = screener.run(
+                    sort_by=(s_cfg.get("output") or {}).get("sort_by", "总市值(亿)"),
+                    limit=int((s_cfg.get("output") or {}).get("limit", 30)),
+                )
+            if result is None or result.empty:
+                st.toast("试运行完成：0 只命中（条件可能太严）", icon="⚠️")
+            else:
+                st.toast(f"试运行完成：命中 {len(result)} 只", icon="✅")
+                st.session_state["_tryrun_result"] = result
+        except Exception as e:
+            st.toast(f"试运行失败: {e}", icon="⚠️")
+
 new_strategy_name = st.text_input(
     "策略名称",
     value=s_cfg.get("name", current_sid),
@@ -162,6 +195,15 @@ new_strategy_name = st.text_input(
 if new_strategy_name != s_cfg.get("name"):
     s_cfg["name"] = new_strategy_name
     mark_dirty("strategy_editor")
+
+# 展示上次试运行结果
+_tryrun = st.session_state.get("_tryrun_result")
+if _tryrun is not None and not _tryrun.empty:
+    with st.expander(f"⚡ 上次试运行结果：{len(_tryrun)} 只命中", expanded=False):
+        st.dataframe(_tryrun, width="stretch", hide_index=True)
+        if st.button("清除试运行结果", key="clear_tryrun"):
+            del st.session_state["_tryrun_result"]
+            st.rerun()
 
 # ========================
 # 条件编辑区

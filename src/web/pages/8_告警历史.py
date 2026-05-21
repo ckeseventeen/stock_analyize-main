@@ -79,7 +79,7 @@ class AlertHistoryPage(Page):
             if st.button("🧹 执行清理"):
                 from src.automation.alert.state import AlertStateStore
                 removed = AlertStateStore(ALERT_STATE_PATH).clear_expired(int(days))
-                st.success(f"已清理 {removed} 条过期记录")
+                st.toast(f"已清理 {removed} 条过期记录", icon="✅")
                 st.rerun()
 
     @staticmethod

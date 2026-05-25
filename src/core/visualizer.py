@@ -238,3 +238,140 @@ class Visualizer:
                 cell = table[i, j]
                 cell.set_facecolor('#F9F9F9' if i % 2 == 1 else '#EEEEEE')
                 cell.set_edgecolor('#CCCCCC')
+
+    def plot_revenue_profit_plotly(self):
+        """左上：近五年年度营收与净利润 + 毛利率双Y轴 (Plotly版)"""
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+
+        annual_df = self.result.get('annual_df', None)
+        if annual_df is None or annual_df.empty:
+            fig = go.Figure()
+            fig.add_annotation(text="无年度财务数据", xref="paper", yref="paper", showarrow=False, font=dict(size=14))
+            return fig
+
+        years = annual_df.index.year.astype(str).tolist()
+        revenue = annual_df.get('营业总收入', pd.Series(dtype=float)) / 1e8
+        net_profit = annual_df.get('归母净利润', pd.Series(dtype=float)) / 1e8
+        gross_margin = annual_df.get('毛利率', pd.Series(dtype=float)) * 100
+
+        fig = make_subplots(specs=[[{"secondary_y": True}]])
+        fig.add_trace(
+            go.Bar(x=years, y=revenue, name="营业总收入(亿元)", marker_color="#3b82f6", opacity=0.85),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Bar(x=years, y=net_profit, name="归母净利润(亿元)", marker_color="#10b981", opacity=0.85),
+            secondary_y=False,
+        )
+        if not gross_margin.empty:
+            fig.add_trace(
+                go.Scatter(x=years, y=gross_margin, name="毛利率(%)", mode="lines+markers", line=dict(color="#ef4444", width=3), marker=dict(size=8)),
+                secondary_y=True,
+            )
+
+        fig.update_layout(
+            title_text="近五年年度营收与净利润 (双Y轴)",
+            title_font=dict(size=16, color="#f8fafc"),
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        fig.update_xaxes(showgrid=False, title_text="年份")
+        fig.update_yaxes(title_text="金额 (亿元)", secondary_y=False, showgrid=True, gridcolor="rgba(255,255,255,0.1)")
+        fig.update_yaxes(title_text="毛利率 (%)", secondary_y=True, showgrid=False)
+        return fig
+
+    def plot_hist_valuation_plotly(self):
+        """右上：历史估值走势 + 当前值 + 50%中位线 (Plotly版)"""
+        import plotly.graph_objects as go
+
+        hist_percentile = self.result.get('hist_percentile', 0)
+        hist_val = self.result.get('hist_val', None)
+        val_col = 'pe_ttm' if self.val_type == 'pe' else 'ps_ttm'
+
+        if hist_val is None or hist_val.empty or val_col not in hist_val.columns:
+            fig = go.Figure()
+            fig.add_annotation(text="无历史估值数据", xref="paper", yref="paper", showarrow=False, font=dict(size=14))
+            return fig
+
+        hist_series = pd.to_numeric(hist_val[val_col], errors='coerce').dropna()
+        if hist_series.empty:
+            fig = go.Figure()
+            fig.add_annotation(text="无历史估值数据", xref="paper", yref="paper", showarrow=False, font=dict(size=14))
+            return fig
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(x=hist_series.index, y=hist_series.values, name=self.val_full_name, line=dict(color="#6366f1", width=1.5))
+        )
+
+        # 当前值和中位数横线
+        if not np.isnan(self.current_val):
+            fig.add_hline(y=self.current_val, line_color="#ef4444", line_dash="dash", line_width=2,
+                          annotation_text=f"当前值: {self.current_val:.2f}", annotation_position="top left")
+        
+        median_val = hist_series.median()
+        fig.add_hline(y=median_val, line_color="#94a3b8", line_dash="dot", line_width=1.5,
+                      annotation_text=f"50%中位: {median_val:.2f}", annotation_position="bottom right")
+
+        fig.update_layout(
+            title_text=f"历史 {self.val_name} 走势 (当前所处分位: {hist_percentile:.1f}%)",
+            title_font=dict(size=16, color="#f8fafc"),
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=20, r=20, t=50, b=20),
+            hovermode="x unified",
+        )
+        fig.update_xaxes(showgrid=False, title_text="交易日期")
+        fig.update_yaxes(title_text=self.val_full_name, showgrid=True, gridcolor="rgba(255,255,255,0.1)")
+        return fig
+
+    def plot_scenario_plotly(self):
+        """左下：不同情景假设下的估值推演 (Plotly版)"""
+        import plotly.graph_objects as go
+
+        labels = [
+            f'保守 ({self.val_name}={self.val_range[0]})',
+            f'中性 ({self.val_name}={self.val_range[1]})',
+            f'乐观 ({self.val_name}={self.val_range[2]})'
+        ]
+        colors = ['#10b981', '#f59e0b', '#f97316']
+
+        max_scenario = max(self.scenarios) if self.scenarios else 0
+        config_warning = False
+        if self.price > 0 and max_scenario > 0 and max_scenario < self.price * 0.5:
+            config_warning = True
+
+        fig = go.Figure()
+        fig.add_trace(
+            go.Bar(x=labels, y=self.scenarios, marker_color=colors, width=0.4,
+                   text=[f"{v:.2f}元" for v in self.scenarios], textposition="auto")
+        )
+
+        fig.add_hline(y=self.price, line_color="#f8fafc", line_dash="dash", line_width=2,
+                      annotation_text=f"当前股价: {self.price:.2f}元", annotation_position="top left")
+
+        if config_warning:
+            fig.add_annotation(
+                text=f"⚠ {self.val_name}区间偏低，当前{self.val_name}={self.current_val:.1f}，建议调整配置",
+                xref="paper", yref="paper", x=0.5, y=0.9, showarrow=False,
+                font=dict(color="#f87171", size=12),
+                bgcolor="rgba(239, 68, 68, 0.1)",
+                bordercolor="#ef4444", borderwidth=1, borderpad=8
+            )
+
+        fig.update_layout(
+            title_text="不同情景假设下的估值推演",
+            title_font=dict(size=16, color="#f8fafc"),
+            template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=20, r=20, t=50, b=20),
+        )
+        fig.update_xaxes(showgrid=False)
+        fig.update_yaxes(title_text="推演目标股价 (元)", showgrid=True, gridcolor="rgba(255,255,255,0.1)")
+        return fig

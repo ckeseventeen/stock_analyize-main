@@ -11,7 +11,27 @@ from src.utils.logger import get_logger
 # 全局日志初始化
 logger = get_logger(__name__)
 
+import time
+from functools import wraps
 
+def retry_on_exception(max_retries=3, initial_delay=1.0):
+    """网络请求重试装饰器，支持指数退避"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as e:
+                    if attempt == max_retries - 1:
+                        logger.error(f"网络请求 {func.__name__} 失败，已重试 {max_retries} 次: {e}", exc_info=True)
+                        raise
+                    logger.warning(f"网络请求 {func.__name__} 失败 (尝试 {attempt + 1}/{max_retries}): {e}，将在 {delay} 秒后重试...")
+                    time.sleep(delay)
+                    delay *= 2
+        return wrapper
+    return decorator
 
 # ---------------------- 抽象基类：定义统一接口规范 ----------------------
 class BaseDataFetcher(ABC):
@@ -499,14 +519,17 @@ class HKStockDataFetcher(AkshareDataFetcher):
         pure = self._normalize_code(code).lstrip('0') or '0'
         return f"{pure.zfill(4)}.HK"
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_financial_api(self, symbol: str) -> pd.DataFrame:
         """调用东方财富港股财务分析指标接口"""
         return ak.stock_financial_hk_analysis_indicator_em(symbol=symbol)
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_valuation_api(self, symbol: str, indicator: str, period: str) -> pd.DataFrame:
         """调用百度港股历史估值接口"""
         return ak.stock_hk_valuation_baidu(symbol=symbol, indicator=indicator, period=period)
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_price_df(self, symbol: str) -> pd.DataFrame:
         """获取港股近10日日线行情（前复权）"""
         end_date = pd.Timestamp.now().strftime('%Y%m%d')
@@ -530,14 +553,17 @@ class USStockDataFetcher(AkshareDataFetcher):
         """美股 yfinance 格式与原始代码相同"""
         return code
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_financial_api(self, symbol: str) -> pd.DataFrame:
         """调用东方财富美股财务分析指标接口"""
         return ak.stock_financial_us_analysis_indicator_em(symbol=symbol)
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_valuation_api(self, symbol: str, indicator: str, period: str) -> pd.DataFrame:
         """调用百度美股历史估值接口"""
         return ak.stock_us_valuation_baidu(symbol=symbol, indicator=indicator, period=period)
 
+    @retry_on_exception(max_retries=3, initial_delay=1.0)
     def _fetch_price_df(self, symbol: str) -> pd.DataFrame:
         """获取美股全量日线行情（前复权）"""
         return ak.stock_us_daily(symbol=symbol, adjust='qfq')

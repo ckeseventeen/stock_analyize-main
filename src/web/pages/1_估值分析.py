@@ -36,6 +36,60 @@ st.set_page_config(page_title="单股分析", page_icon="📊", layout="wide")
 st.title("📊 单股深度分析")
 st.caption("一次选股 → 估值 + 自由现金流 双视角")
 
+# 注入全局 CSS 样式实现高级毛玻璃与暗黑卡片效果
+st.markdown("""
+    <style>
+    .metric-card-glass {
+        background: rgba(30, 41, 59, 0.45);
+        border-radius: 12px;
+        padding: 16px 20px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.2);
+        backdrop-filter: blur(8px);
+        -webkit-backdrop-filter: blur(8px);
+        margin-bottom: 15px;
+    }
+    .metric-card-title {
+        color: #94a3b8;
+        font-size: 14px;
+        font-weight: 500;
+        margin-bottom: 6px;
+    }
+    .metric-card-value {
+        color: #f8fafc;
+        font-size: 26px;
+        font-weight: 700;
+    }
+    .badge-green {
+        background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+        display: inline-block;
+    }
+    .badge-yellow {
+        background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+        display: inline-block;
+    }
+    .badge-red {
+        background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+        color: white;
+        padding: 4px 10px;
+        border-radius: 20px;
+        font-size: 12px;
+        font-weight: bold;
+        display: inline-block;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
 
 # ============================================================================
 # Sidebar：选股（estate + fcf 共用）
@@ -224,48 +278,136 @@ with tab_val:
             _code = stock_config.get("code", code)
             st.toast(f"✅ 估值分析完成：{_name} ({_code})", icon="📊")
 
+            # 渲染核心指标高级卡片
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("当前价", f"{result.get('price', 0):.2f}")
-            pe_ttm = result.get("current_pe")
-            m2.metric("PE (TTM)", f"{pe_ttm:.2f}" if pe_ttm and pe_ttm > 0 else "N/A")
-            ps_ttm = result.get("current_ps")
-            m3.metric("PS (TTM)", f"{ps_ttm:.2f}" if ps_ttm and ps_ttm > 0 else "N/A")
-            m4.metric("市值(亿)", f"{market_data.get('market_cap', 0) / 1e8:.2f}"
-                      if market_data.get("market_cap") else "N/A")
+            with m1:
+                st.markdown(f"""
+                    <div class="metric-card-glass">
+                        <div class="metric-card-title">当前价</div>
+                        <div class="metric-card-value">{result.get('price', 0):.2f} 元</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            with m2:
+                pe_ttm = result.get("current_pe")
+                pe_val = f"{pe_ttm:.2f}" if pe_ttm and pe_ttm > 0 else "N/A"
+                st.markdown(f"""
+                    <div class="metric-card-glass">
+                        <div class="metric-card-title">PE (TTM)</div>
+                        <div class="metric-card-value">{pe_val}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            with m3:
+                ps_ttm = result.get("current_ps")
+                ps_val = f"{ps_ttm:.2f}" if ps_ttm and ps_ttm > 0 else "N/A"
+                st.markdown(f"""
+                    <div class="metric-card-glass">
+                        <div class="metric-card-title">PS (TTM)</div>
+                        <div class="metric-card-value">{ps_val}</div>
+                    </div>
+                """, unsafe_allow_html=True)
+            with m4:
+                cap_val = f"{market_data.get('market_cap', 0) / 1e8:.2f}" if market_data.get("market_cap") else "N/A"
+                st.markdown(f"""
+                    <div class="metric-card-glass">
+                        <div class="metric-card-title">总市值</div>
+                        <div class="metric-card-value">{cap_val} 亿</div>
+                    </div>
+                """, unsafe_allow_html=True)
 
+            # 历史分位数发光徽章卡片
+            hist_pct = result.get('hist_percentile', 0)
+            if hist_pct < 20:
+                badge_class = "badge-green"
+                pct_label = "极度低估"
+            elif hist_pct < 50:
+                badge_class = "badge-green"
+                pct_label = "合理偏低"
+            elif hist_pct < 80:
+                badge_class = "badge-yellow"
+                pct_label = "合理偏高"
+            else:
+                badge_class = "badge-red"
+                pct_label = "极度高估"
+
+            st.markdown(f"""
+                <div class="metric-card-glass">
+                    <span style="color:#94a3b8; font-size:14px; font-weight:500;">历史估值分位数：</span>
+                    <span style="color:#f8fafc; font-size:22px; font-weight:700; margin-right: 15px;">{hist_pct:.2f}%</span>
+                    <span class="{badge_class}">{pct_label}</span>
+                </div>
+            """, unsafe_allow_html=True)
+
+            # 目标价档位计算 (修复原本 result 没有 target_prices 的 bug)
             st.subheader("🎯 目标价档位")
-            target_prices = result.get("target_prices") or {}
-            if target_prices:
-                tp_df = pd.DataFrame([
-                    {"档位": level, "目标价": round(price, 2),
-                     "相对当前": f"{(price / result['price'] - 1) * 100:+.1f}%"
-                                if result.get("price") else ""}
-                    for level, price in target_prices.items()
-                ])
-                st.dataframe(tp_df, width="stretch", hide_index=True)
+            scenarios = result.get("scenarios", [0, 0, 0])
+            target_prices = {
+                "保守": scenarios[0],
+                "中性": scenarios[1],
+                "乐观": scenarios[2],
+            }
+            tp_df = pd.DataFrame([
+                {"档位": level, "目标价": round(price, 2),
+                 "相对当前": f"{(price / result['price'] - 1) * 100:+.1f}%"
+                            if result.get("price") else ""}
+                for level, price in target_prices.items()
+            ])
+            st.dataframe(tp_df, width="stretch", hide_index=True)
 
-            st.subheader("📊 4 格估值图")
+            # 渲染 Plotly 交互式图表
+            st.subheader("📊 估值与财务分析图谱 (交互式)")
             try:
                 from src.core.visualizer import Visualizer
                 viz = Visualizer(result, stock_config)
-                fig = viz.plot()
-                st.pyplot(fig, width="stretch")
-                plt.close(fig)
+                
+                c_left, c_right = st.columns(2)
+                with c_left:
+                    st.plotly_chart(viz.plot_revenue_profit_plotly(), use_container_width=True)
+                with c_right:
+                    st.plotly_chart(viz.plot_hist_valuation_plotly(), use_container_width=True)
+                
+                st.plotly_chart(viz.plot_scenario_plotly(), use_container_width=True)
             except Exception as e:
                 st.error(f"图表渲染失败: {e}")
                 st.exception(e)
 
-            with st.expander("📋 财务数据原表"):
+            # 核心指标总览数据表 (替换原来的 matplotlib 表格)
+            st.subheader("📋 核心指标综合总览")
+            latest_year = str(fin_df.index[0].year) if fin_df is not None and not fin_df.empty else '-'
+            rev_val = result.get('ttm_revenue', 0) / 1e8
+            np_val = result.get('ttm_net_profit', 0) / 1e8
+            gm_val = 0.0
+            if fin_df is not None and not fin_df.empty and '营业总收入' in fin_df.columns and '营业成本' in fin_df.columns:
+                latest_annual = fin_df.iloc[0]
+                rev_annual = latest_annual.get('营业总收入', 0)
+                cost_annual = latest_annual.get('营业成本', 0)
+                if rev_annual > 0:
+                    gm_val = (rev_annual - cost_annual) / rev_annual * 100
+
+            summary_data = [
+                {"关键指标": "财报最新年度", "数据": latest_year, "备注解析": "最新年度数据依据"},
+                {"关键指标": "营业总收入 (亿元)", "数据": f"{rev_val:.2f}", "备注解析": "年度总计 (TTM)"},
+                {"关键指标": "归母净利润 (亿元)", "数据": f"{np_val:.2f}", "备注解析": "年度总计 (TTM)"},
+                {"关键指标": "毛利率 (%)", "数据": f"{gm_val:.2f}%", "备注解析": "(营业收入-营业成本)/营业收入"},
+                {"关键指标": "当前股价 (元)", "数据": f"{result['price']:.2f}", "备注解析": "实时动态行情"},
+                {"关键指标": f"当前 {val_type.upper()} (TTM)", "数据": f"{pe_val}" if val_type == 'pe' else f"{ps_val}", "备注解析": "基于最新滚动四个季度"},
+                {"关键指标": f"历史 {val_type.upper()} 分位数", "数据": f"{hist_pct:.2f}%", "备注解析": "处于过去历史排位"},
+            ]
+            st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
+
+            # 数据原表整合进 Tab
+            st.subheader("📂 原始数据总览")
+            raw_tab_fin, raw_tab_hist, raw_tab_real = st.tabs(["📋 财务数据原表", "📉 历史估值原表", "💹 实时行情 Dict"])
+            with raw_tab_fin:
                 if fin_df is not None and not fin_df.empty:
                     st.dataframe(fin_df, width="stretch")
                 else:
                     st.caption("暂无财务数据")
-            with st.expander("📉 历史估值原表"):
+            with raw_tab_hist:
                 if hist_val_df is not None and not hist_val_df.empty:
                     st.dataframe(hist_val_df.tail(100), width="stretch")
                 else:
                     st.caption("暂无历史估值数据")
-            with st.expander("💹 实时行情 Dict"):
+            with raw_tab_real:
                 st.json(market_data)
     else:
         st.info("👈 在左侧配置后点击「开始分析」生成估值报告")

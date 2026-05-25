@@ -51,6 +51,7 @@ class CacheManager:
         self._max_bytes = max_mb * 1024 * 1024
         self._hits = 0
         self._misses = 0
+        self._write_count = 0
 
     def _cache_path(self, key: str) -> Path:
         """生成缓存文件路径（对 key 做 MD5 防止特殊字符）"""
@@ -124,7 +125,9 @@ class CacheManager:
                 f.write(_CACHE_MAGIC)
                 pickle.dump(data, f)
             os.replace(tmp_path, path)
-            self._enforce_capacity()
+            self._write_count += 1
+            if self._write_count % 50 == 0:
+                self._enforce_capacity()
             logger.debug(f"缓存写入成功: {key}")
         except Exception as e:
             # 清理 tmp 残留

@@ -227,7 +227,8 @@ def _start_edit(direction: str, idx: int) -> None:
     target = buy_alerts if direction == "buy" else sell_alerts
     st.session_state[f"editing_{direction}"] = idx
     st.session_state[f"editing_data_{direction}"] = dict(target[idx])
-    _toast("已加载到编辑表单（下方）")
+    # FE-4 修复：不在此处 toast（rerun 会吞掉），改为设置 flag
+    st.session_state[f"edit_toast_{direction}"] = True
 
 
 def _test_rule(direction: str, idx: int) -> None:
@@ -255,6 +256,11 @@ def _test_rule(direction: str, idx: int) -> None:
 
 def _render_rules_list(rules: list[dict], direction: str) -> None:
     """渲染规则列表 + 行内操作按钮"""
+    # FE-4 修复：在 rerun 后显示编辑 toast
+    toast_key = f"edit_toast_{direction}"
+    if st.session_state.pop(toast_key, False):
+        _toast("已加载到编辑表单（下方）")
+
     if not rules:
         _render_empty_state(direction)
         return

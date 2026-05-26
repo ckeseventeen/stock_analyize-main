@@ -250,8 +250,13 @@ class AStockDataFetcher(BaseDataFetcher):
 
             net_profit = float(row.get('netProfit', 0) or 0)
             revenue = float(row.get('MBRevenue', 0) or 0)
-            gp_margin = float(row.get('gpMargin', 0) or 0)  # decimal, e.g. 0.913
-            cost = revenue * (1.0 - gp_margin) if revenue > 0 else 0.0
+            gp_margin_raw = row.get('gpMargin')
+            # BUG-6 修复：区分 gpMargin=0（真实 0% 毛利率）与 None/空（数据缺失→NaN）
+            if gp_margin_raw is not None and gp_margin_raw != '':
+                gp_margin = float(gp_margin_raw)  # decimal, e.g. 0.913
+                cost = revenue * (1.0 - gp_margin) if revenue > 0 else 0.0
+            else:
+                cost = float('nan')  # 数据缺失，不要假装毛利率=0
 
             metric_rows['归母净利润'][date_key] = net_profit
             metric_rows['营业总收入'][date_key] = revenue
@@ -367,65 +372,100 @@ class AkshareDataFetcher(BaseDataFetcher):
 
     def get_historical_valuation(self, code: str, val_type: str = 'pe') -> pd.DataFrame:
         """获取历史估值走势（百度接口 → yfinance fallback）
-        注意：百度接口无市销率(PS)，ps 配置时拉取市净率(PB)替代
+
+        STRAT-2 修复：百度接口无 PS 指标，不再使用 PB 替代（两者经济含义完全不同）。
+        PS 模式直接走 yfinance fallback，用 Close / revenue_per_share 计算真实 PS。
         """
         symbol = self._normalize_code(code)
-        # 百度接口无 PS 指标，ps 时使用 PB 替代
-        indicator_map = {'pe': '市盈率(TTM)', 'ps': '市净率'}
-        indicator = indicator_map.get(val_type, '市盈率(TTM)')
 
-        try:
-            df = self._fetch_valuation_api(symbol, indicator, "近五年")
-            if df is not None and not df.empty:
-                val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
-                df = df.rename(columns={'date': 'trade_date', 'value': val_col})
-                logger.debug(f"{self.market_name} {code} 历史估值获取成功 ({indicator})，共 {len(df)} 条")
-                return df
-        except Exception as e:
-            logger.debug(f"{self.market_name} {code} 百度估值接口失败: {e}")
+        # 百度接口仅支持 PE（市盈率TTM），PS 直接跳到 yfinance
+        if val_type == 'pe':
+            try:
+                df = self._fetch_valuation_api(symbol, '市盈率(TTM)', "近五年")
+                if df is not None and not df.empty:
+                    df = df.rename(columns={'date': 'trade_date', 'value': 'pe_ttm'})
+                    logger.debug(f"{self.market_name} {code} 历史PE获取成功（百度），共 {len(df)} 条")
+                    return df
+            except Exception as e:
+                logger.debug(f"{self.market_name} {code} 百度估值接口失败: {e}")
 
-        # yfinance fallback：用 Close / trailingEps 计算历史 PE
+        # yfinance fallback：PE 用 Close/EPS，PS 用 Close/revenue_per_share
         try:
             yf_symbol = self._to_yfinance_symbol(code)
             import yfinance as yf
             ticker = yf.Ticker(yf_symbol)
             info = ticker.info or {}
 
-            # 策略：优先取 trailingEps，若无则尝试用 regularMarketPrice / trailingPE 反推
-            eps = float(info.get('trailingEps', 0) or 0)
-            if eps <= 0:
-                price = float(info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0)
-                pe = float(info.get('trailingPE', 0) or 0)
-                if price > 0 and pe > 0:
-                    eps = price / pe
+            val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
 
-            # 若仍无 EPS，尝试从已抓取的财务摘要中获取最新一期 BASIC_EPS
-            if eps <= 0:
-                fin_df = self.get_financial_abstract(code)
-                if not fin_df.empty and 'BASIC_EPS' in fin_df.columns:
-                    eps = float(fin_df.iloc[0]['BASIC_EPS'] or 0)
+            if val_type == 'pe':
+                # PE 计算：Close / trailingEps
+                eps = float(info.get('trailingEps', 0) or 0)
+                if eps <= 0:
+                    price = float(info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0)
+                    pe = float(info.get('trailingPE', 0) or 0)
+                    if price > 0 and pe > 0:
+                        eps = price / pe
 
-            if eps > 0:
-                hist = ticker.history(period='5y')
-                if hist is not None and not hist.empty:
-                    val_col = 'pe_ttm' if val_type == 'pe' else 'ps_ttm'
-                    result = pd.DataFrame({
-                        'trade_date': hist.index.strftime('%Y-%m-%d'),
-                        val_col: hist['Close'].values / eps,
-                    })
-                    # 过滤无效值
-                    result[val_col] = pd.to_numeric(result[val_col], errors='coerce')
-                    result = result.dropna(subset=[val_col])
-                    result = result[result[val_col] > 0]
-                    if not result.empty:
-                        logger.info(f"{self.market_name} {code} yfinance 历史PE获取成功 (Symbol={yf_symbol}, EPS={eps:.2f})，共 {len(result)} 条")
-                        return result
+                # 若仍无 EPS，尝试从已抓取的财务摘要中获取最新一期 BASIC_EPS
+                if eps <= 0:
+                    fin_df = self.get_financial_abstract(code)
+                    if not fin_df.empty and 'BASIC_EPS' in fin_df.columns:
+                        eps = float(fin_df.iloc[0]['BASIC_EPS'] or 0)
+
+                if eps > 0:
+                    hist = ticker.history(period='5y')
+                    if hist is not None and not hist.empty:
+                        result = pd.DataFrame({
+                            'trade_date': hist.index.strftime('%Y-%m-%d'),
+                            val_col: hist['Close'].values / eps,
+                        })
+                        result[val_col] = pd.to_numeric(result[val_col], errors='coerce')
+                        result = result.dropna(subset=[val_col])
+                        result = result[result[val_col] > 0]
+                        if not result.empty:
+                            logger.info(f"{self.market_name} {code} yfinance 历史PE获取成功 (Symbol={yf_symbol}, EPS={eps:.2f})，共 {len(result)} 条")
+                            return result
+                else:
+                    logger.debug(f"{self.market_name} {code} yfinance 无法获取有效 EPS (Symbol={yf_symbol})")
+
             else:
-                logger.debug(f"{self.market_name} {code} yfinance 无法获取有效 EPS (Symbol={yf_symbol})")
+                # PS 计算：Close / revenue_per_share
+                # revenue_per_share = totalRevenue / sharesOutstanding
+                total_revenue = float(info.get('totalRevenue', 0) or 0)
+                shares_outstanding = float(info.get('sharesOutstanding', 0) or 0)
+                revenue_per_share = total_revenue / shares_outstanding if shares_outstanding > 0 else 0.0
+
+                # 兜底：直接取 yfinance 的 priceToSalesTrailing12Months 反推
+                if revenue_per_share <= 0:
+                    ps_ratio = float(info.get('priceToSalesTrailing12Months', 0) or 0)
+                    cur_price = float(info.get('currentPrice', 0) or info.get('regularMarketPrice', 0) or 0)
+                    if ps_ratio > 0 and cur_price > 0:
+                        revenue_per_share = cur_price / ps_ratio
+
+                if revenue_per_share > 0:
+                    hist = ticker.history(period='5y')
+                    if hist is not None and not hist.empty:
+                        result = pd.DataFrame({
+                            'trade_date': hist.index.strftime('%Y-%m-%d'),
+                            val_col: hist['Close'].values / revenue_per_share,
+                        })
+                        result[val_col] = pd.to_numeric(result[val_col], errors='coerce')
+                        result = result.dropna(subset=[val_col])
+                        result = result[result[val_col] > 0]
+                        if not result.empty:
+                            logger.info(
+                                f"{self.market_name} {code} yfinance 历史PS获取成功 "
+                                f"(Symbol={yf_symbol}, RPS={revenue_per_share:.2f})，共 {len(result)} 条"
+                            )
+                            return result
+                else:
+                    logger.debug(f"{self.market_name} {code} yfinance 无法获取有效 revenue_per_share (Symbol={yf_symbol})")
+
         except Exception as e:
             logger.debug(f"{self.market_name} {code} yfinance 历史估值也失败: {e}")
 
-        logger.warning(f"{self.market_name} {code} 所有历史估值源均失败")
+        logger.warning(f"{self.market_name} {code} 所有历史估值源均失败 (val_type={val_type})")
         return pd.DataFrame()
 
     def get_current_market_data(self, code: str) -> dict:

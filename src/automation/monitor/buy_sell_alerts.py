@@ -57,27 +57,34 @@ def _is_weekly_condition(condition_type: str) -> bool:
 
 
 def _load_watchlist_codes() -> set[str]:
-    """从 config/stocks/a_stock.yaml 加载关注列表 A 股代码"""
+    """从 config/stocks/*.yaml 加载所有市场的关注列表代码（BUG-4 修复：原仅加载 A 股）"""
     from pathlib import Path
 
     import yaml
 
     codes: set[str] = set()
-    p = Path("./config/stocks/a_stock.yaml")
-    if not p.exists():
-        return codes
-    try:
-        with open(p, encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
-        for cat in (cfg.get("categories") or {}).values():
-            if not isinstance(cat, dict):
-                continue
-            for stock in cat.get("stocks", []) or []:
-                c = str(stock.get("code", "")).strip()
-                if c:
-                    codes.add(c.zfill(6))
-    except Exception as e:
-        logger.debug(f"加载关注列表失败: {e}")
+    # 遍历所有市场配置文件
+    market_files = [
+        ("a", Path("./config/stocks/a_stock.yaml"), 6),
+        ("hk", Path("./config/stocks/hk_stock.yaml"), 5),
+        ("us", Path("./config/stocks/us_stock.yaml"), 0),
+    ]
+    for market_key, p, pad_width in market_files:
+        if not p.exists():
+            continue
+        try:
+            with open(p, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+            for cat in (cfg.get("categories") or {}).values():
+                if not isinstance(cat, dict):
+                    continue
+                for stock in cat.get("stocks", []) or []:
+                    c = str(stock.get("code", "")).strip()
+                    if c:
+                        # A 股补零到 6 位，港股补零到 5 位，美股不补零
+                        codes.add(c.zfill(pad_width) if pad_width > 0 else c)
+        except Exception as e:
+            logger.debug(f"加载 {market_key} 关注列表失败: {e}")
     return codes
 
 
@@ -148,6 +155,14 @@ class BuySellAlertMonitor(BaseMonitor):
     def collect_events(self) -> list[AlertEvent]:
         events: list[AlertEvent] = []
 
+        # TRIG-2 修复：预拉一次全市场行情，多条 batch 规则共享
+        self._cached_spot_df = None
+        try:
+            provider = self._get_provider()
+            self._cached_spot_df = provider.get_all_a_shares()
+        except Exception as e:
+            logger.warning(f"[预拉全市场行情失败] {e}")
+
         for rule in self.buy_alerts:
             # 跳过 enabled=False 的规则（保留配置但临时不跑）
             if not rule.get("enabled", True):
@@ -173,6 +188,7 @@ class BuySellAlertMonitor(BaseMonitor):
                 logger.error(f"[sell_alert] '{rule.get('id', '?')}' 异常: {e}",
                              exc_info=True)
 
+        self._cached_spot_df = None  # 释放内存
         return events
 
     def test_single_rule(self, rule: dict, direction: str) -> AlertEvent | None:
@@ -276,11 +292,14 @@ class BuySellAlertMonitor(BaseMonitor):
             logger.warning(f"[{direction}:{rule_id}] 股票池为空")
             return None
 
-        try:
-            spot_df = provider.get_all_a_shares()
-        except Exception as e:
-            logger.error(f"[{direction}:{rule_id}] 全市场行情失败: {e}")
-            return None
+        # TRIG-2 修复：优先使用 collect_events 预拉的缓存
+        spot_df = getattr(self, '_cached_spot_df', None)
+        if spot_df is None:
+            try:
+                spot_df = provider.get_all_a_shares()
+            except Exception as e:
+                logger.error(f"[{direction}:{rule_id}] 全市场行情失败: {e}")
+                return None
         if spot_df is None or spot_df.empty:
             return None
 
@@ -427,8 +446,9 @@ class BuySellAlertMonitor(BaseMonitor):
         tag = "买入" if direction == "buy" else "卖出"
         friendly = CONDITION_LABELS.get(signal_type, signal_type)
 
-        today = datetime.now().strftime("%Y-%m-%d")
-        event_key = f"{direction}_alert:{rule_id}:{today}"
+        # TRIG-1 修复：event_key 不再嵌入日期，避免每天零点后重复触发。
+        # 冷却去重完全由 AlertStateStore.was_fired() 的时间差计算负责。
+        event_key = f"{direction}_alert:{rule_id}"
 
         if is_batch:
             shown = hits[:max_results]

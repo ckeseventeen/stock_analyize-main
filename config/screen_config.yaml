@@ -543,3 +543,40 @@ strategies:
       sort_by: 总市值(亿)
       ascending: false
       limit: 30
+
+  # ========================
+  # ML 自学习策略（B 路径）
+  # ========================
+  # 使用 LightGBM 模型预测未来 20 日超额收益，取 Top-50
+  # 首次启用前需要训练模型：python -m src.ml.cli train
+  # 训练完成后模型保存在 cache/ml_models/lgbm_latest.joblib
+
+  ml_alpha_top50:
+    name: ML自学习Alpha Top50
+    conditions:
+      - type: market_cap
+        min: 50
+        max: 20000
+      - type: exclude_risk
+      - type: price_above_ma
+        ma_period: 60
+      - type: ml_top_k
+        top_k: 50
+        min_score: 0.5
+    backtest:
+      sell_conditions:
+        - type: trailing_stop
+          callback_pct: 10
+          lookback: 40
+        - type: rsi_overbought
+          threshold: 80
+          period: 14
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+      default_stock: '600519'
+      days_back: 1000
+    output:
+      sort_by: ml_score
+      ascending: false
+      limit: 50

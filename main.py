@@ -3,6 +3,7 @@ import os
 import time
 
 import pandas as pd
+import matplotlib.pyplot as _plt
 import yaml
 
 from src.core.market_registry import get_market, market_keys
@@ -172,7 +173,6 @@ def process_single_market(market_code: str):
                     output_file = f"[{category_name}]_{name}_{code}_四格估值分析.png"
                     output_full_path = os.path.join(output_dir, output_file)
                     fig.savefig(output_full_path, dpi=300, bbox_inches='tight')
-                    import matplotlib.pyplot as _plt
                     _plt.close(fig)
 
                     logger.info(f"【{market_name}-{category_name}】生成成功 -> {output_full_path}")

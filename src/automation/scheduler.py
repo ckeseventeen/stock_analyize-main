@@ -176,10 +176,22 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
 
     def _run():
         from src.analysis.screening.screener import StockScreener
-        from src.automation.alert import AlertEvent, build_channels
+        from src.automation.alert import AlertEvent, AlertStateStore, build_channels
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         channels = build_channels(alerts_cfg)
+        # TRIG-4 修复：使用 AlertStateStore 防止 scheduler 重启导致重复推送
+        store = AlertStateStore()
+        screener_cooldown = int(job_cfg.get("cooldown_hours", 12))
+
+        def _push_event(event: AlertEvent):
+            """推送前检查冷却"""
+            if store.was_fired(event.event_key, cooldown_hours=screener_cooldown):
+                logger.info(f"[screener] 事件 '{event.event_key}' 仍在冷却期内，跳过推送")
+                return
+            for ch in channels:
+                ch.send(event)
+            store.mark_fired(event.event_key)
 
         try:
             logger.info(f"[screener] 开始执行自动筛选，策略: {strategy_ids or '全部'}")
@@ -193,11 +205,10 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
                 event = AlertEvent(
                     title="📊 股票筛选结果",
                     body=msg,
-                    event_key=f"screener:empty:{__import__('datetime').date.today()}",
+                    event_key="screener:empty",
                     event_type="screener_result",
                 )
-                for ch in channels:
-                    ch.send(event)
+                _push_event(event)
                 return
 
             total = len(result)
@@ -212,11 +223,10 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
             event = AlertEvent(
                 title="📊 股票筛选结果",
                 body=summary,
-                event_key=f"screener:result:{__import__('datetime').date.today()}",
+                event_key="screener:result",
                 event_type="screener_result",
             )
-            for ch in channels:
-                ch.send(event)
+            _push_event(event)
 
             # 保存 CSV
             output_dir = job_cfg.get("output_dir", "./output")
@@ -229,11 +239,10 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
             err_event = AlertEvent(
                 title="📊 股票筛选异常",
                 body=f"🚨 筛选执行失败: {e}",
-                event_key=f"screener:error:{__import__('datetime').date.today()}",
+                event_key="screener:error",
                 event_type="screener_error",
             )
-            for ch in channels:
-                ch.send(err_event)
+            _push_event(err_event)
 
     return _run
 
@@ -380,7 +389,15 @@ def build_scheduler(config: dict, scheduler_cls=None):
             # B23：包装一层 timing wrapper，运行时间超过阈值或触发器间隔的 80% 就告警
             interval_seconds = _estimate_interval_seconds(job_cfg)
             warn_threshold = max(60, interval_seconds * 0.8) if interval_seconds else None
-            func = _wrap_with_timing(raw_func, job_id or job_type, warn_threshold)
+            # TRIG-3：跳过非交易日（默认 buy_sell_alerts/screener 开启）
+            skip_non_trading = job_cfg.get(
+                "skip_non_trading_day",
+                job_type in ("buy_sell_alerts", "screener"),
+            )
+            func = _wrap_with_timing(
+                raw_func, job_id or job_type, warn_threshold,
+                skip_non_trading=skip_non_trading,
+            )
 
             trigger_type, trigger_kwargs = _parse_trigger(job_cfg)
             # B23：misfire_grace_time 改为可配，默认放大到 300s 适配抓取/筛选这种慢任务
@@ -396,7 +413,7 @@ def build_scheduler(config: dict, scheduler_cls=None):
             )
             logger.info(
                 f"[scheduler] 已注册 Job: {job_id} ({job_type}) → {trigger_type}={trigger_kwargs}, "
-                f"misfire_grace={misfire_grace}s"
+                f"misfire_grace={misfire_grace}s, skip_non_trading={skip_non_trading}"
             )
         except Exception as e:
             logger.error(f"[scheduler] Job [{job_id}] 注册失败: {e}", exc_info=True)
@@ -416,16 +433,50 @@ def _estimate_interval_seconds(job_cfg: dict) -> float | None:
     return None
 
 
+def _is_trading_day() -> bool:
+    """
+    简单判断今天是否为 A 股交易日（TRIG-3）。
+    排除：周末 + 主要法定假日（春节、国庆、元旦、清明、劳动节、端午、中秋）。
+    注意：这里使用硬编码的假日列表，每年需更新一次。
+    如需精确判断，可接入 exchange_calendars 库。
+    """
+    from datetime import date
+
+    today = date.today()
+    # 周末
+    if today.weekday() >= 5:
+        return False
+    # 中国法定假日（每年更新，此处为近几年常见假日月日模式）
+    md = (today.month, today.day)
+    # 元旦 1/1, 劳动节 5/1-5/5, 国庆 10/1-10/7
+    fixed_holidays = {
+        (1, 1),
+        (5, 1), (5, 2), (5, 3), (5, 4), (5, 5),
+        (10, 1), (10, 2), (10, 3), (10, 4), (10, 5), (10, 6), (10, 7),
+    }
+    if md in fixed_holidays:
+        return False
+    return True
+
+
 def _wrap_with_timing(func: Callable[[], Any], job_name: str,
-                     warn_threshold: float | None) -> Callable[[], Any]:
+                     warn_threshold: float | None,
+                     skip_non_trading: bool = False) -> Callable[[], Any]:
     """
     Job 执行计时 + 超时告警包装。
 
     B23：单次 Job 超过 warn_threshold（默认触发器间隔 80%）时记 warning，
     便于运维及早发现"任务跑不完"的退化。
+
+    TRIG-3：skip_non_trading=True 时，非交易日自动跳过。
     """
 
     def _wrapped():
+        if skip_non_trading and not _is_trading_day():
+            logger.info(
+                f"[scheduler] Job '{job_name}' 跳过（非交易日）"
+            )
+            return
         start = time.monotonic()
         try:
             return func()

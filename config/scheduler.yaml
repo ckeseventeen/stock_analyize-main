@@ -101,7 +101,7 @@ jobs:
   # 第一次启用前请先 `python -m src.ml.cli train` 完成初次训练
   - id: ml_retrain
     type: ml_retrain
-    enable: false              # 默认关闭，确认数据稳定后置 true
+    enable: true               # 已启用，每月 1 号自动重训
     cron: "0 18 1 * *"          # 每月 1 号 18:00
     timezone: "Asia/Shanghai"
     misfire_grace_time: 3600    # 重训慢，宽限 1 小时

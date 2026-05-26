@@ -1196,14 +1196,20 @@ class MLTopKCondition(BaseCondition):
             from src.ml.predictor import get_predictor
             predictor = get_predictor()
             if predictor is None:
-                logger.warning("ml_top_k 条件需要 ML 模型，未训练，跳过该条件（视为通过）")
-                return True
+                # 模型未训练时不应该静默放行，否则 _ml_scores 始终为空，top-K 截断永远不执行
+                logger.warning(
+                    "ml_top_k 条件需要 ML 模型但未训练，该条件返回 False。"
+                    "请先运行：python -m src.ml.cli train"
+                )
+                return False
             score = predictor.predict_from_daily_df(ohlcv_df)
             # 把分数挂到 spot_row 上，供 screener 做最终 top-K 排名
             try:
                 spot_row["_ml_score"] = score
             except Exception:
                 pass
+            # 同时保存到条件对象上，作为 spot_row 的备份
+            self.last_computed_score = score
             if self.min_score is not None and score < self.min_score:
                 return False
             # 真正的 top-K 截断在 screener pass2 完成后进行；这里先放行
@@ -1333,6 +1339,9 @@ CONDITION_CATEGORIES = {
     "风控/止损": [
         "stop_loss", "trailing_stop",
     ],
+    "ML/自学习": [
+        "ml_top_k",
+    ],
 }
 
 # 条件的中文标签
@@ -1369,6 +1378,7 @@ CONDITION_LABELS: dict[str, str] = {
     "trailing_stop": "移动止损",
     "volume_price_divergence": "量价背离",
     "northbound_flow": "北向资金净买入",
+    "ml_top_k": "ML预测排名Top-K",
 }
 
 

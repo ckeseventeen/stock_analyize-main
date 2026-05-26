@@ -55,7 +55,8 @@ def file_lock(lock_path: str | Path, timeout_seconds: float = 10.0, poll_interva
         while True:
             try:
                 if _IS_WINDOWS:
-                    # msvcrt 需要非零长度的字节区段；锁 1 字节足够
+                    # BUG-7 修复：获取锁前先 seek(0)，确保锁定的字节区段与释放时一致
+                    fd.seek(0)
                     msvcrt.locking(fd.fileno(), msvcrt.LK_NBLCK, 1)
                 else:
                     fcntl.flock(fd.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)

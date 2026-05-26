@@ -218,7 +218,7 @@ class BaseAnalyzer(ABC):
 
         # 6. 组装返回结果
         # S8：分位数置信度。样本 < 252 天（约 1 年）认为低置信度，<504 中等，否则高
-        hist_sample_size = len(hist_val) if 'hist_val' in dir() and hasattr(hist_val, '__len__') else 0
+        # BUG-3 修复：删除冗余的 dir() 检查，只保留 try/except
         try:
             hist_sample_size = len(hist_val)
         except Exception:

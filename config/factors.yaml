@@ -40,7 +40,7 @@ profiles:
       # 需要先训练：python -m src.ml.cli train
       # 调度器会按 scheduler.yaml 中的 ml_retrain job 月度自动重训
       - type: ml_score
-        enabled: false   # 默认关闭，训练完模型后置 true 启用
+        enabled: true    # 已启用，需先训练模型：python -m src.ml.cli train
         params: {}
   value_oriented:
     factors:

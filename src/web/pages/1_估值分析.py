@@ -116,7 +116,18 @@ with st.sidebar:
     default_val, default_range = "pe", [10, 20, 30]
     selected = None
 
-    if stocks:
+    # FE-1 修复：添加明确的输入模式切换，避免手动输入被列表覆盖
+    input_mode_options = ["📋 从关注列表选择", "✏️ 手动输入代码"]
+    if not stocks:
+        input_mode_options = ["✏️ 手动输入代码"]  # 无关注列表时只能手动
+    input_mode = st.radio(
+        "选股方式", options=input_mode_options,
+        horizontal=True, key="page1_input_mode",
+        label_visibility="collapsed",
+    )
+    use_watchlist = input_mode == "📋 从关注列表选择" and stocks
+
+    if use_watchlist:
         selected_code = searchable_select(
             "从关注列表选择",
             options=stocks,
@@ -132,18 +143,14 @@ with st.sidebar:
         default_name = selected["name"]
         default_val = selected.get("valuation", "pe")
         default_range = selected.get(f"{default_val}_range", [10, 20, 30])
+    else:
+        st.caption("手动输入股票代码和名称：")
 
-    # focus_stock 来自其他页跳转时覆盖
+    # focus_stock 来自其他页跳转时覆盖（仅在手动模式或 focus 来源匹配时生效）
     if _focus.get("code") and _focus.get("market") == market:
-        default_code = _focus["code"]
-        default_name = _focus.get("name", default_name)
-
-    # 仅当用户未在选择列表里选过股时显示"手动输入"
-    if not stocks or not selected_code:
-        st.caption("或手动输入：")
-        default_code, default_name, default_val, default_range = (
-            "", "", "pe", [10, 20, 30]
-        )
+        if not use_watchlist:
+            default_code = _focus["code"]
+            default_name = _focus.get("name", default_name)
 
     code = st.text_input("股票代码", value=default_code)
     name = st.text_input("股票名称", value=default_name)
@@ -154,7 +161,12 @@ with st.sidebar:
             "code": code.strip(), "name": name.strip(), "market": market,
         }
 
-    run_btn = st.button("▶️ 开始分析", type="primary", width="stretch")
+    # FE-2 修复：分离为两个按钮，避免一键同时拉取两个 Tab 的数据
+    btn_c1, btn_c2 = st.columns(2)
+    with btn_c1:
+        run_btn_val = st.button("📊 估值分析", type="primary", use_container_width=True)
+    with btn_c2:
+        run_btn_fcf = st.button("💰 FCF 分析", type="secondary", use_container_width=True)
 
     # ───── 估值专属：估值方式 + 档位 ─────
     with st.expander("📊 估值参数（仅估值 Tab 用）", expanded=True):
@@ -238,7 +250,7 @@ with tab_val:
         result = analyzer.process()
         return result, fin_df, hist_val_df, market_data
 
-    if run_btn:
+    if run_btn_val:
         if not code or not name:
             st.error("请填入股票代码和名称")
             st.stop()
@@ -372,7 +384,13 @@ with tab_val:
 
             # 核心指标总览数据表 (替换原来的 matplotlib 表格)
             st.subheader("📋 核心指标综合总览")
-            latest_year = str(fin_df.index[0].year) if fin_df is not None and not fin_df.empty else '-'
+            # BUG-5 修复：使用 result['annual_df'] 获取年份（其索引始终为 DatetimeIndex），
+            # 而非 fin_df（A 股原始 fin_df 索引可能是字符串）
+            _annual_df = result.get('annual_df')
+            if _annual_df is not None and not _annual_df.empty and hasattr(_annual_df.index, 'year'):
+                latest_year = str(_annual_df.index[-1].year)
+            else:
+                latest_year = '-'
             rev_val = result.get('ttm_revenue', 0) / 1e8
             np_val = result.get('ttm_net_profit', 0) / 1e8
             gm_val = 0.0
@@ -410,7 +428,7 @@ with tab_val:
             with raw_tab_real:
                 st.json(market_data)
     else:
-        st.info("👈 在左侧配置后点击「开始分析」生成估值报告")
+        st.info("👈 在左侧配置后点击「📊 估值分析」生成估值报告")
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -430,7 +448,7 @@ with tab_fcf:
         from src.core.market_registry import get_market
         try:
             spec = get_market(market)
-            FetcherCls = spec.fetcher_cls()
+            FetcherCls = spec.fetcher_cls
             with FetcherCls() as fetcher:
                 return fetcher.get_current_market_data(code).get("market_cap", 0.0)
         except Exception as e:
@@ -440,7 +458,7 @@ with tab_fcf:
     fcf_params = {"code": code.strip(), "market": market, "period": period}
     _fcf_state = load_result("fcf", code.strip(), market, fcf_params)
 
-    if run_btn:
+    if run_btn_fcf:
         if not code:
             st.warning("请输入股票代码")
         else:
@@ -589,4 +607,4 @@ with tab_fcf:
         else:
             st.info("FCF 分析结果为空")
     else:
-        st.info("👈 在左侧配置后点击「开始分析」生成 FCF 报告")
+        st.info("👈 在左侧配置后点击「💰 FCF 分析」生成 FCF 报告")

@@ -267,6 +267,8 @@ def quick_add_stock_widget(
                     f"✅ 已添加 {stock_entry['name']} ({code_s}) → "
                     f"{MARKET_LABELS[market]} / {cat_key_final}"
                 )
+                # FE-3 修复：清除缓存，确保 list_stocks_from_market_config 立即反映新数据
+                st.cache_data.clear()
                 triggered = True
             else:
                 st.error(f"添加失败: {msg}")

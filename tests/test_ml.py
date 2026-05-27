@@ -242,8 +242,8 @@ class TestMLFactorIntegration:
         result = factor.safe_calculate(data)
         assert np.isnan(result), "无模型时应返回 NaN"
 
-    def test_ml_top_k_condition_passes_when_no_model(self, synth_daily_300d, monkeypatch):
-        """ml_top_k 条件在模型不存在时应放行（视为通过）"""
+    def test_ml_top_k_condition_blocks_when_no_model(self, synth_daily_300d, monkeypatch):
+        """ml_top_k 条件在模型不存在时应返回 False（阻止无模型时静默放行）"""
         from src.analysis.screening.conditions import MLTopKCondition
         from src.ml import predictor as predictor_module
 
@@ -255,7 +255,7 @@ class TestMLFactorIntegration:
 
         cond = MLTopKCondition(top_k=50)
         spot_row = pd.Series({"代码": "600519", "名称": "测试"})
-        assert cond.evaluate_full(spot_row, synth_daily_300d) is True
+        assert cond.evaluate_full(spot_row, synth_daily_300d) is False
 
     def test_ml_top_k_in_condition_registry(self):
         from src.analysis.screening.conditions import CONDITION_REGISTRY

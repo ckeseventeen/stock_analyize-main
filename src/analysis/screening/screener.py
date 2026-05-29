@@ -155,6 +155,20 @@ class StockScreener:
         # 排序和截断
         if sort_by in result.columns:
             result = result.sort_values(sort_by, ascending=ascending)
+        else:
+            # 兜底：sort_by 列不存在（如数据源退化无总市值列）时，
+            # 退化到 代码 列排序并提示，避免静默无序
+            fallback_col = next(
+                (c for c in ("代码", "code", "最新价") if c in result.columns),
+                None,
+            )
+            if fallback_col is not None:
+                logger.warning(
+                    f"排序列 '{sort_by}' 不存在，退化到 '{fallback_col}'"
+                )
+                result = result.sort_values(fallback_col, ascending=ascending)
+            else:
+                logger.warning(f"排序列 '{sort_by}' 不存在，且无可用兜底列，跳过排序")
         result = result.head(limit).reset_index(drop=True)
 
         logger.info(f"筛选完成，共 {len(result)} 只股票符合条件")

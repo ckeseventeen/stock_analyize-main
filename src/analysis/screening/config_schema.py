@@ -117,6 +117,38 @@ _PARAM_MAP = {
         "top_k": "top_k",
         "min_score": "min_score",
     },
+    # Phase 5 卖出 / 回调预警
+    "weekly_macd_top_divergence": {
+        "lookback_bars": "lookback_bars",
+    },
+    "daily_macd_top_divergence": {
+        "lookback_bars": "lookback_bars",
+    },
+    "kdj_death_cross": {
+        "n": "n",
+        "m1": "m1",
+        "m2": "m2",
+        "j_threshold": "j_threshold",
+    },
+    "bias": {
+        "ma_period": "ma_period",
+        "threshold": "threshold",
+        "direction": "direction",
+    },
+    "break_below_ma": {
+        "ma_period": "ma_period",
+        "lookback": "lookback",
+    },
+    "volume_blowoff": {
+        "lookback_bars": "lookback_bars",
+        "vol_multiple": "vol_multiple",
+        "min_price_change_pct": "min_price_change_pct",
+    },
+    "atr_trailing_stop": {
+        "atr_period": "atr_period",
+        "multiplier": "multiplier",
+        "lookback": "lookback",
+    },
 }
 
 # 不适合回测的基本面/排除类条件（仅在实时 Spot 筛选时有效）

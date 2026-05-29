@@ -101,6 +101,9 @@ class PERangeCondition(BaseCondition):
         self.max_pe = max_pe
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        # 列缺失时跳过本条件（与 MarketCapCondition 一致），避免数据源退化时全表清零
+        if "市盈率-动态" not in spot_row.index:
+            return True
         pe = float(spot_row.get("市盈率-动态", 0) or 0)
         if pe <= 0:
             return False  # 排除亏损股（PE为负）
@@ -108,7 +111,7 @@ class PERangeCondition(BaseCondition):
 
     def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
         if "市盈率-动态" not in df.columns:
-            return pd.Series(False, index=df.index)
+            return pd.Series(True, index=df.index)
         pe = pd.to_numeric(df["市盈率-动态"], errors="coerce").fillna(0)
         return (pe > 0) & (pe >= self.min_pe) & (pe <= self.max_pe)
 
@@ -124,6 +127,8 @@ class PBRangeCondition(BaseCondition):
         self.max_pb = max_pb
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        if "市净率" not in spot_row.index:
+            return True
         pb = float(spot_row.get("市净率", 0) or 0)
         if pb <= 0:
             return False
@@ -131,7 +136,7 @@ class PBRangeCondition(BaseCondition):
 
     def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
         if "市净率" not in df.columns:
-            return pd.Series(False, index=df.index)
+            return pd.Series(True, index=df.index)
         pb = pd.to_numeric(df["市净率"], errors="coerce").fillna(0)
         return (pb > 0) & (pb >= self.min_pb) & (pb <= self.max_pb)
 
@@ -147,6 +152,8 @@ class PriceRangeCondition(BaseCondition):
         self.max_price = max_price
 
     def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        if "最新价" not in spot_row.index:
+            return True
         price = float(spot_row.get("最新价", 0) or 0)
         if price <= 0:
             return False
@@ -154,7 +161,7 @@ class PriceRangeCondition(BaseCondition):
 
     def evaluate_vectorized(self, df: pd.DataFrame) -> pd.Series:
         if "最新价" not in df.columns:
-            return pd.Series(False, index=df.index)
+            return pd.Series(True, index=df.index)
         p = pd.to_numeric(df["最新价"], errors="coerce").fillna(0)
         return (p > 0) & (p >= self.min_price) & (p <= self.max_price)
 
@@ -1263,6 +1270,341 @@ class NorthboundFlowCondition(BaseCondition):
 
 
 # ========================
+# 卖出 / 回调预警类条件（Phase 5 扩展）
+# ========================
+# 用于"个股卖点扫描"和回测的卖出信号。
+# 设计原则：与买入条件同结构（继承 BaseCondition），通过 SIGNAL_DIRECTION 标 "sell"。
+
+
+class WeeklyMACDTopDivergenceCondition(BaseCondition):
+    """
+    周线 MACD 顶背离 — 中期趋势衰竭信号
+
+    价格创新高但 MACD 柱状图未创新高。
+    在持仓 / 看顶判断时是高优先级信号。
+    """
+    name = "weekly_macd_top_divergence"
+    requires_ohlcv = True
+    ohlcv_period = "weekly"
+
+    def __init__(self, lookback_bars: int = 60):
+        self.lookback_bars = lookback_bars
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 20:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_macd()
+            detector = MACDDivergenceDetector(ta.get_dataframe())
+            return detector.detect_top_divergence(lookback_bars=self.lookback_bars)
+        except Exception as e:
+            logger.debug(f"周线顶背离检测异常: {e}")
+            return False
+
+
+class DailyMACDTopDivergenceCondition(BaseCondition):
+    """日线 MACD 顶背离 — 短期超买衰竭"""
+    name = "daily_macd_top_divergence"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, lookback_bars: int = 120):
+        self.lookback_bars = lookback_bars
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or ohlcv_df.empty or len(ohlcv_df) < 20:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_macd()
+            detector = MACDDivergenceDetector(ta.get_dataframe())
+            return detector.detect_top_divergence(lookback_bars=self.lookback_bars)
+        except Exception as e:
+            logger.debug(f"日线顶背离检测异常: {e}")
+            return False
+
+
+class KDJDeathCrossCondition(BaseCondition):
+    """
+    KDJ 死叉（高位）— 与 KDJGoldCrossCondition 对偶
+
+    K 下穿 D 且 J > j_threshold 视为有效（避免低位假死叉）
+    """
+    name = "kdj_death_cross"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, n: int = 9, m1: int = 3, m2: int = 3, j_threshold: float = 70):
+        self.n = n
+        self.m1 = m1
+        self.m2 = m2
+        self.j_threshold = j_threshold
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.n + 5:
+            return False
+        try:
+            df = ohlcv_df.copy()
+            rename = {"最高": "high", "最低": "low", "收盘": "close"}
+            df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+            if not all(c in df.columns for c in ("high", "low", "close")):
+                return False
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            close = pd.to_numeric(df["close"], errors="coerce")
+            low_n = low.rolling(self.n).min()
+            high_n = high.rolling(self.n).max()
+            rsv = (close - low_n) / (high_n - low_n) * 100
+            rsv = rsv.fillna(50)
+            k = rsv.ewm(alpha=1.0 / self.m1, adjust=False).mean()
+            d = k.ewm(alpha=1.0 / self.m2, adjust=False).mean()
+            j = 3 * k - 2 * d
+            if len(k) < 4:
+                return False
+            # 检查最近3根K线内死叉，且 J 处于高位（确认是高位死叉，非低位震荡）
+            for offset in range(3):
+                idx = -(offset + 1)
+                prev_idx = idx - 1
+                if abs(prev_idx) <= len(k):
+                    k_prev, d_prev = float(k.iloc[prev_idx]), float(d.iloc[prev_idx])
+                    k_curr, d_curr = float(k.iloc[idx]), float(d.iloc[idx])
+                    j_prev = float(j.iloc[prev_idx])
+                    if k_prev >= d_prev and k_curr < d_curr and j_prev > self.j_threshold:
+                        return True
+            return False
+        except Exception:
+            return False
+
+
+class BIASCondition(BaseCondition):
+    """
+    乖离率（BIAS）— 短线均值回归预警
+
+    BIAS = (close - MA_n) / MA_n × 100%
+    bias > threshold ⇒ 偏离均线过远，5-10 日内回踩概率 60-80%
+
+    A 股常用阈值：
+      - MA20: ±8% （短线敏感）
+      - MA60: ±15% （中线参考）
+    """
+    name = "bias"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, ma_period: int = 20, threshold: float = 8.0, direction: str = "above"):
+        """
+        Args:
+            ma_period: 均线周期
+            threshold: BIAS 百分比阈值（绝对值，如 8 = 8%）
+            direction: "above" 偏离向上（卖出信号）/ "below" 偏离向下（买入信号）/ "both" 任一方向
+        """
+        self.ma_period = ma_period
+        self.threshold = threshold
+        self.direction = direction
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.ma_period:
+            return False
+        try:
+            close_col = "close" if "close" in ohlcv_df.columns else "收盘"
+            if close_col not in ohlcv_df.columns:
+                return False
+            close = pd.to_numeric(ohlcv_df[close_col], errors="coerce")
+            ma = close.rolling(self.ma_period).mean()
+            last_close = float(close.iloc[-1])
+            last_ma = float(ma.iloc[-1])
+            if last_ma <= 0:
+                return False
+            bias_pct = (last_close - last_ma) / last_ma * 100
+            if self.direction == "above":
+                return bias_pct > self.threshold
+            if self.direction == "below":
+                return bias_pct < -self.threshold
+            return abs(bias_pct) > self.threshold
+        except Exception:
+            return False
+
+
+class BreakBelowMACondition(BaseCondition):
+    """
+    跌破均线 — 趋势破位预警
+
+    与 PriceAboveMACondition 对偶：
+    收盘价从均线之上跌破到均线之下。
+    """
+    name = "break_below_ma"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, ma_period: int = 60, lookback: int = 3):
+        """
+        Args:
+            ma_period: 均线周期（常用 20 / 60 / 250）
+            lookback: 最近 N 根 K 线内跌破即触发
+        """
+        self.ma_period = ma_period
+        self.lookback = max(1, lookback)
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.ma_period + self.lookback:
+            return False
+        try:
+            ta = TechnicalAnalyzer(ohlcv_df)
+            ta.add_moving_averages([self.ma_period])
+            df = ta.get_dataframe()
+            ma_col = f"ma_{self.ma_period}"
+            close_col = "close" if "close" in df.columns else "收盘"
+            if close_col not in df.columns or ma_col not in df.columns:
+                return False
+            recent = df.iloc[-(self.lookback + 1):].dropna(subset=[ma_col, close_col])
+            if len(recent) < 2:
+                return False
+            # 找最近一次"上一根在均线之上 且 这一根跌到均线之下"的转折
+            closes = recent[close_col].astype(float).values
+            mas = recent[ma_col].astype(float).values
+            for i in range(1, len(recent)):
+                if closes[i - 1] >= mas[i - 1] and closes[i] < mas[i]:
+                    return True
+            return False
+        except Exception:
+            return False
+
+
+class ATRTrailingStopCondition(BaseCondition):
+    """
+    ATR 动态移动止损（机构常用）
+
+    比固定百分比止损更自适应：
+    - 高波动股：止损线更宽，不容易被洗
+    - 低波动股：止损线更紧，避免无意义的回撤
+
+    触发条件: 收盘价 < (最近 N 日最高价 - K × ATR(period))
+    经验值: K=2.0~2.5, period=14
+    """
+    name = "atr_trailing_stop"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, atr_period: int = 14, multiplier: float = 2.5,
+                 lookback: int = 30):
+        """
+        Args:
+            atr_period: ATR 计算窗口
+            multiplier: K 值，2.0 紧 / 2.5 中 / 3.0 松
+            lookback: 移动止损"高点"的回溯窗口（30 日 = ~1.5 个月）
+        """
+        self.atr_period = atr_period
+        self.multiplier = multiplier
+        self.lookback = lookback
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < max(self.atr_period, self.lookback) + 1:
+            return False
+        try:
+            df = ohlcv_df.copy()
+            rename = {"最高": "high", "最低": "low", "收盘": "close"}
+            df.rename(columns={k: v for k, v in rename.items() if k in df.columns}, inplace=True)
+            if not all(c in df.columns for c in ("high", "low", "close")):
+                return False
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            close = pd.to_numeric(df["close"], errors="coerce")
+            prev_close = close.shift(1)
+
+            # True Range
+            tr = pd.concat([
+                high - low,
+                (high - prev_close).abs(),
+                (low - prev_close).abs(),
+            ], axis=1).max(axis=1)
+            atr = tr.rolling(self.atr_period).mean()
+
+            recent_high = high.tail(self.lookback).max()
+            cur_close = float(close.iloc[-1])
+            cur_atr = float(atr.iloc[-1])
+            if cur_atr <= 0 or pd.isna(cur_atr):
+                return False
+            stop_line = recent_high - self.multiplier * cur_atr
+            return bool(cur_close < stop_line)
+        except Exception:
+            return False
+
+
+class VolumeBlowoffCondition(BaseCondition):
+    """
+    天量天价 — 派发 / 顶部信号
+
+    单日成交量 > N 日均量 × 倍数，且当日有大涨。
+    经典的"天量见天价"信号，常出现于趋势末端的恐慌性买入。
+    """
+    name = "volume_blowoff"
+    requires_ohlcv = True
+    ohlcv_period = "daily"
+
+    def __init__(self, lookback_bars: int = 60, vol_multiple: float = 3.0,
+                 min_price_change_pct: float = 5.0):
+        """
+        Args:
+            lookback_bars: 均量回溯窗口
+            vol_multiple: 当日量 / 均量 倍数（默认 3 倍）
+            min_price_change_pct: 当日最小涨幅（默认 5%，配合放量才算 blowoff）
+        """
+        self.lookback_bars = lookback_bars
+        self.vol_multiple = vol_multiple
+        self.min_price_change_pct = min_price_change_pct
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        if ohlcv_df is None or len(ohlcv_df) < self.lookback_bars + 1:
+            return False
+        try:
+            vol_col = "成交量" if "成交量" in ohlcv_df.columns else "volume"
+            close_col = "close" if "close" in ohlcv_df.columns else "收盘"
+            if vol_col not in ohlcv_df.columns or close_col not in ohlcv_df.columns:
+                return False
+            vols = pd.to_numeric(ohlcv_df[vol_col], errors="coerce").fillna(0).values
+            closes = pd.to_numeric(ohlcv_df[close_col], errors="coerce").fillna(0).values
+            if len(vols) < 2 or len(closes) < 2:
+                return False
+            cur_vol = vols[-1]
+            avg_vol = vols[-(self.lookback_bars + 1):-1].mean()
+            if avg_vol <= 0:
+                return False
+            vol_ratio = cur_vol / avg_vol
+            if vol_ratio < self.vol_multiple:
+                return False
+            # 当日涨幅
+            prev_close = closes[-2]
+            if prev_close <= 0:
+                return False
+            chg_pct = (closes[-1] - prev_close) / prev_close * 100
+            return bool(chg_pct >= self.min_price_change_pct)
+        except Exception:
+            return False
+
+
+# ========================
 # 条件注册表（用于YAML配置解析）
 # ========================
 
@@ -1300,6 +1642,14 @@ CONDITION_REGISTRY: dict[str, type] = {
     "volume_price_divergence": VolumePriceDivergenceCondition,
     "northbound_flow": NorthboundFlowCondition,
     "ml_top_k": MLTopKCondition,
+    # 卖出 / 回调预警（Phase 5）
+    "weekly_macd_top_divergence": WeeklyMACDTopDivergenceCondition,
+    "daily_macd_top_divergence": DailyMACDTopDivergenceCondition,
+    "kdj_death_cross": KDJDeathCrossCondition,
+    "bias": BIASCondition,
+    "break_below_ma": BreakBelowMACondition,
+    "volume_blowoff": VolumeBlowoffCondition,
+    "atr_trailing_stop": ATRTrailingStopCondition,
 }
 
 
@@ -1319,11 +1669,12 @@ CONDITION_CATEGORIES = {
     ],
     "均线": [
         "price_above_ma", "multi_ma_bull", "ma_gold_cross",
-        "ma_death_cross", "support_ma",
+        "ma_death_cross", "support_ma", "break_below_ma",
     ],
     "MACD": [
         "weekly_macd_divergence", "daily_macd_divergence",
         "weekly_macd_gold_cross", "macd_hist_positive",
+        "weekly_macd_top_divergence", "daily_macd_top_divergence",
     ],
     "RSI": [
         "rsi_oversold", "rsi_overbought",
@@ -1332,12 +1683,16 @@ CONDITION_CATEGORIES = {
         "volume_break", "volume_shrink", "box_breakout",
         "box_breakout_volume", "downtrend_breakout",
         "bollinger_breakout", "volume_price_divergence",
+        "volume_blowoff",
     ],
     "KDJ": [
-        "kdj_gold_cross",
+        "kdj_gold_cross", "kdj_death_cross",
+    ],
+    "回调/超买": [
+        "bias",
     ],
     "风控/止损": [
-        "stop_loss", "trailing_stop",
+        "stop_loss", "trailing_stop", "atr_trailing_stop",
     ],
     "ML/自学习": [
         "ml_top_k",
@@ -1379,6 +1734,14 @@ CONDITION_LABELS: dict[str, str] = {
     "volume_price_divergence": "量价背离",
     "northbound_flow": "北向资金净买入",
     "ml_top_k": "ML预测排名Top-K",
+    # Phase 5 卖出 / 回调预警
+    "weekly_macd_top_divergence": "周线MACD顶背离",
+    "daily_macd_top_divergence": "日线MACD顶背离",
+    "kdj_death_cross": "KDJ高位死叉",
+    "bias": "乖离率(BIAS)",
+    "break_below_ma": "跌破均线",
+    "volume_blowoff": "天量天价(派发)",
+    "atr_trailing_stop": "ATR 动态止损",
 }
 
 
@@ -1410,9 +1773,18 @@ SIGNAL_DIRECTION: dict[str, str] = {
     "volume_shrink":            "sell",  # 缩量（疲软）
     "stop_loss":                "sell",
     "trailing_stop":            "sell",
+    # Phase 5 新增卖点
+    "weekly_macd_top_divergence": "sell",
+    "daily_macd_top_divergence":  "sell",
+    "kdj_death_cross":            "sell",
+    "break_below_ma":             "sell",
+    "volume_blowoff":             "sell",  # 天量天价派发
+    "atr_trailing_stop":          "sell",  # ATR 动态止损
+    # bias 看 direction 参数：above=sell, below=buy
     # ──────────── 中性（看方向参数）────────────
     "bollinger_breakout":       "neutral",   # direction=upper 买 / lower 卖
     "volume_price_divergence":  "neutral",   # direction=top 卖 / bottom 买
+    "bias":                     "neutral",   # direction=above 卖 / below 买
     # ──────────── Spot 类（既非买也非卖，是范围筛选） ────────────
     "market_cap":     "filter",
     "pe_range":       "filter",
@@ -1445,6 +1817,9 @@ def get_signal_direction(condition_type: str, params: dict | None = None) -> str
     if condition_type == "volume_price_divergence":
         # top 顶背离 = 偏空；bottom 底背离 = 偏多
         return "sell" if direction == "top" else "buy" if direction == "bottom" else "neutral"
+    if condition_type == "bias":
+        # above 偏离向上=偏空；below 偏离向下=偏多
+        return "sell" if direction == "above" else "buy" if direction == "below" else "neutral"
     return base
 
 

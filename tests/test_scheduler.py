@@ -142,9 +142,10 @@ class TestBuildScheduler:
 class TestJobBuilders:
     def test_all_builders_registered(self):
         # buy_sell_alerts 统一了原 price_monitor + batch_signal
+        # holding_monitor 是 Phase 4 新增（持仓预警推送）
         assert set(JOB_BUILDERS.keys()) == {
             "buy_sell_alerts", "earnings_monitor", "scraper",
-            "screener", "ml_retrain",
+            "screener", "ml_retrain", "holding_monitor",
         }
 
     def test_buy_sell_alerts_callable_runs_without_rules(self, tmp_path, monkeypatch):

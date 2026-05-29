@@ -117,6 +117,28 @@ def _build_earnings_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
     return _run
 
 
+def _build_holding_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
+    """构造 holding_monitor 可调用对象（Phase 4 持仓预警推送）"""
+
+    def _run():
+        from src.automation.alert import AlertStateStore, build_channels
+        from src.automation.monitor.holding_monitor import HoldingMonitor
+
+        alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
+        channels = build_channels(alerts_cfg)
+        store = AlertStateStore()
+        monitor = HoldingMonitor(
+            channels=channels,
+            state_store=store,
+            cooldown_hours=int(job_cfg.get("cooldown_hours", 8)),
+            holdings_path=job_cfg.get("holdings_path", "./config/holdings.yaml"),
+            enable_regime=bool(job_cfg.get("enable_regime", True)),
+        )
+        monitor.run()
+
+    return _run
+
+
 def _build_scraper_callable(job_cfg: dict) -> Callable[[], Any]:
     """
     构造 scraper 可调用对象。
@@ -295,6 +317,7 @@ def _build_ml_retrain_callable(job_cfg: dict) -> Callable[[], Any]:
 JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
     "buy_sell_alerts": _build_buy_sell_alerts_callable,
     "earnings_monitor": _build_earnings_monitor_callable,
+    "holding_monitor": _build_holding_monitor_callable,
     "scraper": _build_scraper_callable,
     "screener": _build_screener_callable,
     "ml_retrain": _build_ml_retrain_callable,

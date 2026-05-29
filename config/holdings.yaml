@@ -1,0 +1,36 @@
+default_alerts:
+  stop_loss_pct: 8.0
+  trailing_pct: 10.0
+  signal_threshold_pct: 60
+  enable_signal_alert: true
+  enable_l4_filter: true
+cash: 0.0
+holdings:
+  - code: '603005'
+    name: 晶方科技
+    market: a
+    qty: 2100
+    avg_cost: 30.0
+    buy_date: '2025-11-22'
+    tag: 电子-半导体-集成电路封测
+  - code: '600895'
+    name: 张江高科
+    market: a
+    qty: 800
+    avg_cost: 36.2
+    buy_date: '2026-05-29'
+    tag: 房地产-房地产-产业地产
+  - code: '603728'
+    name: 鸣志电器
+    market: a
+    qty: 900
+    avg_cost: 67.0
+    buy_date: '2026-05-29'
+    tag: 电力设备-电机-电机Ⅲ
+  - code: '002050'
+    name: 三花智控
+    market: a
+    qty: 1900
+    avg_cost: 50.0
+    buy_date: '2026-05-29'
+    tag: 家用电器-白色家电-家电零部件

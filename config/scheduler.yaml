@@ -41,6 +41,30 @@ jobs:
     earnings_config: "./config/earnings_monitor.yaml"
     alerts_config: "./config/alerts.yaml"
 
+  # ---------- 持仓监控（L1+L2+L4 卖出体系） ----------
+  # 每个交易日 09:25 开盘前 + 15:05 收盘后扫描所有持仓
+  # 触发 L1 止损 / L2 信号 ≥ 60% 时通过告警通道推送
+  # 启用前先在 config/holdings.yaml 配置持仓
+  - id: holding_monitor_open
+    type: holding_monitor
+    enable: false                              # 默认关闭，配置完持仓后改 true
+    cron: "25 9 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    holdings_path: "./config/holdings.yaml"
+    alerts_config: "./config/alerts.yaml"
+    cooldown_hours: 4                          # 同信号 4 小时内只推一次
+    enable_regime: true                        # 启用 L4 大盘环境守门员
+
+  - id: holding_monitor_close
+    type: holding_monitor
+    enable: false
+    cron: "5 15 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    holdings_path: "./config/holdings.yaml"
+    alerts_config: "./config/alerts.yaml"
+    cooldown_hours: 4
+    enable_regime: true
+
   # ---------- 新闻抓取 ----------
   # 每 30 分钟刷新财经新闻
   - id: news_scraper

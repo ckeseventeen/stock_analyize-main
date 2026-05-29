@@ -22,6 +22,8 @@ import pandas as pd
 
 from src.data.providers.baostock_provider import BaostockProvider
 from src.data.providers.cache_manager import CacheManager
+from src.data.providers.pytdx_provider import get_global_pytdx
+from src.data.providers.wencai_provider import WencaiProvider
 from src.utils.logger import get_logger
 
 logger = get_logger("screener_data")
@@ -29,6 +31,45 @@ logger = get_logger("screener_data")
 
 # 全局代理清理标志（一次性）
 _PROXY_CLEARED = False
+
+
+# ========================
+# akshare 主接口熔断器（process-wide）
+# ========================
+# 背景：akshare 主接口 stock_zh_a_spot_em() 与个股 K 线接口对东方财富的 IP/反爬
+# 敏感，出问题时每次重试要吃 ~7s × 3 = 21s 空等。失败累计达到阈值后进入冷却窗口，
+# 期间直接跳过主接口，提升体验。
+_AKSHARE_CB_FAIL_THRESHOLD = 2     # 连续失败 N 次进入熔断
+_AKSHARE_CB_COOL_SECONDS = 600     # 熔断冷却 10 分钟
+_akshare_cb_state = {"fail_count": 0, "cool_until": 0.0}
+
+
+def _akshare_circuit_open() -> bool:
+    """熔断器当前是否处于开启状态（直接短路调用）"""
+    return time.time() < _akshare_cb_state["cool_until"]
+
+
+def _akshare_record_fail() -> None:
+    """记一次主接口失败，达到阈值则开启熔断窗口"""
+    _akshare_cb_state["fail_count"] += 1
+    if _akshare_cb_state["fail_count"] >= _AKSHARE_CB_FAIL_THRESHOLD:
+        _akshare_cb_state["cool_until"] = time.time() + _AKSHARE_CB_COOL_SECONDS
+        logger.warning(
+            f"akshare 主接口连续失败 {_akshare_cb_state['fail_count']} 次，"
+            f"进入熔断冷却 {_AKSHARE_CB_COOL_SECONDS}s（其间直接走 Baostock）"
+        )
+
+
+def _akshare_record_success() -> None:
+    """成功后清零失败计数和冷却窗口"""
+    if _akshare_cb_state["fail_count"] or _akshare_cb_state["cool_until"]:
+        _akshare_cb_state["fail_count"] = 0
+        _akshare_cb_state["cool_until"] = 0.0
+
+
+# 全A 实时行情数据"够用"的最小字段集合：缺这些就视为数据源退化，
+# 触发上层走 Baostock 全字段路径，避免 PE/PB 等条件因字段缺失而把整张表清零。
+_SPOT_REQUIRED_COLUMNS = ("代码", "名称", "总市值")
 
 
 def _ensure_no_proxy_disable():
@@ -47,6 +88,15 @@ def _ensure_no_proxy_disable():
               "ALL_PROXY", "all_proxy"):
         os.environ.pop(k, None)
     os.environ["NO_PROXY"] = "*"
+    
+    # 彻底禁用 Windows 注册表代理设置，防止 urllib3 / requests 自动读取注册表代理
+    try:
+        import urllib.request
+        urllib.request.getproxies = lambda: {}
+        logger.debug("已重写 urllib.request.getproxies 以禁用注册表代理")
+    except Exception as e:
+        logger.warning(f"重写 urllib.request.getproxies 失败: {e}")
+
     _PROXY_CLEARED = True
     logger.debug("代理环境变量已全局禁用（一次清理，全进程生效）")
 
@@ -61,7 +111,7 @@ class ScreenerDataProvider:
         weekly_df = provider.get_weekly_ohlcv("600519")  # 单只周线
     """
 
-    def __init__(self, cache_dir: str = ".cache/screener", spot_ttl_hours: int = 1, ohlcv_ttl_hours: int = 4):
+    def __init__(self, cache_dir: str = ".cache/screener", spot_ttl_hours: int = 12, ohlcv_ttl_hours: int = 4):
         self._cache = CacheManager(cache_dir=cache_dir, ttl_hours=ohlcv_ttl_hours)
         self._spot_ttl = spot_ttl_hours
         self._ohlcv_ttl = ohlcv_ttl_hours
@@ -209,43 +259,102 @@ class ScreenerDataProvider:
 
         def _fetch_akshare():
             """akshare 主路径（代理已全局禁用，无需逐处包裹）"""
+            if _akshare_circuit_open():
+                logger.info("akshare 主接口处于熔断冷却中，跳过")
+                return pd.DataFrame()
             logger.info("正在通过 akshare 拉取全A股实时行情数据...")
-            df = ak.stock_zh_a_spot_em()
-            if df is not None and not df.empty:
-                logger.info(f"akshare 全A股实时行情拉取成功，共 {len(df)} 只股票")
-                df = df[~df["名称"].str.contains("ST|退市", na=False)]
-                for col in ("总市值", "流通市值", "市盈率-动态", "市净率", "换手率", "最新价", "涨跌幅", "振幅"):
-                    if col in df.columns:
-                        df[col] = pd.to_numeric(df[col], errors="coerce")
-                logger.info(f"过滤ST/退市后剩余 {len(df)} 只")
-                return df
+            for attempt in range(3):
+                try:
+                    df = ak.stock_zh_a_spot_em()
+                    if df is not None and not df.empty:
+                        # 字段完整性校验：缺关键列（如总市值）视为数据源退化
+                        missing = [c for c in _SPOT_REQUIRED_COLUMNS if c not in df.columns]
+                        if missing:
+                            logger.warning(
+                                f"akshare 主API返回数据缺关键字段 {missing}，视为失败"
+                            )
+                            _akshare_record_fail()
+                            return pd.DataFrame()
+                        logger.info(f"akshare 全A股实时行情拉取成功，共 {len(df)} 只股票")
+                        df = df[~df["名称"].str.contains("ST|退市", na=False)]
+                        for col in ("总市值", "流通市值", "市盈率-动态", "市净率", "换手率", "最新价", "涨跌幅", "振幅"):
+                            if col in df.columns:
+                                df[col] = pd.to_numeric(df[col], errors="coerce")
+                        logger.info(f"过滤ST/退市后剩余 {len(df)} 只")
+                        _akshare_record_success()
+                        return df
+                except Exception as e:
+                    logger.warning(f"akshare 主API拉取尝试 {attempt + 1}/3 失败: {e}")
+                    if attempt < 2:
+                        time.sleep(2)
             logger.warning("akshare 全A股实时行情数据为空")
+            _akshare_record_fail()
             return pd.DataFrame()
 
         def _fetch_akshare_fallback():
-            """akshare 备用 API：stock_zh_a_spot (老接口，数据结构不同但稳定)"""
+            """akshare 备用 API：stock_zh_a_spot (老接口，数据结构不同但稳定)
+
+            备用 API 通常只返回价格相关字段，**不含 总市值/PE/PB/换手率**。
+            为避免下游条件（PE/PB/MarketCap）因字段缺失行为退化，此处要求
+            必须含 _SPOT_REQUIRED_COLUMNS 才视为成功，否则返回空让外层兜底到
+            _fetch_baostock。
+            """
             logger.info("正在通过 akshare 备用API拉取全A股行情数据...")
-            df = ak.stock_zh_a_spot()
-            if df is not None and not df.empty:
-                logger.info(f"akshare 备用API拉取成功，共 {len(df)} 只股票")
-                # 列名映射到统一格式
-                col_map = {
-                    "code": "代码", "name": "名称", "trade": "最新价",
-                    "changepercent": "涨跌幅", "pe": "市盈率-动态",
-                    "mktcap": "总市值", "nmc": "流通市值",
-                }
-                df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
-                if "代码" in df.columns:
-                    df["代码"] = df["代码"].astype(str).str.zfill(6)
-                if "总市值" in df.columns:
-                    df["总市值"] = pd.to_numeric(df["总市值"], errors="coerce") * 1e4  # 万元→元
-                if "流通市值" in df.columns:
-                    df["流通市值"] = pd.to_numeric(df["流通市值"], errors="coerce") * 1e4
-                df = df[~df["名称"].str.contains("ST|退市", na=False)] if "名称" in df.columns else df
-                logger.info(f"过滤ST/退市后剩余 {len(df)} 只")
-                return df
+            for attempt in range(3):
+                try:
+                    df = ak.stock_zh_a_spot()
+                    if df is not None and not df.empty:
+                        # 列名映射到统一格式
+                        col_map = {
+                            "code": "代码", "name": "名称", "trade": "最新价",
+                            "changepercent": "涨跌幅", "pe": "市盈率-动态",
+                            "mktcap": "总市值", "nmc": "流通市值",
+                        }
+                        df = df.rename(columns={k: v for k, v in col_map.items() if k in df.columns})
+                        if "代码" in df.columns:
+                            df["代码"] = df["代码"].astype(str).str.zfill(6)
+                        if "总市值" in df.columns:
+                            df["总市值"] = pd.to_numeric(df["总市值"], errors="coerce") * 1e4  # 万元→元
+                        if "流通市值" in df.columns:
+                            df["流通市值"] = pd.to_numeric(df["流通市值"], errors="coerce") * 1e4
+                        df = df[~df["名称"].str.contains("ST|退市", na=False)] if "名称" in df.columns else df
+
+                        # 字段完整性校验：缺关键列就放弃，让外层走 Baostock
+                        missing = [c for c in _SPOT_REQUIRED_COLUMNS if c not in df.columns]
+                        if missing:
+                            logger.warning(
+                                f"akshare 备用API缺关键字段 {missing}（共拉到 {len(df)} 只）"
+                                f"，放弃改走 Baostock 以获取完整字段"
+                            )
+                            return pd.DataFrame()
+
+                        logger.info(f"akshare 备用API拉取成功，过滤ST/退市后剩余 {len(df)} 只")
+                        return df
+                except Exception as e:
+                    logger.warning(f"akshare 备用API拉取尝试 {attempt + 1}/3 失败: {e}")
+                    if attempt < 2:
+                        time.sleep(2)
             logger.warning("akshare 备用API数据也为空")
             return pd.DataFrame()
+
+        def _fetch_wencai():
+            """同花顺问财兜底：一次拉全A股 spot 数据，~40秒，含完整字段"""
+            try:
+                wp = WencaiProvider()
+                if not wp.is_available():
+                    return pd.DataFrame()
+                df = wp.get_all_a_shares()
+                if df is None or df.empty:
+                    return pd.DataFrame()
+                # 字段完整性校验（与 akshare 路径同标准）
+                missing = [c for c in _SPOT_REQUIRED_COLUMNS if c not in df.columns]
+                if missing:
+                    logger.warning(f"pywencai 返回缺关键字段 {missing}，放弃")
+                    return pd.DataFrame()
+                return df
+            except Exception as e:
+                logger.warning(f"WencaiProvider 失败: {type(e).__name__}: {e}")
+                return pd.DataFrame()
 
         def _fetch():
             # 优先 akshare（一次调用含总市值/PE/PB/换手率，完全覆盖 Spot 条件）
@@ -265,9 +374,19 @@ class ScreenerDataProvider:
             except Exception as e:
                 logger.warning(f"akshare 备用API也失败: {e}")
 
-            # 三级 fallback 到 Baostock
+            # 三级 fallback：同花顺问财（无 token，pywencai 直连 iWencai NLP）
+            # 比 Baostock 串行快 30 倍，且字段比 akshare 备用 API 更完整
             try:
-                logger.warning("akshare 全部失败，降级到 Baostock（将用 amount/turn 推算总市值）")
+                logger.info("akshare 全部失败，尝试同花顺问财...")
+                df = _fetch_wencai()
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                logger.warning(f"同花顺问财也失败: {e}")
+
+            # 四级 fallback 到 Baostock（最稳但最慢，5500只串行 ~20分钟）
+            try:
+                logger.warning("akshare/同花顺均失败，降级到 Baostock（5500只串行 ~20min）")
                 return _fetch_baostock()
             except Exception as e:
                 logger.error(f"Baostock fallback 也失败: {e}")
@@ -486,6 +605,16 @@ class ScreenerDataProvider:
         """akshare 美股历史行情"""
         return self._fetch_k_international_akshare(code, days_back, frequency, market="us")
 
+    def _fetch_k_pytdx(self, code: str, days_back: int, frequency: str) -> pd.DataFrame:
+        """通达信 pytdx K 线（并发安全）"""
+        try:
+            pytdx = get_global_pytdx()
+            if pytdx.is_available():
+                return pytdx.get_k_data(code, days_back=days_back, frequency=frequency)
+        except Exception as e:
+            logger.debug(f"{code} pytdx {frequency} 失败: {e}")
+        return pd.DataFrame()
+
     def _fetch_k_baostock(self, code: str, days_back: int, frequency: str) -> pd.DataFrame:
         """
         Baostock 拉 K 线。优先复用常驻 session，否则临时登录。
@@ -526,14 +655,20 @@ class ScreenerDataProvider:
         if market == "us":
             return self._fetch_k_us_akshare(code, days_back, frequency)
 
-        # A 股路径
+        # A 股路径：akshare → pytdx (并发安全) → Baostock (兜底)
         if prefer == "akshare":
             df = self._fetch_k_akshare(code, days_back, frequency)
+            if df is not None and not df.empty:
+                return df
+            df = self._fetch_k_pytdx(code, days_back, frequency)
             if df is not None and not df.empty:
                 return df
             return self._fetch_k_baostock(code, days_back, frequency)
         # prefer == baostock
         df = self._fetch_k_baostock(code, days_back, frequency)
+        if df is not None and not df.empty:
+            return df
+        df = self._fetch_k_pytdx(code, days_back, frequency)
         if df is not None and not df.empty:
             return df
         return self._fetch_k_akshare(code, days_back, frequency)
@@ -670,9 +805,16 @@ class ScreenerDataProvider:
             self._cache.set(cache_key, df)
             return code, True
 
+        # 采样探测：先并发跑前 SAMPLE 只，如果失败率高就跳过剩余 akshare 调用，
+        # 避免给东方财富做 4000+ 次空 HTTP（每只 ~20ms，总计可空耗 90s+）
+        SAMPLE_SIZE = 30
+        SAMPLE_FAIL_THRESHOLD = 0.8  # 失败率 ≥80% 则放弃 akshare
         if pending:
+            sample_codes = pending[:SAMPLE_SIZE]
+            rest_codes = pending[SAMPLE_SIZE:]
+
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_worker, c): c for c in pending}
+                futures = {pool.submit(_worker, c): c for c in sample_codes}
                 for fut in as_completed(futures):
                     code, ok = fut.result()
                     done_counter[0] += 1
@@ -682,11 +824,79 @@ class ScreenerDataProvider:
                         except Exception:
                             pass
 
-        # Baostock 兜底：对 akshare 失败的 code 串行补拉（复用 session）
-        if ak_failed:
-            logger.info(f"akshare 失败 {len(ak_failed)} 只，用 Baostock 串行补拉...")
+            sample_done = len(sample_codes)
+            sample_fail = sum(1 for c in sample_codes if c in ak_failed)
+            sample_fail_rate = sample_fail / max(sample_done, 1)
+
+            if rest_codes and sample_fail_rate >= SAMPLE_FAIL_THRESHOLD:
+                # akshare 不可用，剩下的直接进入 Baostock 兜底队列
+                logger.warning(
+                    f"akshare K 线探针失败率 {sample_fail_rate:.0%} "
+                    f"({sample_fail}/{sample_done})，跳过剩余 {len(rest_codes)} 只 akshare 调用，"
+                    f"直接走 Baostock 兜底"
+                )
+                with ak_failed_lock:
+                    ak_failed.extend(rest_codes)
+                done_counter[0] += len(rest_codes)
+                if progress_callback:
+                    for c in rest_codes:
+                        try:
+                            progress_callback(done_counter[0], total, c)
+                        except Exception:
+                            pass
+            elif rest_codes:
+                # 探针通过，剩余股票正常走 akshare 并发
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {pool.submit(_worker, c): c for c in rest_codes}
+                    for fut in as_completed(futures):
+                        code, ok = fut.result()
+                        done_counter[0] += 1
+                        if progress_callback:
+                            try:
+                                progress_callback(done_counter[0], total, code)
+                            except Exception:
+                                pass
+
+        # 兜底阶段：先用 pytdx 并发补拉（快 30 倍），剩余失败再走 Baostock 串行
+        bs_failed: list[str] = []
+        if ak_failed and market == "a":
+            pytdx = get_global_pytdx()
+            if pytdx.is_available():
+                logger.info(
+                    f"akshare 失败 {len(ak_failed)} 只，先用 pytdx 并发补拉 "
+                    f"(workers={max_workers})..."
+                )
+                pytdx_failed_lock = Lock()
+
+                def _pytdx_worker(code: str):
+                    cache_key = f"{period}_{market}_{code}_{days_back}"
+                    df = pytdx.get_k_data(code, days_back=days_back, frequency=frequency)
+                    if df is None or df.empty:
+                        with pytdx_failed_lock:
+                            bs_failed.append(code)
+                        return code, False
+                    self._cache.set(cache_key, df)
+                    return code, True
+
+                t_pytdx = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {pool.submit(_pytdx_worker, c): c for c in ak_failed}
+                    for fut in as_completed(futures):
+                        fut.result()
+                logger.info(
+                    f"pytdx 补拉完成: 命中 {len(ak_failed) - len(bs_failed)}/{len(ak_failed)}, "
+                    f"剩余 {len(bs_failed)} 只交 Baostock, 耗时 {time.perf_counter() - t_pytdx:.1f}s"
+                )
+            else:
+                bs_failed = list(ak_failed)
+        else:
+            bs_failed = list(ak_failed)
+
+        # 最终兜底：Baostock 串行（复用 session）
+        if bs_failed:
+            logger.info(f"还有 {len(bs_failed)} 只 pytdx 也失败，用 Baostock 串行补拉...")
             with self.session():
-                for code in ak_failed:
+                for code in bs_failed:
                     cache_key = f"{period}_{market}_{code}_{days_back}"
                     df = self._fetch_k_baostock(code, days_back, frequency)
                     if df is not None and not df.empty:

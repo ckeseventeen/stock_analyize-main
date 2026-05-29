@@ -142,9 +142,28 @@ class BaostockProvider:
             for c in cols:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df
-
     def get_all_stocks(self, date=None):
-        return self._safe_query(bs.query_all_stock, day=date or datetime.now().strftime("%Y-%m-%d"))
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        df = self._safe_query(bs.query_all_stock, day=target_date)
+        if not df.empty:
+            return df
+        
+        # If the query for the specified (or default today's) date returns an empty DataFrame,
+        # fallback up to 7 previous days to find the latest valid historical trading day.
+        logger.info(f"Baostock query_all_stock for {target_date} returned empty. Trying previous days...")
+        try:
+            curr = datetime.strptime(target_date, "%Y-%m-%d")
+        except ValueError:
+            curr = datetime.now()
+            
+        for i in range(1, 8):
+            prev_date = (curr - timedelta(days=i)).strftime("%Y-%m-%d")
+            df = self._safe_query(bs.query_all_stock, day=prev_date)
+            if not df.empty:
+                logger.info(f"Successfully retrieved all stocks from Baostock using date: {prev_date}")
+                return df
+                
+        return pd.DataFrame()
 
     def get_valuation_history(self, code, days_back=365*5, val_type="pe"):
         f = {"pe": "peTTM", "pb": "pbMRQ", "ps": "psTTM"}.get(val_type, "peTTM")

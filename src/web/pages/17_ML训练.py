@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[3]
@@ -138,9 +139,13 @@ if is_running:
     if run_info.get("log_mtime"):
         last_update = time.time() - run_info["log_mtime"]
         st.caption(f"日志最近更新于 {last_update:.0f} 秒前")
-    if st.button("🔄 刷新页面查看进度"):
+    # Bug 修：两个按钮平铺一行，避免点击逻辑分散
+    c_refresh, c_stop, _ = st.columns([1, 1, 4])
+    refresh_btn = c_refresh.button("🔄 刷新进度")
+    stop_btn = c_stop.button("🛑 终止训练", type="secondary")
+    if refresh_btn:
         st.rerun()
-    if st.button("🛑 终止训练", type="secondary"):
+    if stop_btn:
         pid = st.session_state.get("ml_train_pid")
         if pid:
             try:
@@ -162,11 +167,9 @@ else:
             "股票数上限", min_value=0, value=30, step=10,
             help="0 = 全沪深 300（~300 只，20-30 分钟）；调试用 30",
         )
-        start_date = c2.date_input("数据起点", value=pd.Timestamp("2022-01-01"))
-        end_date = c3.date_input(
-            "数据终点（None=今天）",
-            value=pd.Timestamp.now(),
-        )
+        # Bug 修：date_input 严格要求 datetime.date，传 pd.Timestamp 部分 Streamlit 版本会报错
+        start_date = c2.date_input("数据起点", value=date(2022, 1, 1))
+        end_date = c3.date_input("数据终点（None=今天）", value=date.today())
         d1, d2, d3 = st.columns(3)
         horizon = d1.number_input("标签时间窗（天）", 5, 60, 20,
                                     help="预测未来 N 日超额收益。20 ≈ 1 月（默认），60 = 3 月")
@@ -206,8 +209,8 @@ else:
                     )
                 st.session_state["ml_train_pid"] = proc.pid
                 st.session_state["ml_train_start"] = time.time()
-                st.success(f"✅ 训练已启动 (PID {proc.pid})。每隔几秒刷新查看进度。")
-                time.sleep(1)
+                st.success(f"✅ 训练已启动 (PID {proc.pid})。每隔几秒点「刷新进度」查看。")
+                # Bug 修：去掉 time.sleep(1) — 会阻塞 Streamlit server worker
                 st.rerun()
             except Exception as e:
                 st.error(f"启动失败: {e}")
@@ -236,9 +239,10 @@ if LOG_PATH.exists() and LOG_PATH.stat().st_size > 0:
     except Exception as e:
         st.error(f"读取日志失败: {e}")
 
-    if is_running and st.checkbox("自动刷新（每 5 秒）", value=True):
-        time.sleep(5)
-        st.rerun()
+    # Bug 修：去掉 time.sleep(5) — 会阻塞 Streamlit worker，多页签场景报错
+    # 训练时点上面的「🔄 刷新进度」按钮手动刷新
+    if is_running:
+        st.caption("💡 训练进行中。点上方「🔄 刷新进度」按钮查看最新日志。")
 else:
     st.info("还没有训练日志。点击「开始训练」生成。")
 

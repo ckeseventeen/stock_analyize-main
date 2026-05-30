@@ -16,6 +16,8 @@ _ROOT = Path(__file__).resolve().parents[3]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
+from datetime import date, datetime  # noqa: E402
+
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
@@ -50,21 +52,38 @@ if not pf.holdings:
     st.info("👉 当前没有持仓。下方添加一只开始监控。")
 
 # 侧边栏：全局默认提醒
+# Bug 修：包到 st.form 避免拖动 slider 每次都 rerun（之前重跑 L4 大盘+所有 K 线）
+# Bug 修：保存时 merge 而非 replace，避免删除 enable_l4_filter 等本表单未显示的字段
 with st.sidebar:
     st.markdown("### ⚙️ 全局默认提醒")
-    g = pf.default_alerts
-    new_stop = st.number_input("固定止损(%)", 0.0, 50.0, float(g.get("stop_loss_pct", 8.0)), 0.5)
-    new_trail = st.number_input("移动止盈(%)", 0.0, 50.0, float(g.get("trailing_pct", 10.0)), 0.5)
-    new_threshold = st.number_input("信号告警分(%)", 0.0, 100.0, float(g.get("signal_threshold_pct", 60)), 5.0)
-    new_enable = st.checkbox("启用 L2 信号告警", value=bool(g.get("enable_signal_alert", True)))
+    with st.form("global_defaults_form"):
+        g = pf.default_alerts or {}
+        new_stop = st.number_input(
+            "固定止损(%)", 0.0, 50.0, float(g.get("stop_loss_pct", 8.0)), 0.5
+        )
+        new_trail = st.number_input(
+            "移动止盈(%)", 0.0, 50.0, float(g.get("trailing_pct", 10.0)), 0.5
+        )
+        new_threshold = st.number_input(
+            "信号告警分(%)", 0.0, 100.0, float(g.get("signal_threshold_pct", 60)), 5.0
+        )
+        new_enable = st.checkbox(
+            "启用 L2 信号告警",
+            value=bool(g.get("enable_signal_alert", True)),
+        )
+        save_global = st.form_submit_button("💾 保存全局默认",
+                                              use_container_width=True)
 
-    if st.button("💾 保存全局默认", width="stretch"):
-        pf.default_alerts = {
+    if save_global:
+        # merge：保留本表单未涉及的字段（如 enable_l4_filter / 用户自加字段）
+        merged = dict(pf.default_alerts or {})
+        merged.update({
             "stop_loss_pct": new_stop,
             "trailing_pct": new_trail,
             "signal_threshold_pct": new_threshold,
             "enable_signal_alert": new_enable,
-        }
+        })
+        pf.default_alerts = merged
         if mgr.save(pf):
             st.success("已保存")
             st.rerun()
@@ -72,8 +91,10 @@ with st.sidebar:
             st.error("保存失败")
 
     st.divider()
-    auto_run = st.checkbox("打开页面自动扫描", value=True,
-                            help="关闭以加速页面加载；改为手动点扫描")
+    auto_run = st.checkbox(
+        "打开页面自动扫描", value=True,
+        help="关闭以加速页面加载；改为手动点扫描",
+    )
 
 
 # ========================
@@ -423,14 +444,29 @@ with tab_add:
         new_notes = c2.text_input("备注")
         submitted = st.form_submit_button("添加", type="primary")
         if submitted:
-            if not new_code.isdigit() or len(new_code) != 6:
-                st.error("代码必须是 6 位数字")
+            # Bug 修：按 market 校验代码格式
+            # A 股 6 位数字；港股 4-5 位数字；美股 1-5 字母
+            code_clean = new_code.strip().upper() if new_market == "us" else new_code.strip()
+            code_valid = False
+            err_hint = ""
+            if new_market == "a":
+                code_valid = code_clean.isdigit() and len(code_clean) == 6
+                err_hint = "A 股代码必须是 6 位数字（如 600519）"
+            elif new_market == "hk":
+                code_valid = code_clean.isdigit() and 4 <= len(code_clean) <= 5
+                err_hint = "港股代码必须是 4-5 位数字（如 00700 / 9988）"
+            elif new_market == "us":
+                code_valid = code_clean.isalpha() and 1 <= len(code_clean) <= 5
+                err_hint = "美股代码必须是 1-5 个字母（如 AAPL / TSLA）"
+
+            if not code_valid:
+                st.error(err_hint)
             elif new_qty == 0 or new_cost <= 0:
                 st.error("数量和成本价必须 > 0")
             else:
                 h = Holding(
-                    code=new_code,
-                    name=new_name or new_code,
+                    code=code_clean,
+                    name=new_name or code_clean,
                     market=new_market,
                     qty=int(new_qty),
                     avg_cost=float(new_cost),
@@ -453,11 +489,19 @@ with tab_edit:
         sel = st.selectbox("选择持仓", options=range(len(codes)),
                            format_func=lambda i: codes[i], key="edit_sel")
         h = pf.holdings[sel]
+        # Bug 修：把 h.buy_date 字符串解析成 date 对象给 date_input
+        try:
+            initial_buy_date = (datetime.strptime(h.buy_date, "%Y-%m-%d").date()
+                                 if h.buy_date else date.today())
+        except ValueError:
+            initial_buy_date = date.today()
+
         with st.form("edit_form"):
             e1, e2, e3 = st.columns(3)
             new_qty = e1.number_input("数量", value=h.qty, step=100)
             new_cost = e2.number_input("成本价", value=h.avg_cost, step=0.01, format="%.4f")
-            new_buy_date = e3.text_input("买入日期 (YYYY-MM-DD)", value=h.buy_date)
+            # Bug 修：原 text_input 易输入非法日期 (如 2024-13-01) → 渲染时 holding_days() crash
+            new_buy_date = e3.date_input("买入日期", value=initial_buy_date)
             f1, f2 = st.columns(2)
             new_tag = f1.text_input("标签", value=h.tag)
             new_notes = f2.text_input("备注", value=h.notes)
@@ -475,7 +519,7 @@ with tab_edit:
                 updates = {
                     "qty": int(new_qty),
                     "avg_cost": float(new_cost),
-                    "buy_date": new_buy_date.strip(),
+                    "buy_date": new_buy_date.isoformat(),
                     "tag": new_tag,
                     "notes": new_notes,
                 }
@@ -512,8 +556,11 @@ with tab_delete:
         sel = st.selectbox("选择持仓", options=range(len(codes)),
                            format_func=lambda i: codes[i], key="del_sel")
         h = pf.holdings[sel]
-        confirm = st.checkbox(f"我确认删除 {h.code} {h.name}", key="del_confirm")
-        if st.button("🗑️ 删除", type="secondary"):
+        # Bug 修：包到 form 里，避免勾选 checkbox 触发整页 rerun
+        with st.form(f"delete_form_{h.code}"):
+            confirm = st.checkbox(f"我确认删除 {h.code} {h.name}")
+            submit_delete = st.form_submit_button("🗑️ 删除", type="secondary")
+        if submit_delete:
             if not confirm:
                 st.warning("请先勾选确认")
             else:

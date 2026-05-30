@@ -28,6 +28,48 @@ from src.utils.logger import get_logger
 
 logger = get_logger("ml.dataset")
 
+
+# 给 Baostock 调用加 wall-clock 超时（库本身无 timeout 控制，限频时会 hang）
+# 用 ThreadPoolExecutor 包装实现强制超时
+_BAOSTOCK_TIMEOUT_POOL = None
+
+
+def _baostock_with_timeout(code: str, start_date: str, end_date: str,
+                             fields: str, timeout: float = 8.0):
+    """
+    用 ThreadPoolExecutor + future.result(timeout) 给 Baostock 加超时。
+    避免服务端限频时进程无限挂住。
+
+    超时返回 None，调用方自己处理。
+    """
+    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
+    global _BAOSTOCK_TIMEOUT_POOL
+    if _BAOSTOCK_TIMEOUT_POOL is None:
+        _BAOSTOCK_TIMEOUT_POOL = ThreadPoolExecutor(max_workers=2,
+                                                      thread_name_prefix="bs-timeout")
+
+    def _call():
+        from src.data.providers.baostock_provider import BaostockProvider
+        with BaostockProvider() as bp:
+            return bp.get_k_data(
+                code,
+                start_date=start_date,
+                end_date=end_date,
+                frequency="d",
+                fields=fields,
+            )
+
+    fut = _BAOSTOCK_TIMEOUT_POOL.submit(_call)
+    try:
+        return fut.result(timeout=timeout)
+    except FT:
+        logger.debug(f"{code} Baostock {fields} 超时 {timeout}s")
+        # 不能 cancel 已经在跑的 worker，但让它自然 die，避免阻塞主线程
+        return None
+    except Exception as e:
+        logger.debug(f"{code} Baostock 调用异常: {e}")
+        return None
+
 # 输出根目录
 _DEFAULT_OUTPUT_DIR = Path("./cache/ml_dataset")
 
@@ -57,21 +99,25 @@ class DatasetBuilder:
 
     # ---------------- 数据源 ----------------
 
+    def _get_screener_provider(self):
+        """延迟创建 ScreenerDataProvider 单例（akshare→pytdx→Baostock 三级 fallback）"""
+        if not hasattr(self, "_screener_provider"):
+            from src.analysis.screening.data_provider import ScreenerDataProvider
+            self._screener_provider = ScreenerDataProvider()
+        return self._screener_provider
+
     def fetch_csi300_codes(self) -> list[str]:
-        """拉沪深 300 成分股代码"""
+        """拉沪深 300 成分股代码 — 复用 ScreenerDataProvider 的 scope_codes 接口"""
         cache_key = "csi300_codes"
 
         def _fetch() -> list[str]:
             try:
-                import akshare as ak
-                df = ak.index_stock_cons_csindex(symbol="000300")
-                if df is None or df.empty:
+                provider = self._get_screener_provider()
+                codes_set = provider.get_scope_codes(["csi300"])
+                if not codes_set:
+                    logger.warning("沪深 300 成分股拉取返回空")
                     return []
-                col = next((c for c in ("成分券代码", "代码", "ConstCode") if c in df.columns), None)
-                if col is None:
-                    logger.warning(f"沪深300成分股 DataFrame 缺关键列: {df.columns.tolist()}")
-                    return []
-                return [str(c).zfill(6) for c in df[col].tolist()]
+                return sorted(str(c).zfill(6) for c in codes_set)
             except Exception as e:
                 logger.error(f"拉取沪深 300 成分股失败: {e}", exc_info=True)
                 return []
@@ -81,50 +127,218 @@ class DatasetBuilder:
         return codes or []
 
     def fetch_daily_ohlcv(self, code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """拉单只股票日线（带缓存）"""
+        """
+        拉单只股票日线 — 优先 pytdx（不限频，800 条 ≈ 3.2 年活跃股），
+        失败兜底 Baostock（带 socket timeout，避免限频时卡死）。
+
+        训练数据范围建议 2023-01 起（pytdx 800 条够）。
+        """
         cache_key = f"daily_{code}_{start_date}_{end_date}"
 
         def _fetch() -> pd.DataFrame:
+            # 1. pytdx 优先（无限频，~40ms/只）
             try:
-                import akshare as ak
-                df = ak.stock_zh_a_hist(
-                    symbol=code, period="daily",
-                    start_date=start_date.replace("-", ""),
-                    end_date=end_date.replace("-", ""),
-                    adjust="qfq",
+                from src.data.providers.pytdx_provider import get_global_pytdx
+                pytdx = get_global_pytdx()
+                if pytdx.is_available():
+                    df = pytdx.get_k_data(code, days_back=800, frequency="d")
+                    if df is not None and not df.empty:
+                        # pytdx 日期带 15:00:00 时分，下游 merge 时要求纯日期
+                        df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
+                        start = pd.to_datetime(start_date)
+                        end = pd.to_datetime(end_date)
+                        df = df[(df["日期"] >= start) & (df["日期"] <= end)]
+                        if not df.empty:
+                            return df.sort_values("日期").reset_index(drop=True)
+            except Exception as e:
+                logger.debug(f"{code} pytdx K 线失败: {e}")
+
+            # 2. Baostock 兜底（受限频风险，加 5s 超时）
+            try:
+                df = _baostock_with_timeout(
+                    code, start_date, end_date,
+                    fields="date,open,high,low,close,volume,amount,turn",
+                    timeout=5,
                 )
                 if df is None or df.empty:
                     return pd.DataFrame()
+                df = df.rename(columns={
+                    "date": "日期", "open": "开盘", "high": "最高",
+                    "low": "最低", "close": "收盘",
+                    "volume": "成交量", "amount": "成交额", "turn": "换手率",
+                })
                 df["日期"] = pd.to_datetime(df["日期"])
-                df = df.sort_values("日期").reset_index(drop=True)
-                return df
+                return df.sort_values("日期").reset_index(drop=True)
             except Exception as e:
-                logger.debug(f"{code} 日线拉取失败: {e}")
+                logger.debug(f"{code} Baostock K 线失败: {e}")
                 return pd.DataFrame()
 
         return self.cache.get_or_fetch(cache_key, _fetch)
 
+    def fetch_valuation_history(self, code: str, start_date: str,
+                                  end_date: str) -> pd.DataFrame:
+        """
+        拉单只股票历史估值（PE/PB/PS）+ 换手率 — Baostock + 10s 超时
+
+        返回列 [date, pe_ttm, pb_mrq, ps_ttm, turn]，date 为 normalized datetime（00:00）。
+        turn = 当日换手率 % — pytdx 不带这个字段，所以一起从 Baostock 拉。
+        超时返回空 DataFrame，下游用 NaN 占位（LightGBM 容忍）。
+        """
+        cache_key = f"valuation_{code}_{start_date}_{end_date}_v2"  # v2: 加了 turn
+
+        def _fetch() -> pd.DataFrame:
+            df = _baostock_with_timeout(
+                code, start_date, end_date,
+                fields="date,peTTM,pbMRQ,psTTM,turn",
+                timeout=10,
+            )
+            if df is None or df.empty:
+                return pd.DataFrame()
+            df = df.rename(columns={
+                "peTTM": "pe_ttm",
+                "pbMRQ": "pb_mrq",
+                "psTTM": "ps_ttm",
+            })
+            df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+            for col in ("pe_ttm", "pb_mrq", "ps_ttm", "turn"):
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors="coerce")
+            df.loc[df["pe_ttm"] <= 0, "pe_ttm"] = np.nan
+            df.loc[df["ps_ttm"] <= 0, "ps_ttm"] = np.nan
+            df.loc[df["pb_mrq"] <= 0, "pb_mrq"] = np.nan
+            return df.sort_values("date").reset_index(drop=True)
+
+        return self.cache.get_or_fetch(cache_key, _fetch)
+
+    @staticmethod
+    def _compute_valuation_features(df_val: pd.DataFrame) -> pd.DataFrame:
+        """
+        在 daily 估值序列上派生 ML 特征。
+
+        每个估值指标产生 3 个特征：
+          - {indicator}: 当日绝对值
+          - {indicator}_z252: 250 日 Z-score（[价值 - 250日均值] / 250日标准差）
+                              ≈ 该股票自身估值历史区间内的相对位置（核心特征）
+          - {indicator}_chg_60d: 60 日相对变化率 %（估值趋势）
+
+        共 9 个特征（pe / pb / ps × 3）
+
+        Z-score 比绝对值好的原因：消费股 PE 通常 30+ 而银行股 5-10，
+        绝对值对模型是噪音；自身历史的偏离才有"贵了/便宜了"的语义。
+        """
+        if df_val is None or df_val.empty:
+            return pd.DataFrame()
+
+        out = pd.DataFrame({"date": df_val["date"]})
+        for col in ("pe_ttm", "pb_mrq", "ps_ttm"):
+            if col not in df_val.columns:
+                continue
+            series = df_val[col]
+            out[col] = series
+            # 250 日 Z-score
+            roll_mean = series.rolling(252, min_periods=60).mean()
+            roll_std = series.rolling(252, min_periods=60).std()
+            out[f"{col}_z252"] = (series - roll_mean) / roll_std.replace(0, np.nan)
+            # 60 日变化率
+            out[f"{col}_chg_60d"] = (series / series.shift(60) - 1) * 100
+
+        return out
+
+    @staticmethod
+    def _fetch_index_kline_raw(code: str, start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        拉指数日线（不走缓存层）
+
+        三级 fallback：
+          1. akshare 新浪 stock_zh_index_daily（symbol 需要 sh/sz 前缀）
+          2. pytdx 直连（指数 market: 000xxx=sh=1, 399xxx=sz=0）
+          3. Baostock K-data（指数代码格式 sh.000300 / sz.399006）
+
+        Returns:
+            DataFrame，列含 日期 / 收盘（中文）
+        """
+        # 1. akshare 新浪（指数专用接口）
+        try:
+            import akshare as ak
+            # 上证指数 / 沪深300 等用 sh 前缀；深证 / 创业板 等用 sz
+            symbol = ("sz" if code.startswith("399") else "sh") + code
+            df = ak.stock_zh_index_daily(symbol=symbol)
+            if df is not None and not df.empty:
+                df = df.rename(columns={"date": "日期", "close": "收盘"})
+                df["日期"] = pd.to_datetime(df["日期"])
+                start = pd.to_datetime(start_date)
+                end = pd.to_datetime(end_date)
+                df = df[(df["日期"] >= start) & (df["日期"] <= end)]
+                if not df.empty:
+                    return df.reset_index(drop=True)
+        except Exception as e:
+            logger.debug(f"指数 {code} akshare 新浪失败: {e}")
+
+        # 2. pytdx 直连（修正指数 market）
+        try:
+            from pytdx.hq import TdxHq_API
+            from src.data.providers.pytdx_provider import get_global_pytdx
+            pytdx = get_global_pytdx()
+            if pytdx.is_available() and pytdx._working_servers:
+                ip, port = pytdx._working_servers[0]
+                api = TdxHq_API()
+                if api.connect(ip, port, time_out=3):
+                    # 上证指数 market=1，深证指数 market=0
+                    market = 0 if code.startswith("399") else 1
+                    bars = api.get_index_bars(category=9, market=market, code=code,
+                                                 start=0, count=800)
+                    api.disconnect()
+                    if bars:
+                        df = pd.DataFrame(bars)
+                        df = df.rename(columns={"datetime": "日期", "close": "收盘"})
+                        df["日期"] = pd.to_datetime(df["日期"])
+                        df = df.sort_values("日期")
+                        start = pd.to_datetime(start_date)
+                        end = pd.to_datetime(end_date)
+                        df = df[(df["日期"] >= start) & (df["日期"] <= end)]
+                        if not df.empty:
+                            return df.reset_index(drop=True)
+        except Exception as e:
+            logger.debug(f"指数 {code} pytdx 失败: {e}")
+
+        # 3. Baostock
+        try:
+            from src.data.providers.baostock_provider import BaostockProvider
+            bs_code = ("sz." if code.startswith("399") else "sh.") + code
+            with BaostockProvider() as bp:
+                df = bp.get_k_data(bs_code, days_back=2000, frequency="d",
+                                     fields="date,close")
+            if df is not None and not df.empty:
+                df = df.rename(columns={"date": "日期", "close": "收盘"})
+                df["日期"] = pd.to_datetime(df["日期"])
+                start = pd.to_datetime(start_date)
+                end = pd.to_datetime(end_date)
+                df = df[(df["日期"] >= start) & (df["日期"] <= end)]
+                if not df.empty:
+                    return df.reset_index(drop=True)
+        except Exception as e:
+            logger.debug(f"指数 {code} Baostock 失败: {e}")
+
+        return pd.DataFrame()
+
     def fetch_csi300_returns(self, start_date: str, end_date: str) -> pd.Series:
-        """拉沪深 300 指数日线 → 计算日收益率 Series（日期为 DatetimeIndex）"""
+        """
+        拉沪深 300 指数日线 → 收盘价 Series（日期为 DatetimeIndex）
+
+        三级 fallback：akshare 新浪 → pytdx 直连 → Baostock
+        """
         cache_key = f"csi300_returns_{start_date}_{end_date}"
 
         def _fetch() -> pd.Series:
-            try:
-                import akshare as ak
-                df = ak.index_zh_a_hist(
-                    symbol=_CSI300_INDEX_CODE, period="daily",
-                    start_date=start_date.replace("-", ""),
-                    end_date=end_date.replace("-", ""),
-                )
-                if df is None or df.empty:
-                    return pd.Series(dtype=float)
-                df["日期"] = pd.to_datetime(df["日期"])
-                df = df.sort_values("日期").set_index("日期")
-                close = pd.to_numeric(df["收盘"], errors="coerce")
-                return close
-            except Exception as e:
-                logger.error(f"沪深 300 指数拉取失败: {e}", exc_info=True)
+            df = self._fetch_index_kline_raw(_CSI300_INDEX_CODE, start_date, end_date)
+            if df is None or df.empty:
+                logger.warning(f"沪深 300 ({_CSI300_INDEX_CODE}) 所有数据源都失败")
                 return pd.Series(dtype=float)
+            df = df.sort_values("日期").set_index("日期")
+            close = pd.to_numeric(df["收盘"], errors="coerce")
+            logger.info(f"沪深 300 指数加载: {len(close)} 个交易日 "
+                        f"({close.index.min().date()} ~ {close.index.max().date()})")
+            return close
 
         return self.cache.get_or_fetch(cache_key, _fetch)
 
@@ -280,9 +494,22 @@ class DatasetBuilder:
             if df_daily.empty or len(df_daily) < 250:
                 continue
 
+            # 基本面 + 换手率（Baostock 拉，10s 超时）
+            # 注意：先拉 valuation，把 turn 合并到 daily_df 再算特征
+            df_val = self.fetch_valuation_history(code, start_date, end_date)
+            if not df_val.empty and "turn" in df_val.columns:
+                turn_df = df_val[["date", "turn"]].rename(
+                    columns={"date": "日期", "turn": "换手率"}
+                )
+                df_daily = df_daily.merge(turn_df, on="日期", how="left")
+
             feats = self._compute_features(df_daily)
             if feats.empty:
                 continue
+
+            val_feats = self._compute_valuation_features(df_val)
+            if not val_feats.empty:
+                feats = feats.merge(val_feats, on="date", how="left")
 
             label = self._compute_future_excess_return(df_daily, csi300_close)
             label = label.rename(f"y_excess_ret_{self.label_horizon}d").reset_index()

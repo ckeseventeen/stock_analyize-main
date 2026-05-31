@@ -246,80 +246,9 @@ class DatasetBuilder:
 
     @staticmethod
     def _fetch_index_kline_raw(code: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """
-        拉指数日线（不走缓存层）
-
-        三级 fallback：
-          1. akshare 新浪 stock_zh_index_daily（symbol 需要 sh/sz 前缀）
-          2. pytdx 直连（指数 market: 000xxx=sh=1, 399xxx=sz=0）
-          3. Baostock K-data（指数代码格式 sh.000300 / sz.399006）
-
-        Returns:
-            DataFrame，列含 日期 / 收盘（中文）
-        """
-        # 1. akshare 新浪（指数专用接口）
-        try:
-            import akshare as ak
-            # 上证指数 / 沪深300 等用 sh 前缀；深证 / 创业板 等用 sz
-            symbol = ("sz" if code.startswith("399") else "sh") + code
-            df = ak.stock_zh_index_daily(symbol=symbol)
-            if df is not None and not df.empty:
-                df = df.rename(columns={"date": "日期", "close": "收盘"})
-                df["日期"] = pd.to_datetime(df["日期"])
-                start = pd.to_datetime(start_date)
-                end = pd.to_datetime(end_date)
-                df = df[(df["日期"] >= start) & (df["日期"] <= end)]
-                if not df.empty:
-                    return df.reset_index(drop=True)
-        except Exception as e:
-            logger.debug(f"指数 {code} akshare 新浪失败: {e}")
-
-        # 2. pytdx 直连（修正指数 market）
-        try:
-            from pytdx.hq import TdxHq_API
-            from src.data.providers.pytdx_provider import get_global_pytdx
-            pytdx = get_global_pytdx()
-            if pytdx.is_available() and pytdx._working_servers:
-                ip, port = pytdx._working_servers[0]
-                api = TdxHq_API()
-                if api.connect(ip, port, time_out=3):
-                    # 上证指数 market=1，深证指数 market=0
-                    market = 0 if code.startswith("399") else 1
-                    bars = api.get_index_bars(category=9, market=market, code=code,
-                                                 start=0, count=800)
-                    api.disconnect()
-                    if bars:
-                        df = pd.DataFrame(bars)
-                        df = df.rename(columns={"datetime": "日期", "close": "收盘"})
-                        df["日期"] = pd.to_datetime(df["日期"])
-                        df = df.sort_values("日期")
-                        start = pd.to_datetime(start_date)
-                        end = pd.to_datetime(end_date)
-                        df = df[(df["日期"] >= start) & (df["日期"] <= end)]
-                        if not df.empty:
-                            return df.reset_index(drop=True)
-        except Exception as e:
-            logger.debug(f"指数 {code} pytdx 失败: {e}")
-
-        # 3. Baostock
-        try:
-            from src.data.providers.baostock_provider import BaostockProvider
-            bs_code = ("sz." if code.startswith("399") else "sh.") + code
-            with BaostockProvider() as bp:
-                df = bp.get_k_data(bs_code, days_back=2000, frequency="d",
-                                     fields="date,close")
-            if df is not None and not df.empty:
-                df = df.rename(columns={"date": "日期", "close": "收盘"})
-                df["日期"] = pd.to_datetime(df["日期"])
-                start = pd.to_datetime(start_date)
-                end = pd.to_datetime(end_date)
-                df = df[(df["日期"] >= start) & (df["日期"] <= end)]
-                if not df.empty:
-                    return df.reset_index(drop=True)
-        except Exception as e:
-            logger.debug(f"指数 {code} Baostock 失败: {e}")
-
-        return pd.DataFrame()
+        """拉指数日线 — 委托给统一接口 data.providers.index_kline"""
+        from src.data.providers.index_kline import fetch_index_kline
+        return fetch_index_kline(code, start_date, end_date)
 
     def fetch_csi300_returns(self, start_date: str, end_date: str) -> pd.Series:
         """

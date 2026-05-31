@@ -17,9 +17,11 @@ from typing import Optional
 import streamlit as st
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+# 用 cache_resource 而非 cache_data：cache_resource 是 process-wide 共享，
+# 多 tab/多页面打开不会重复拉 4951 只全市场数据
+@st.cache_resource(ttl=3600, show_spinner=False)
 def _load_universe() -> list[dict]:
-    """加载全市场股票（A 股，含名称+行业）；TTL 1 小时复用，避免重复拉取"""
+    """加载全市场股票（A 股，含名称+行业）；TTL 1 小时全进程共享"""
     try:
         from src.analysis.screening.data_provider import ScreenerDataProvider
         provider = ScreenerDataProvider()

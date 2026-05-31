@@ -51,8 +51,21 @@ DEFAULT_TDX_SERVERS: list[tuple[str, int]] = [
 
 
 def _code_to_market(code: str) -> int:
-    """A 股代码 → pytdx market 标识。0=SZ, 1=SH."""
-    return 1 if str(code).startswith(("6", "9")) else 0
+    """
+    A 股代码 → pytdx market 标识。0=SZ（深市）, 1=SH（沪市）。
+
+    规则（按优先级）：
+      - 6xx / 9xx：沪市（上证主板 + 转债/科创）
+      - 00 / 30：深市（深主板 + 创业板）
+      - 8xx / 4xx：北交所，pytdx 不直接支持，按沪市处理（实际查询会返回空）
+
+    注意：指数代码（如 000300 上证指数、399006 创业板指）**不能用这个函数**，
+    应该走 src.data.providers.index_kline.fetch_index_kline。
+    """
+    s = str(code)
+    if s.startswith(("6", "9")):
+        return 1
+    return 0
 
 
 class PytdxProvider:

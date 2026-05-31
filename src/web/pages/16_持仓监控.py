@@ -91,9 +91,11 @@ with st.sidebar:
             st.error("保存失败")
 
     st.divider()
+    # 默认 OFF：避免打开页面就对 N 只持仓做 K 线 + 评估（每只 2-3s 串行）。
+    # 需要时点每只卡片的"扫描"按钮触发。
     auto_run = st.checkbox(
-        "打开页面自动扫描", value=True,
-        help="关闭以加速页面加载；改为手动点扫描",
+        "打开页面自动扫描全部", value=False,
+        help="默认关：避免打开就卡 10s+。可点持仓卡片单独扫描，或开启全扫描",
     )
 
 

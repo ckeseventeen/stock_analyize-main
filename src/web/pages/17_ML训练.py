@@ -35,6 +35,33 @@ MODEL_PATH = _ROOT / "cache" / "ml_models" / "lgbm_latest.joblib"
 META_PATH = _ROOT / "cache" / "ml_models" / "lgbm_latest.meta.json"
 DATASET_PATH = _ROOT / "cache" / "ml_dataset" / "dataset_latest.parquet"
 LOG_PATH = _ROOT / "output" / "ml_training.log"
+PID_PATH = _ROOT / "cache" / "ml_train.pid"
+
+
+def _read_persisted_pid() -> int | None:
+    """从磁盘读训练 PID（Streamlit 重启后仍能识别"""
+    try:
+        if PID_PATH.exists():
+            txt = PID_PATH.read_text(encoding="utf-8").strip()
+            return int(txt) if txt.isdigit() else None
+    except Exception:
+        return None
+    return None
+
+
+def _write_persisted_pid(pid: int) -> None:
+    try:
+        PID_PATH.parent.mkdir(parents=True, exist_ok=True)
+        PID_PATH.write_text(str(pid), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _clear_persisted_pid() -> None:
+    try:
+        PID_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 # ========================
@@ -97,15 +124,18 @@ st.subheader("🚀 启动训练")
 # 检测训练进程是否在跑
 def _is_training_running() -> tuple[bool, dict]:
     """
-    通过 session_state 中的 PID 检测进程，且校验日志最近 30 秒有更新。
+    通过磁盘 PID 文件检测进程（Streamlit 重启后仍能识别），
+    再用 PID 探活 + 日志活跃度双因子判定。
     """
-    pid = st.session_state.get("ml_train_pid")
+    # 优先用 session_state（同会话），fallback 用磁盘 PID（跨会话）
+    pid = st.session_state.get("ml_train_pid") or _read_persisted_pid()
     if pid is None:
         return False, {}
-    # 1. PID 检测
+
+    # PID 探活
+    alive = False
     try:
         import os
-        # Windows / Unix 通用
         if os.name == "nt":
             import subprocess as sp
             result = sp.run(["tasklist", "/FI", f"PID eq {pid}"],
@@ -120,16 +150,23 @@ def _is_training_running() -> tuple[bool, dict]:
     except Exception:
         alive = False
 
-    # 2. 日志最近活动
-    log_active = False
+    # PID 不在但日志最近 60 秒还在更新，仍判定为在跑（可能是 PID 复用）
     log_mtime = None
+    log_active = False
     if LOG_PATH.exists():
         log_mtime = LOG_PATH.stat().st_mtime
-        log_active = (time.time() - log_mtime) < 120  # 2 分钟内有更新
+        log_active = (time.time() - log_mtime) < 60
 
-    return alive or log_active, {
+    running = alive or log_active
+    # 进程已死且日志超过 60s 没更新 → 清理磁盘 PID
+    if not running and pid is not None:
+        _clear_persisted_pid()
+        st.session_state.pop("ml_train_pid", None)
+
+    return running, {
         "pid": pid,
         "log_mtime": log_mtime,
+        "alive_by_pid": alive,
     }
 
 is_running, run_info = _is_training_running()
@@ -146,7 +183,7 @@ if is_running:
     if refresh_btn:
         st.rerun()
     if stop_btn:
-        pid = st.session_state.get("ml_train_pid")
+        pid = st.session_state.get("ml_train_pid") or _read_persisted_pid()
         if pid:
             try:
                 import os
@@ -155,6 +192,7 @@ if is_running:
                 else:
                     os.kill(pid, 9)
                 st.session_state.pop("ml_train_pid", None)
+                _clear_persisted_pid()
                 st.success("已发送终止信号")
                 st.rerun()
             except Exception as e:
@@ -209,6 +247,7 @@ else:
                     )
                 st.session_state["ml_train_pid"] = proc.pid
                 st.session_state["ml_train_start"] = time.time()
+                _write_persisted_pid(proc.pid)  # 跨 Streamlit 重启识别
                 st.success(f"✅ 训练已启动 (PID {proc.pid})。每隔几秒点「刷新进度」查看。")
                 # Bug 修：去掉 time.sleep(1) — 会阻塞 Streamlit server worker
                 st.rerun()

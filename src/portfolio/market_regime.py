@@ -107,30 +107,22 @@ class MarketRegimeAnalyzer:
     @staticmethod
     def _fetch_index_kline(provider, code: str, days_back: int = 365) -> pd.DataFrame:
         """
-        拉指数日线。优先 akshare 的 stock_zh_index_daily_em（专门给指数用），
-        失败回退到普通的 get_daily_ohlcv（pytdx 也能拉指数代码）。
+        拉指数日线 — 复用 data.providers.index_kline 的三级 fallback。
+
+        修复前：用 ak.stock_zh_index_daily_em（东方财富 endpoint，本机不通），
+                fallback 走 provider.get_daily_ohlcv 又被 pytdx 当成股票（market
+                映射错），结果整个 L4 大盘判断永远默认 sideways。
+        修复后：新浪 → pytdx 指数 API（market 已修正）→ Baostock，任一可用即返回。
         """
-        # akshare 指数日线
-        try:
-            import akshare as ak
-            df = ak.stock_zh_index_daily_em(symbol="sz" + code if code.startswith(("3", "39")) else "sh" + code)
-            if df is not None and not df.empty and len(df) >= days_back // 2:
-                df.rename(columns={"date": "日期", "open": "开盘", "high": "最高",
-                                    "low": "最低", "close": "收盘", "volume": "成交量"},
-                          inplace=True)
-                df["日期"] = pd.to_datetime(df["日期"])
-                return df.tail(days_back)
-        except Exception as e:
-            logger.debug(f"akshare 指数 {code} 失败: {e}")
+        from datetime import datetime, timedelta
+        from src.data.providers.index_kline import fetch_index_kline
 
-        # 兜底：用 ScreenerDataProvider 拉（pytdx 支持指数代码）
-        try:
-            df = provider.get_daily_ohlcv(code, days_back=days_back)
-            if df is not None and not df.empty:
-                return df
-        except Exception as e:
-            logger.debug(f"provider 指数 {code} 失败: {e}")
-
+        end = datetime.now().strftime("%Y-%m-%d")
+        # days_back 是日历天，多加余量保证拉到足够交易日（节假日 + 周末 ≈ 1.5x）
+        start = (datetime.now() - timedelta(days=int(days_back * 1.6))).strftime("%Y-%m-%d")
+        df = fetch_index_kline(code, start, end)
+        if df is not None and not df.empty:
+            return df.tail(days_back)
         return pd.DataFrame()
 
     def _analyze_one(self, code: str, name: str, type_: str) -> Optional[IndexState]:

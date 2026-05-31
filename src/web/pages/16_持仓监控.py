@@ -426,6 +426,31 @@ def _render_kline_chart(holding: Holding, daily_df: pd.DataFrame,
 # 渲染所有持仓
 if pf.holdings:
     st.subheader("📋 持仓详情与卖出评估")
+
+    # 性能优化：自动扫描时先并行预热 K 线缓存（每只 ~1s × 持仓数）
+    # 让后续 _evaluate_and_show 全命中缓存（~50ms）
+    if auto_run and len(pf.holdings) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _prefetch_kline(h):
+            try:
+                prov = ScreenerDataProvider()
+                buy_days = 250
+                if h.buy_date:
+                    try:
+                        buy_dt = datetime.strptime(h.buy_date, "%Y-%m-%d").date()
+                        buy_days = max(250, (date.today() - buy_dt).days + 30)
+                    except ValueError:
+                        pass
+                prov.get_daily_ohlcv(h.code, days_back=buy_days, market=h.market)
+                prov.get_weekly_ohlcv(h.code, days_back=365 * 3, market=h.market)
+            except Exception:
+                pass
+
+        with st.spinner(f"并行预取 {len(pf.holdings)} 只持仓的 K 线..."):
+            with ThreadPoolExecutor(max_workers=min(8, len(pf.holdings))) as pool:
+                list(pool.map(_prefetch_kline, pf.holdings))
+
     for holding in pf.holdings:
         with st.container(border=True):
             _render_holding_card(holding, regime_multiplier)
@@ -600,13 +625,20 @@ with tab_delete:
         sel = st.selectbox("选择持仓", options=range(len(codes)),
                            format_func=lambda i: codes[i], key="del_sel")
         h = pf.holdings[sel]
-        # Bug 修：包到 form 里，避免勾选 checkbox 触发整页 rerun
+        st.warning(
+            f"⚠️ 即将删除 **{h.name}({h.code})** — "
+            f"持仓 {h.qty} 股 / 成本 ¥{h.avg_cost:.2f}"
+        )
+        # 操作优化：改输入代码确认替代 checkbox，防误删（重要数据）
         with st.form(f"delete_form_{h.code}"):
-            confirm = st.checkbox(f"我确认删除 {h.code} {h.name}")
-            submit_delete = st.form_submit_button("🗑️ 删除", type="secondary")
+            typed = st.text_input(
+                f"请输入代码 {h.code} 以确认删除",
+                placeholder=h.code,
+            )
+            submit_delete = st.form_submit_button("🗑️ 永久删除", type="secondary")
         if submit_delete:
-            if not confirm:
-                st.warning("请先勾选确认")
+            if typed.strip() != h.code:
+                st.error(f"代码不匹配（你输入了 {typed!r}，应为 {h.code}），未删除")
             else:
                 ok, msg = mgr.remove_holding(h.code)
                 if ok:

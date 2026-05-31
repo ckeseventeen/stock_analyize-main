@@ -135,28 +135,31 @@ def check_concentration(pf: Portfolio, price_map: dict[str, float],
                 priority=2,
             ))
 
-    # 行业聚合
+    # 行业聚合 — 一个行业产生 1 条聚合警告（含所有 contributing 持仓名称）
     industry_mv: dict[str, float] = {}
+    industry_holdings: dict[str, list[str]] = {}
     for h in pf.holdings:
         ind = h.tag or "未分类"
         industry_mv.setdefault(ind, 0)
         industry_mv[ind] += h.market_value(price_map.get(h.code, 0.0))
+        industry_holdings.setdefault(ind, []).append(
+            f"{h.name or h.code}({h.code})"
+        )
 
     for ind, mv in industry_mv.items():
         share_pct = mv / total_mv * 100
         if share_pct > single_industry_limit_pct:
-            # 给该行业的所有持仓都发一条
-            for h in pf.holdings:
-                if (h.tag or "未分类") == ind:
-                    advices.append(PositionAdvice(
-                        code=h.code,
-                        action="concentration_warning",
-                        sell_pct=0.0,
-                        reason=(
-                            f"行业「{ind}」仓位占比 {share_pct:.1f}% > 上限 "
-                            f"{single_industry_limit_pct:.0f}%，**降低板块暴露**"
-                        ),
-                        priority=2,
-                    ))
+            contributors = "、".join(industry_holdings.get(ind, [])[:5])
+            advices.append(PositionAdvice(
+                code=industry_holdings.get(ind, ["?"])[0].split("(")[-1].rstrip(")"),
+                action="concentration_warning",
+                sell_pct=0.0,
+                reason=(
+                    f"行业「{ind}」仓位占比 {share_pct:.1f}% > 上限 "
+                    f"{single_industry_limit_pct:.0f}%（含：{contributors}）"
+                    f"，**降低板块暴露**"
+                ),
+                priority=2,
+            ))
 
     return advices

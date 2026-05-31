@@ -95,16 +95,28 @@ class HoldingMonitor(BaseMonitor):
         events: list[AlertEvent] = []
 
         for h in pf.holdings:
-            if h.market != "a":
-                continue  # 仅 A 股，hk/us 暂不监控
+            # P1-5 Bug 修：支持 hk/us 持仓。A 股从 spot 取价，hk/us 从 K 线尾根取
             cur_price = code_to_price.get(h.code, 0.0)
+            if cur_price <= 0 and h.market in ("hk", "us"):
+                try:
+                    intl_df = provider.get_daily_ohlcv(h.code, days_back=10,
+                                                         market=h.market)
+                    if intl_df is not None and not intl_df.empty:
+                        close_col = "收盘" if "收盘" in intl_df.columns else "close"
+                        cur_price = float(pd.to_numeric(intl_df[close_col],
+                                                         errors="coerce")
+                                          .dropna().iloc[-1])
+                except Exception:
+                    pass
             if cur_price <= 0:
                 logger.warning(f"[{self.name}] {h.code} 无最新价，跳过")
                 continue
 
             try:
-                daily_df = provider.get_daily_ohlcv(h.code, days_back=250)
-                weekly_df = provider.get_weekly_ohlcv(h.code, days_back=365 * 3)
+                daily_df = provider.get_daily_ohlcv(h.code, days_back=250,
+                                                     market=h.market)
+                weekly_df = provider.get_weekly_ohlcv(h.code, days_back=365 * 3,
+                                                       market=h.market)
             except Exception as e:
                 logger.warning(f"[{self.name}] {h.code} 拉 K 线失败: {e}")
                 continue

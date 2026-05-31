@@ -313,17 +313,19 @@ class SellEngine:
         """
         out: list[SellSignal] = []
 
-        # L1 风控触发：每个规则一条
-        for rule in verdict.l1_triggered:
+        # P1-7 Bug 修：L1 多规则合并成一条，避免同一只股票同时触发
+        # stop_loss + trailing_stop 时手机收到 2 条相同告警
+        if verdict.l1_triggered:
             out.append(SellSignal(
                 code=holding.code,
                 name=holding.name,
                 level="L1",
-                rule=rule,
+                rule="+".join(verdict.l1_triggered),
                 severity="critical",
                 message=verdict.advice,
                 meta={"current_price": verdict.current_price,
-                      "pnl_pct": verdict.pnl_pct},
+                      "pnl_pct": verdict.pnl_pct,
+                      "triggered_rules": list(verdict.l1_triggered)},
             ))
 
         # L2 信号触发：仅在 ≥60% 时推一条聚合

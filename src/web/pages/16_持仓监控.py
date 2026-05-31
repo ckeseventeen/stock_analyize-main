@@ -71,17 +71,23 @@ with st.sidebar:
             "启用 L2 信号告警",
             value=bool(g.get("enable_signal_alert", True)),
         )
+        new_l4 = st.checkbox(
+            "启用 L4 大盘守门员",
+            value=bool(g.get("enable_l4_filter", True)),
+            help="开启：空头市时 sell 信号权重 ×1.5。关闭：纯个股技术信号",
+        )
         save_global = st.form_submit_button("💾 保存全局默认",
                                               use_container_width=True)
 
     if save_global:
-        # merge：保留本表单未涉及的字段（如 enable_l4_filter / 用户自加字段）
+        # merge：保留本表单未涉及的字段
         merged = dict(pf.default_alerts or {})
         merged.update({
             "stop_loss_pct": new_stop,
             "trailing_pct": new_trail,
             "signal_threshold_pct": new_threshold,
             "enable_signal_alert": new_enable,
+            "enable_l4_filter": new_l4,
         })
         pf.default_alerts = merged
         if mgr.save(pf):
@@ -126,6 +132,23 @@ if pf.holdings:
             except (ValueError, TypeError):
                 pass
 
+    # P1-4 Bug 修：A 股 spot 不含港股/美股，单独按 market 取最新价（用 K 线尾根）
+    @st.cache_data(ttl=300, show_spinner=False)
+    def _fetch_intl_price(code: str, market: str) -> float:
+        try:
+            p = ScreenerDataProvider()
+            df = p.get_daily_ohlcv(code, days_back=10, market=market)
+            if df is None or df.empty:
+                return 0.0
+            close_col = "收盘" if "收盘" in df.columns else "close"
+            return float(pd.to_numeric(df[close_col], errors="coerce").dropna().iloc[-1])
+        except Exception:
+            return 0.0
+
+    for h in pf.holdings:
+        if h.market in ("hk", "us") and h.code not in code_to_price:
+            code_to_price[h.code] = _fetch_intl_price(h.code, h.market)
+
     total_mv = pf.total_market_value(code_to_price)
     total_cost = pf.total_cost_basis()
     total_pnl = total_mv - total_cost
@@ -143,17 +166,23 @@ if pf.holdings:
         st.metric("浮动盈亏", f"¥{total_pnl:+,.0f}",
                   f"{total_pnl_pct:+.2f}%", delta_color=delta_color)
 
-    # L4 大盘环境守门员
+    # L4 大盘环境守门员（可由 holdings.yaml 的 enable_l4_filter 关闭）
+    enable_l4 = bool(pf.default_alerts.get("enable_l4_filter", True))
+
     @st.cache_resource(ttl=600)
     def _get_regime():
         return MarketRegimeAnalyzer().analyze()
 
-    with st.spinner("分析大盘环境..."):
-        regime = _get_regime()
-    regime_multiplier = regime.weight_multiplier
-
-    regime_color = {"bull": "success", "sideways": "warning", "bear": "error"}[regime.regime]
-    getattr(st, regime_color)(regime.summary)
+    if enable_l4:
+        with st.spinner("分析大盘环境..."):
+            regime = _get_regime()
+        regime_multiplier = regime.weight_multiplier
+        regime_color = {"bull": "success", "sideways": "warning",
+                        "bear": "error"}[regime.regime]
+        getattr(st, regime_color)(regime.summary)
+    else:
+        regime_multiplier = 1.0
+        st.caption("⚪ L4 大盘守门员已关闭（holdings.yaml: enable_l4_filter=false）")
 
     # L5 宏观面板（折叠展示，避免占用太多视觉空间）
     @st.cache_resource(ttl=900)
@@ -229,9 +258,22 @@ def _evaluate_and_show(holding: Holding, cur_price: float, regime_multiplier: fl
         return
 
     provider = ScreenerDataProvider()
+    # P1-6 Bug 修：days_back 动态。如果 buy_date 在 250 天以前（如长期持仓），
+    # K 线买入三角点会落在图外。至少拉到 buy_date 起 + 30 天余量。
+    today = date.today()
+    daily_days = 250
+    if holding.buy_date:
+        try:
+            buy_dt = datetime.strptime(holding.buy_date, "%Y-%m-%d").date()
+            need = (today - buy_dt).days + 30
+            daily_days = max(daily_days, need)
+        except ValueError:
+            pass
     with st.spinner(f"拉取 {holding.code} K 线..."):
-        daily_df = provider.get_daily_ohlcv(holding.code, days_back=250)
-        weekly_df = provider.get_weekly_ohlcv(holding.code, days_back=365 * 3)
+        daily_df = provider.get_daily_ohlcv(holding.code, days_back=daily_days,
+                                              market=holding.market)
+        weekly_df = provider.get_weekly_ohlcv(holding.code, days_back=365 * 3,
+                                                market=holding.market)
 
     if daily_df is None or daily_df.empty:
         st.error(f"❌ 无法拉取 {holding.code} 的日线数据")

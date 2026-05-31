@@ -154,17 +154,76 @@ if pf.holdings:
     total_pnl = total_mv - total_cost
     total_pnl_pct = (total_pnl / total_cost * 100) if total_cost > 0 else 0
 
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("持仓只数", len(pf.holdings))
-    with c2:
-        st.metric("总市值", f"¥{total_mv:,.0f}")
-    with c3:
-        st.metric("总成本", f"¥{total_cost:,.0f}")
-    with c4:
-        delta_color = "normal" if total_pnl_pct >= 0 else "inverse"
-        st.metric("浮动盈亏", f"¥{total_pnl:+,.0f}",
-                  f"{total_pnl_pct:+.2f}%", delta_color=delta_color)
+    summary_col, pie_col = st.columns([3, 2])
+    with summary_col:
+        c1, c2, c3, c4 = st.columns(4)
+        with c1:
+            st.metric("持仓只数", len(pf.holdings))
+        with c2:
+            st.metric("总市值", f"¥{total_mv:,.0f}")
+        with c3:
+            st.metric("总成本", f"¥{total_cost:,.0f}")
+        with c4:
+            delta_color = "normal" if total_pnl_pct >= 0 else "inverse"
+            st.metric("浮动盈亏", f"¥{total_pnl:+,.0f}",
+                      f"{total_pnl_pct:+.2f}%", delta_color=delta_color)
+
+        # 单只持仓盈亏排行（小条形图）
+        if total_mv > 0:
+            pnl_data = []
+            for h in pf.holdings:
+                price = code_to_price.get(h.code, 0.0)
+                if price > 0 and h.avg_cost > 0:
+                    pnl_data.append({
+                        "代码": h.code,
+                        "名称": h.name,
+                        "浮盈%": h.unrealized_pnl_pct(price),
+                        "市值": h.market_value(price),
+                    })
+            if pnl_data:
+                df_pnl = pd.DataFrame(pnl_data).sort_values("浮盈%", ascending=True)
+                fig_pnl = go.Figure(go.Bar(
+                    x=df_pnl["浮盈%"], y=df_pnl["名称"],
+                    orientation="h",
+                    marker_color=df_pnl["浮盈%"].apply(
+                        lambda x: "#d62728" if x >= 0 else "#2ca02c"
+                    ),
+                    text=df_pnl["浮盈%"].apply(lambda x: f"{x:+.1f}%"),
+                    textposition="auto",
+                ))
+                fig_pnl.update_layout(
+                    height=max(150, len(df_pnl) * 35),
+                    margin=dict(l=10, r=10, t=10, b=10),
+                    showlegend=False,
+                    xaxis_title="浮盈 %",
+                )
+                st.plotly_chart(fig_pnl, use_container_width=True)
+
+    with pie_col:
+        # 行业暴露饼图（按 tag 分组）
+        if total_mv > 0:
+            industry_mv: dict[str, float] = {}
+            for h in pf.holdings:
+                price = code_to_price.get(h.code, 0.0)
+                if price <= 0:
+                    continue
+                ind = h.tag.split("-")[0] if h.tag else "未分类"
+                industry_mv.setdefault(ind, 0.0)
+                industry_mv[ind] += h.market_value(price)
+            if industry_mv:
+                fig_ind = go.Figure(go.Pie(
+                    labels=list(industry_mv.keys()),
+                    values=list(industry_mv.values()),
+                    hole=0.4,
+                    textinfo="label+percent",
+                ))
+                fig_ind.update_layout(
+                    title="🏷️ 行业暴露",
+                    height=350,
+                    margin=dict(l=10, r=10, t=40, b=10),
+                    showlegend=False,
+                )
+                st.plotly_chart(fig_ind, use_container_width=True)
 
     # L4 大盘环境守门员（可由 holdings.yaml 的 enable_l4_filter 关闭）
     enable_l4 = bool(pf.default_alerts.get("enable_l4_filter", True))
@@ -282,6 +341,17 @@ def _evaluate_and_show(holding: Holding, cur_price: float, regime_multiplier: fl
     engine = SellEngine(pf.default_alerts)
     verdict = engine.evaluate(holding, cur_price, daily_df, weekly_df,
                                regime_multiplier=regime_multiplier)
+
+    # 缓存 verdict 给"今日操作清单"用
+    if "verdicts_today" in st.session_state:
+        st.session_state["verdicts_today"][holding.code] = {
+            "name": holding.name,
+            "action": verdict.action,
+            "advice": verdict.advice,
+            "risk_pct": verdict.risk_pct,
+            "risk_level": verdict.risk_level,
+            "pnl_pct": verdict.pnl_pct,
+        }
 
     # 顶部卡片
     cols = st.columns(4)
@@ -425,6 +495,9 @@ def _render_kline_chart(holding: Holding, daily_df: pd.DataFrame,
 
 # 渲染所有持仓
 if pf.holdings:
+    # 持仓评估结果缓存（按 code 存 verdict），auto_run 时用来生成"今日操作清单"
+    st.session_state["verdicts_today"] = {}
+
     st.subheader("📋 持仓详情与卖出评估")
 
     # 性能优化：自动扫描时先并行预热 K 线缓存（每只 ~1s × 持仓数）
@@ -454,6 +527,45 @@ if pf.holdings:
     for holding in pf.holdings:
         with st.container(border=True):
             _render_holding_card(holding, regime_multiplier)
+
+    # 「今日操作清单」聚合视图（auto_run + 至少有 1 个 verdict 时显示）
+    verdicts = st.session_state.get("verdicts_today", {})
+    if verdicts:
+        st.subheader("📋 今日操作清单")
+        action_label = {
+            "stop_loss": "⛔ 立即清仓",
+            "reduce_all": "🔴 建议清仓",
+            "reduce_half": "🟠 减仓 50%",
+            "hold": "🟢 继续持有",
+        }
+        rows = []
+        for code, v in verdicts.items():
+            rows.append({
+                "代码": code,
+                "名称": v["name"],
+                "操作": action_label.get(v["action"], v["action"]),
+                "风险分%": f"{v['risk_pct']:.0f}",
+                "浮盈%": f"{v['pnl_pct']:+.1f}",
+                "说明": v["advice"].split("\n")[0][:60],
+            })
+        df_action = pd.DataFrame(rows)
+        # 按操作严重度排序：止损 > 清仓 > 减半 > 持有
+        action_order = {
+            "⛔ 立即清仓": 0, "🔴 建议清仓": 1, "🟠 减仓 50%": 2, "🟢 继续持有": 3,
+        }
+        df_action["_sort"] = df_action["操作"].map(action_order).fillna(99)
+        df_action = df_action.sort_values("_sort").drop(columns="_sort")
+        st.dataframe(df_action, use_container_width=True, hide_index=True)
+
+        # 导出 CSV
+        csv_bytes = df_action.to_csv(index=False).encode("utf-8-sig")
+        st.download_button(
+            "💾 导出今日操作清单 CSV",
+            data=csv_bytes,
+            file_name=f"holdings_scan_{datetime.now():%Y%m%d_%H%M%S}.csv",
+            mime="text/csv",
+        )
+
     st.divider()
 
 
@@ -497,12 +609,29 @@ with tab_add:
             index=0 if not picked else ["a", "hk", "us"].index(picked.get("market", "a")),
         )
         b1, b2, b3 = st.columns(3)
-        new_qty = b1.number_input("数量", min_value=0, value=100, step=100)
         default_cost = picked["price"] if picked and picked["price"] > 0 else 10.0
-        new_cost = b2.number_input(
-            "成本价", min_value=0.0, value=float(default_cost),
-            step=0.01, format="%.4f",
+        # 新增：可以输金额或股数，二选一
+        qty_mode = b1.radio(
+            "数量录入方式", ["输股数", "输金额"], horizontal=True,
+            label_visibility="collapsed",
         )
+        if qty_mode == "输股数":
+            new_qty = b1.number_input("数量", min_value=0, value=100, step=100)
+            new_cost = b2.number_input(
+                "成本价", min_value=0.0, value=float(default_cost),
+                step=0.01, format="%.4f",
+            )
+        else:
+            # 输金额自动算股数（按 100 股取整，A 股最小交易单位）
+            amount = b1.number_input("买入金额 (元)", min_value=0,
+                                      value=100000, step=1000)
+            new_cost = b2.number_input(
+                "成本价", min_value=0.01, value=float(default_cost),
+                step=0.01, format="%.4f",
+            )
+            raw_qty = int(amount / new_cost) if new_cost > 0 else 0
+            new_qty = (raw_qty // 100) * 100  # A 股一手 = 100 股
+            b1.caption(f"→ 约 {new_qty} 股（取整到 100 股一手）")
         new_buy_date = b3.date_input("买入日期")
         c1, c2 = st.columns([2, 1])
         new_tag = c1.text_input(

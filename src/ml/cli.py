@@ -71,7 +71,48 @@ def cmd_train_only(args: argparse.Namespace) -> int:
     )
     # 重置 predictor 单例，让下次推理使用新模型
     reset_predictor()
+    # 推送训练完成通知（如果配置了 alerts）
+    _notify_training_done(metadata)
     return 0
+
+
+def _notify_training_done(metadata: dict) -> None:
+    """训练完成发推送（alerts.yaml 未配置或无通道时静默跳过）"""
+    try:
+        from pathlib import Path
+        import yaml as _yaml
+        from src.automation.alert import AlertEvent, build_channels
+
+        alerts_path = Path("./config/alerts.yaml")
+        if not alerts_path.exists():
+            return
+        with open(alerts_path, encoding="utf-8") as f:
+            alerts_cfg = _yaml.safe_load(f) or {}
+        channels = build_channels(alerts_cfg)
+        if not channels:
+            return
+
+        ic = metadata.get("cv_ic_mean", 0)
+        ic_emoji = "🟢" if ic >= 0.05 else ("🟡" if ic >= 0.03 else "🔴")
+        title = f"{ic_emoji} ML 模型训练完成"
+        body = (
+            f"CV IC: {ic:+.4f} ± {metadata.get('cv_ic_std', 0):.4f}\n"
+            f"RMSE: {metadata.get('cv_rmse_mean', 0):.4f}\n"
+            f"样本: {metadata.get('n_samples', 0):,}\n"
+            f"特征: {metadata.get('n_features', 0)}\n"
+            f"版本: {metadata.get('version', '')}"
+        )
+        event = AlertEvent(
+            title=title,
+            body=body,
+            event_key=f"ml_training_done:{metadata.get('version', '')}",
+            event_type="ml_training_done",
+        )
+        for ch in channels:
+            ch.send(event)
+        logger.info(f"训练完成推送已发出（{len(channels)} 个通道）")
+    except Exception as e:
+        logger.debug(f"训练完成推送失败（不影响训练本身）: {e}")
 
 
 def cmd_train(args: argparse.Namespace) -> int:

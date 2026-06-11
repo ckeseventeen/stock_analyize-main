@@ -50,7 +50,9 @@ DEFAULT_EMPTY_DAYS = ["20260529", "20260601", "20260603", "20260605"]
 # ======================================================================
 # 配置
 # ======================================================================
-LOOKBACK_DAYS = 90   # 触发日往前取的日历天数(覆盖约60个交易日)
+# 130 日历天 ≈ 88 交易日：保证 MA60 + "60日新高突破"(需 61 交易日) 稳定可算。
+# (原 90 天只有约 61 个交易日，breakout_60d_high 经常因差 1-2 天而缺失)
+LOOKBACK_DAYS = 130
 FORWARD_DAYS = 15    # 触发日往后取的日历天数(覆盖 T+5 交易日)
 
 
@@ -104,8 +106,12 @@ def extract_features(bp: BaostockProvider, trade_date: str, code: str,
     trade_date_dash = to_dash_date(trade_date)
 
     # 从 baostock 拉日线, 含 peTTM/pbMRQ/psTTM/turn/pctChg
+    # adjust="3" 不复权：trigger_px 是推荐当时的真实价格，若用前复权，
+    # 触发日之后发生除权(6月分红季高发)会把 close_T 调小，close_vs_trigger 失真。
+    # 代价是回看窗口跨除权日时 MA/动量略失真——与 tushare 原版口径一致，可接受。
     fields = "date,open,high,low,close,volume,amount,turn,pctChg,peTTM,pbMRQ"
-    df = bp.get_k_data(code, start_date=start, end_date=end, fields=fields)
+    df = bp.get_k_data(code, start_date=start, end_date=end, fields=fields,
+                       adjust="3")
 
     if df is None or df.empty:
         return {"ts_code": code, "name": name, "trade_date": trade_date,
@@ -137,6 +143,18 @@ def extract_features(bp: BaostockProvider, trade_date: str, code: str,
     if pd.isna(pct_chg) and pre_close > 0:
         pct_chg = (close / pre_close - 1) * 100
 
+    # 一字板修复: high==low 时 (close-low)/range 会得 0,把最强的一字涨停
+    # 算成"收在最低点"。改为按当日涨跌方向给语义值: 涨→1.0 跌→0.0 平→0.5
+    day_range = row["high"] - row["low"]
+    if day_range > 1e-9:
+        close_pos = (close - row["low"]) / day_range
+    elif pd.notna(pct_chg) and pct_chg > 0:
+        close_pos = 1.0     # 一字涨停
+    elif pd.notna(pct_chg) and pct_chg < 0:
+        close_pos = 0.0     # 一字跌停
+    else:
+        close_pos = 0.5
+
     feat = {
         "trade_date": trade_date,
         "ts_code": code,
@@ -147,7 +165,7 @@ def extract_features(bp: BaostockProvider, trade_date: str, code: str,
         # ---- 当日量价 ----
         "pct_chg_T": pct_chg,
         "amplitude_T": (row["high"] - row["low"]) / pre_close * 100 if pre_close > 0 else np.nan,
-        "close_pos_in_range": ((close - row["low"]) / max(row["high"] - row["low"], 1e-9)),
+        "close_pos_in_range": close_pos,
         "gap_open_pct": (row["open"] / pre_close - 1) * 100 if pre_close > 0 else np.nan,
         "is_limit_up_T": int(pct_chg >= lp * 100 * 0.98) if pd.notna(pct_chg) else 0,
         "near_limit_T": int(pct_chg >= lp * 100 * 0.90) if pd.notna(pct_chg) else 0,
@@ -228,6 +246,78 @@ def extract_features(bp: BaostockProvider, trade_date: str, code: str,
 
 
 # ======================================================================
+# 全市场横截面获取（历史精确 vs 今日近似）
+# ======================================================================
+def _get_tushare_pro():
+    """返回 tushare pro_api 实例；无 token / 未安装时返回 None"""
+    try:
+        from src.core.settings import settings
+        token = settings.tushare_token
+    except Exception:
+        token = os.environ.get("TUSHARE_TOKEN", "")
+    if not token:
+        return None
+    try:
+        import tushare as ts
+        ts.set_token(token)
+        return ts.pro_api()
+    except Exception as e:
+        logger.warning(f"tushare 初始化失败: {e}")
+        return None
+
+
+def fetch_market_cross_section(trade_date: str, pro=None) -> tuple[pd.DataFrame, str]:
+    """
+    获取指定交易日的全市场横截面行情。
+
+    有 TUSHARE_TOKEN: pro.daily(trade_date=...) + daily_basic(trade_date=...)
+                       → 历史当日的真实截面（分位数准确）
+    无 token: 返回空 DataFrame，调用方退化用今日 spot（分位仅为近似，
+              market_context 各天会变成同一份快照——尽量配 token）
+
+    Returns:
+        (DataFrame 统一中文列名: 代码/涨跌幅/换手率/成交额/量比/流通市值,
+         source 标签: "tushare_historical" | "unavailable")
+    """
+    if pro is None:
+        pro = _get_tushare_pro()
+    if pro is None:
+        return pd.DataFrame(), "unavailable"
+
+    try:
+        mkt = pro.daily(trade_date=trade_date)
+        if mkt is None or mkt.empty:
+            return pd.DataFrame(), "unavailable"
+        try:
+            db = pro.daily_basic(
+                trade_date=trade_date,
+                fields="ts_code,turnover_rate_f,volume_ratio,circ_mv",
+            )
+            if db is not None and not db.empty:
+                mkt = mkt.merge(db, on="ts_code", how="left")
+        except Exception as e:
+            logger.debug(f"daily_basic {trade_date} 失败(仅缺换手/量比): {e}")
+
+        out = pd.DataFrame({
+            "代码": mkt["ts_code"].str.split(".").str[0],
+            "涨跌幅": pd.to_numeric(mkt["pct_chg"], errors="coerce"),
+            # tushare amount 单位千元 → 元（与 spot 的成交额单位一致）
+            "成交额": pd.to_numeric(mkt["amount"], errors="coerce") * 1000,
+        })
+        if "turnover_rate_f" in mkt.columns:
+            out["换手率"] = pd.to_numeric(mkt["turnover_rate_f"], errors="coerce")
+        if "volume_ratio" in mkt.columns:
+            out["量比"] = pd.to_numeric(mkt["volume_ratio"], errors="coerce")
+        if "circ_mv" in mkt.columns:
+            # circ_mv 单位万元 → 元
+            out["流通市值"] = pd.to_numeric(mkt["circ_mv"], errors="coerce") * 1e4
+        return out, "tushare_historical"
+    except Exception as e:
+        logger.warning(f"tushare 截面 {trade_date} 拉取失败: {e}")
+        return pd.DataFrame(), "unavailable"
+
+
+# ======================================================================
 # 核心: 全市场横截面分位
 # ======================================================================
 def market_percentiles(spot_df: pd.DataFrame, picks_today: list[str]) -> tuple[dict, dict]:
@@ -262,6 +352,13 @@ def market_percentiles(spot_df: pd.DataFrame, picks_today: list[str]) -> tuple[d
         # 成交额分位
         if "成交额" in m.columns and pd.notna(r.get("成交额")):
             entry["mkt_pctile_amount"] = (m["成交额"] < r["成交额"]).mean() * 100
+        # 量比分位（tushare 历史截面才有）
+        if "量比" in m.columns and pd.notna(r.get("量比")):
+            entry["mkt_pctile_vol_ratio"] = (m["量比"] < r["量比"]).mean() * 100
+        # 流通市值分位
+        if "流通市值" in m.columns and pd.notna(r.get("流通市值")):
+            entry["mkt_pctile_circ_mv"] = (m["流通市值"] < r["流通市值"]).mean() * 100
+            entry["circ_mv_yi"] = r["流通市值"] / 1e8
         if entry:
             pcts[code] = entry
 
@@ -296,16 +393,20 @@ class PicksReverseEngineer:
     - market_context.csv: 每个推荐日的全市场环境快照
     """
 
-    def __init__(self, picks=None, empty_days=None, output_dir="./output/reverse_engineer"):
+    def __init__(self, picks=None, empty_days=None, output_dir="./output/reverse_engineer",
+                 use_tushare: bool | None = None):
         """
         Args:
             picks: 推荐记录列表, 每条为 (trade_date, code, name, theme, trigger_px)
             empty_days: 空仓日列表 (YYYYMMDD)
             output_dir: 输出目录
+            use_tushare: True 强制用 tushare 历史截面 / False 强制退化今日 spot /
+                         None 自动（有 TUSHARE_TOKEN 即用）
         """
         self.picks = picks if picks is not None else DEFAULT_PICKS
         self.empty_days = empty_days if empty_days is not None else DEFAULT_EMPTY_DAYS
         self.output_dir = output_dir
+        self.use_tushare = use_tushare
 
     def run(self) -> tuple[pd.DataFrame, pd.DataFrame]:
         """
@@ -329,17 +430,41 @@ class PicksReverseEngineer:
         feats = pd.DataFrame(rows)
 
         # 2. 全市场横截面分位 + 市场环境(含空仓日)
-        sdp = ScreenerDataProvider()
-        spot_df = sdp.get_all_a_shares()
+        #
+        # 时间穿越修复：分位必须基于"推荐日当天"的全市场截面。
+        # 有 TUSHARE_TOKEN → 逐日拉历史截面（tushare pro.daily，准确）；
+        # 无 token → 退化为今日 spot 近似，所有日期共用一份快照并打标，
+        #            空仓日 vs 推荐日的环境对比在该模式下无效。
+        pro = None if self.use_tushare is False else _get_tushare_pro()
+        spot_df_today = None  # 懒加载，仅退化模式需要
+        if pro is None:
+            logger.warning(
+                "未配置 TUSHARE_TOKEN——横截面分位将用【今日】行情近似，"
+                "market_context 各日为同一份快照。建议设置 token 获得历史精确截面。"
+            )
+            sdp = ScreenerDataProvider()
+            spot_df_today = sdp.get_all_a_shares()
 
         ctx_rows = []
         all_days = sorted(set(p[0] for p in self.picks) | set(self.empty_days))
         for d in all_days:
             codes = [p[1] for p in self.picks if p[0] == d]
             logger.info(f"[{d}] market cross-section ...")
-            pcts, ctx = market_percentiles(spot_df, codes)
+
+            if pro is not None:
+                m, source = fetch_market_cross_section(d, pro=pro)
+                if m.empty:  # tushare 个别日失败时退化
+                    if spot_df_today is None:
+                        spot_df_today = ScreenerDataProvider().get_all_a_shares()
+                    m, source = spot_df_today, "today_spot_fallback"
+                time.sleep(0.6)  # tushare 限频
+            else:
+                m, source = spot_df_today, "today_spot_approx"
+
+            pcts, ctx = market_percentiles(m, codes)
             ctx["trade_date"] = d
             ctx["has_picks"] = int(len(codes) > 0)
+            ctx["cross_section_source"] = source
             ctx_rows.append(ctx)
 
             # 将分位数合并回 feats

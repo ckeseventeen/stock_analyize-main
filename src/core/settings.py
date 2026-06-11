@@ -55,6 +55,9 @@ if _PYDANTIC_OK:
         # SCREENER_STRICT=1 时 yaml 拼错条件类型抛错而非 warning
         screener_strict: bool = Field(default=False)
 
+        # ---------------- Tushare（荐股逆向工程历史截面，可选） ----------------
+        tushare_token: str = Field(default="")
+
         # ---------------- 告警通道密钥（SEC1：禁止入 yaml）----------------
         serverchan_key: str = Field(default="")
         bark_key: str = Field(default="")
@@ -85,6 +88,7 @@ else:
         scheduler_disabled: bool = False
         scheduler_enabled: bool = True
         screener_strict: bool = False
+        tushare_token: str = ""
         serverchan_key: str = ""
         bark_key: str = ""
         pushplus_token: str = ""
@@ -102,6 +106,7 @@ else:
             self.scheduler_disabled = os.environ.get("SCHEDULER_DISABLED", "0") == "1"
             self.scheduler_enabled = os.environ.get("SCHEDULER_ENABLED", "1") == "1"
             self.screener_strict = os.environ.get("SCREENER_STRICT", "0") == "1"
+            self.tushare_token = os.environ.get("TUSHARE_TOKEN", "")
             self.serverchan_key = os.environ.get("SERVERCHAN_KEY", "")
             self.bark_key = os.environ.get("BARK_KEY", "")
             self.pushplus_token = os.environ.get("PUSHPLUS_TOKEN", "")

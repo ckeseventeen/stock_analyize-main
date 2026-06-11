@@ -93,8 +93,24 @@ st.sidebar.markdown("---")
 run_btn = st.sidebar.button("🚀 开始分析", type="primary", use_container_width=True)
 
 st.sidebar.markdown("---")
+
+# 数据源状态：tushare 历史截面 vs 今日近似
+from src.analysis.reverse_engineer import _get_tushare_pro  # noqa: E402
+
+if _get_tushare_pro() is not None:
+    st.sidebar.success(
+        "✅ TUSHARE_TOKEN 已配置\n\n横截面分位采用**推荐日当天**的历史行情（精确）"
+    )
+else:
+    st.sidebar.warning(
+        "⚠️ 未配置 TUSHARE_TOKEN\n\n"
+        "横截面分位将用**今日**行情近似——推荐日越久误差越大，"
+        "空仓日环境对比无效。\n\n"
+        "在 .env 加 `TUSHARE_TOKEN=...` 可获得历史精确截面（tushare.pro 免费注册）"
+    )
+
 st.sidebar.caption(
-    "💡 数据源: Baostock 日线 + akshare 全A Spot\n\n"
+    "💡 个股日线: Baostock（不复权）\n\n"
     "结果输出到 `output/reverse_engineer/`"
 )
 

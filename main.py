@@ -323,6 +323,33 @@ def run_scrape(args):
     logger.info(f"========== 数据抓取任务完成：{stype} ==========")
 
 
+def run_reverse_picks(args):
+    """
+    运行荐股逆向工程分析
+    :param args: argparse 命名空间
+    """
+    logger.info("========== 荐股逆向工程分析启动 ==========")
+
+    from src.analysis.reverse_engineer import PicksReverseEngineer
+
+    output_dir = os.path.join(args.output_dir, "reverse_engineer")
+    engine = PicksReverseEngineer(output_dir=output_dir)
+    feats_df, ctx_df = engine.run()
+
+    if not feats_df.empty:
+        print("\n" + "=" * 80)
+        print("  荐股逆向工程 — 特征提取结果")
+        print("=" * 80)
+        pd.set_option("display.max_rows", 200)
+        pd.set_option("display.max_columns", 20)
+        pd.set_option("display.width", 120)
+        print(feats_df.to_string(index=False))
+        print(f"\n共 {len(feats_df)} 条推荐记录")
+        print("=" * 80)
+
+    logger.info("========== 荐股逆向工程分析完成 ==========")
+
+
 def main():
     # 命令行参数解析
     # 设计保留扁平结构（兼容老命令），同时新增 --monitor / --scrape 两个子任务开关
@@ -374,6 +401,12 @@ def main():
         help="输出根目录（默认 ./output）"
     )
 
+    # ---- 荐股逆向工程 ----
+    parser.add_argument(
+        "--reverse-picks", action="store_true",
+        help="启动荐股逆向工程分析（提取推荐标的特征 + 全市场横截面分位）"
+    )
+
     args = parser.parse_args()
 
     # 分发：B12 修复 —— 多个任务类型可以同时传入，会按 "监控 → 抓取 → 筛选" 顺序执行（非互斥）。
@@ -394,6 +427,10 @@ def main():
         if hasattr(args, "strategy_id") and args.strategy_id:
             strategy_ids = [args.strategy_id]
         run_screener(args, strategy_ids=strategy_ids)
+        ran_any = True
+
+    if args.reverse_picks:
+        run_reverse_picks(args)
         ran_any = True
 
     # 如果没有任何特殊模式，则执行默认的估值分析模式

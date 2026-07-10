@@ -1,85 +1,154 @@
-# 回测预设
-#
-# 每个 preset 完整记录一次回测的所有参数，供 "7_策略回测" 页一键加载/保存。
-#
+# ============================================================
+# 回测预设（2026-07 重写：与 screen_config.yaml 的 8 条新策略对齐）
+# ============================================================
 # 结构：
 #   strategy: 策略 key（对应 STRATEGY_REGISTRY）
-#   data:    数据参数（code / days_back）
+#   data:    数据参数（stock_code / days_back）
 #   account: 账户参数（initial_cash / commission）
 #   params:  策略专属参数（由 STRATEGY_PARAM_SCHEMAS 定义）
+#
+# screener_rule 预设 = 筛选策略的技术条件直接作为买卖信号回测；
+# 也可在「策略回测」页侧栏「从筛选策略导入」一键带入任意策略。
+# ============================================================
 
 presets:
-  ma_茅台_10_30:
-    strategy: ma_crossover
-    data: {stock_code: "600519", days_back: 1000}
-    account: {initial_cash: 100000, commission: 0.0002}
-    params: {fast_period: 10, slow_period: 30}
-    description: "贵州茅台 双均线 10/30"
 
-  factor_五粮液_demo:
-    strategy: factor_rebalance
-    data: {stock_code: "000858", days_back: 2000}
-    account: {initial_cash: 100000, commission: 0.0002}
-    params: {rebalance_days: 20, buy_threshold: 15.0, sell_threshold: 30.0}
-    description: "五粮液 因子再平衡 Demo"
+  # ── 与筛选策略对齐的 screener_rule 预设 ──
 
-  # ---- 规则策略示例：RSI 超卖反弹 + 超买离场 ----
-  rule_rsi反弹_茅台:
-    strategy: rule_based
-    data: {stock_code: "600519", days_back: 1000}
-    account: {initial_cash: 100000, commission: 0.0002}
-    params:
-      rule_config:
-        indicators:
-          rsi_14: {type: rsi, period: 14}
-        buy_when:
-          - "rsi_14 < 30"
-        sell_when:
-          - "rsi_14 > 70"
-        buy_logic: any
-        sell_logic: any
-        position_size: 0.95
-    description: "贵州茅台 RSI<30 买入 / RSI>70 卖出"
-
-  # ---- 规则策略示例：均线金叉 + 死叉离场（MA 策略的规则版）----
-  rule_金叉_五粮液:
-    strategy: rule_based
-    data: {stock_code: "000858", days_back: 1500}
-    account: {initial_cash: 100000, commission: 0.0002}
-    params:
-      rule_config:
-        indicators:
-          ma_20: {type: sma, period: 20}
-          ma_60: {type: sma, period: 60}
-        buy_when:
-          - "ma_20 cross_up ma_60"
-        sell_when:
-          - "ma_20 cross_down ma_60"
-        buy_logic: all
-        sell_logic: all
-        position_size: 0.95
-    description: "五粮液 MA20/60 金叉买入，死叉卖出（规则 DSL）"
-
-  # ---- 筛选器桥接示例：使用刚才新增的均线多头策略 ----
-  screener_多头共振_平安银行:
+  质量价值白马_茅台:
     strategy: screener_rule
-    data: {stock_code: "000001", days_back: 1500}
-    account: {initial_cash: 100000, commission: 0.0002}
+    data: {stock_code: "600519", days_back: 2000}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params:
+      buy_conditions:
+        - type: price_above_ma
+          ma_period: 120
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 85
+          period: 14
+        - type: trailing_stop
+          callback_pct: 12
+          lookback: 60
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.95
+    description: "质量价值白马（quality_value）：站上半年线持有，超买/回撤离场"
+
+  低估底背离_平安:
+    strategy: screener_rule
+    data: {stock_code: "601318", days_back: 2000}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params:
+      buy_conditions:
+        - type: weekly_macd_divergence
+          lookback_bars: 60
+          zero_axis_filter: true
+      sell_conditions:
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: trailing_stop
+          callback_pct: 15
+          lookback: 60
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+    description: "低估值底背离反转（value_reversal）：周线底背离买入"
+
+  成长动量_三花:
+    strategy: screener_rule
+    data: {stock_code: "002050", days_back: 1500}
+    account: {initial_cash: 100000, commission: 0.00025}
     params:
       buy_conditions:
         - type: multi_ma_bull
           ma_list: [5, 10, 20, 60]
           require_all_above: true
           require_up_trend: true
+        - type: volume_break
+          lookback_bars: 20
+          vol_multiple: 1.8
       sell_conditions:
-        - type: price_above_ma
-          ma_period: 20
-        # 这里用反向思维，如果是 price_above_ma=False 时卖出比较麻烦，
-        # 为了演示，可以配一个简单的 rsi 超买，或者用内置的 rule_based 做复杂退出
-        - type: rsi_oversold
-          threshold: 75
-          period: 14
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+        - type: atr_trailing_stop
+          atr_period: 14
+          multiplier: 3.0
+          lookback: 20
       buy_logic: all
       sell_logic: any
-      position_size: 0.95
-    description: "平安银行：均线全多头时买入，RSI>75超买时卖出（调用筛选器条件）"
+      position_size: 0.9
+    description: "成长动量多头（growth_momentum）：均线多头+放量进场"
+
+  质量箱体突破_晶方:
+    strategy: screener_rule
+    data: {stock_code: "603005", days_back: 1500}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params:
+      buy_conditions:
+        - type: box_breakout_volume
+          lookback_bars: 60
+          breakout_pct: 0.02
+          consolidation_pct: 0.15
+          vol_lookback: 20
+          vol_multiple: 1.5
+      sell_conditions:
+        - type: break_below_ma
+          ma_period: 20
+          lookback: 3
+        - type: trailing_stop
+          callback_pct: 10
+          lookback: 40
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+    description: "质量箱体突破（quality_breakout）：放量突破买入，破 MA20 离场"
+
+  周期共振_通富:
+    strategy: screener_rule
+    data: {stock_code: "002156", days_back: 2000}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params:
+      buy_conditions:
+        - type: weekly_macd_gold_cross
+          require_zero_near: true
+        - type: macd_hist_positive
+          consecutive: 3
+      sell_conditions:
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: ma_death_cross
+          fast_period: 10
+          slow_period: 30
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+    description: "多周期共振（trend_resonance）：周线定方向，日线找买点"
+
+  # ── 经典基线预设（对照用）──
+
+  双均线基线_茅台:
+    strategy: ma_crossover
+    data: {stock_code: "600519", days_back: 2000}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params: {fast_period: 10, slow_period: 30}
+    description: "经典双均线 10/30 基线（用于与新策略对照）"
+
+  RSI反转基线:
+    strategy: rule_based
+    data: {stock_code: "600895", days_back: 1500}
+    account: {initial_cash: 100000, commission: 0.00025}
+    params:
+      rule_config:
+        indicators:
+          rsi_14: {type: rsi, period: 14}
+          ma_60: {type: sma, period: 60}
+        buy_when:
+          - "rsi_14 < 30"
+          - "close > ma_60"
+        sell_when:
+          - "rsi_14 > 75"
+        buy_logic: all
+        sell_logic: any
+    description: "RSI 超卖 + 站上 MA60 反弹基线"

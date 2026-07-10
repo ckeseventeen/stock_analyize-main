@@ -66,3 +66,12 @@ pytest-cov>=4.1.0         # 测试覆盖率
 pytest-mock>=3.12.0       # Mock 工具
 responses>=0.24.0         # mock HTTP 响应（告警通道测试用）
 ruff>=0.1.0               # 代码规范检查（替代 flake8/isort）
+
+# ========================
+# 可选功能依赖（按需安装）
+# ========================
+# anthropic>=0.40.0        # AI 周报（需 ANTHROPIC_API_KEY；未装则周报为模板模式）
+# markdown>=3.5            # 周报 HTML 导出（未装则降级 <pre> 文本）
+# fpdf2>=2.7.0             # 周报 PDF 直出（未装可用 HTML 打印为 PDF）
+# futu-api                 # 富途实盘适配（需本地 OpenD 网关）
+# tigeropen                # 老虎证券实盘适配

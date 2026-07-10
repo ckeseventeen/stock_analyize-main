@@ -1,582 +1,309 @@
+# ============================================================
+# 筛选策略库（2026-07 重写：每条策略 = 基本面层 + 技术触发层）
+# ============================================================
+# 设计原则：
+#   1. 基本面层先收敛股票池（市值/估值/质量），技术层只做买点择时
+#   2. 每条策略自带回测段（backtest），可在「策略回测」页一键验证
+#   3. ST/退市风险股由引擎自动全局排除，无需在此配置
+#
+# 说明：全市场实时快照包含 市值/PE/PB/换手率 等估值类基本面；
+#   ROE 等财务指标在快照缺失时 roe_filter 自动放行（不误杀），
+#   深度财务质量分析请用「个股中心 → 估值与基本面」或「因子库」。
+# 旧版 17 条纯技术策略备份于 screen_config.yaml.old
+# ============================================================
+
 strategies:
-  bottom_divergence:
-    name: 周线底背离+放量确认
+
+  # ──────────────────────────────────────────────
+  # 1. 质量价值（白马底仓）
+  #    基本面：大市值 + 低估值 + 高 ROE；技术：站上半年线
+  # ──────────────────────────────────────────────
+  quality_value:
+    name: 质量价值白马
     conditions:
       - type: market_cap
-        min: 30
-        max: 5000
+        min: 300
+        max: 50000
       - type: pe_range
         min: 0
-        max: 60
-      - type: weekly_macd_divergence
-        lookback_bars: 90
-        zero_axis_filter: false
-        multi_level_check: true
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.5
+        max: 30
+      - type: pb_range
+        min: 0
+        max: 8
+      - type: roe_filter
+        min_roe: 10
+      - type: price_above_ma
+        ma_period: 120
     backtest:
       sell_conditions:
         - type: rsi_overbought
-          threshold: 80
+          threshold: 85
           period: 14
         - type: trailing_stop
-          callback_pct: 10
+          callback_pct: 12
           lookback: 60
-        - type: volume_price_divergence
-          lookback_bars: 30
-          direction: top
       buy_logic: all
       sell_logic: any
       position_size: 0.95
       default_stock: '600519'
-      days_back: 1000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 80
-
-  box_breakout_only:
-    name: 箱体放量突破(独立)
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: box_breakout_volume
-        lookback_bars: 20
-        breakout_pct: 0.02
-        consolidation_pct: 0.15
-        vol_lookback: 20
-        vol_multiple: 1.5
-    backtest:
-      sell_conditions:
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-        - type: volume_price_divergence
-          lookback_bars: 20
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '000858'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 60
-
-  downtrend_break_only:
-    name: 下降趋势线突破+放量确认
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: downtrend_breakout
-        lookback_bars: 60
-        min_touches: 3
-        breakout_pct: 0.02
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.5
-    backtest:
-      sell_conditions:
-        - type: ma_death_cross
-          fast_period: 5
-          slow_period: 20
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '000858'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 60
-
-  double_breakout:
-    name: 双突破方案(箱体+趋势线)
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: box_breakout_volume
-        lookback_bars: 25
-        breakout_pct: 0.02
-        consolidation_pct: 0.15
-        vol_lookback: 20
-        vol_multiple: 1.5
-      - type: downtrend_breakout
-        lookback_bars: 60
-        min_touches: 3
-        breakout_pct: 0.015
-    backtest:
-      sell_conditions:
-        - type: ma_death_cross
-          fast_period: 5
-          slow_period: 20
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-        - type: volume_price_divergence
-          lookback_bars: 20
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '000858'
-      days_back: 1500
+      days_back: 2000
     output:
       sort_by: 总市值(亿)
       ascending: false
       limit: 50
 
-  value_investing:
-    name: 白马价值筛选
+  # ──────────────────────────────────────────────
+  # 2. 低估反转（左侧价值）
+  #    基本面：深度低估（PE<20 且 PB<3）；技术：周线 MACD 底背离
+  # ──────────────────────────────────────────────
+  value_reversal:
+    name: 低估值底背离反转
+    conditions:
+      - type: market_cap
+        min: 100
+        max: 5000
+      - type: pe_range
+        min: 0
+        max: 20
+      - type: pb_range
+        min: 0
+        max: 3
+      - type: weekly_macd_divergence
+        lookback_bars: 60
+        zero_axis_filter: true
+    backtest:
+      sell_conditions:
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: trailing_stop
+          callback_pct: 15
+          lookback: 60
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+      default_stock: '601318'
+      days_back: 2000
+    output:
+      sort_by: 市盈率-动态
+      ascending: true
+      limit: 40
+
+  # ──────────────────────────────────────────────
+  # 3. 成长动量（右侧趋势）
+  #    基本面：中盘成长估值带；技术：均线多头 + 放量
+  # ──────────────────────────────────────────────
+  growth_momentum:
+    name: 成长动量多头
+    conditions:
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 60
+      - type: multi_ma_bull
+        ma_list: [5, 10, 20, 60]
+        require_all_above: true
+        require_up_trend: true
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.8
+    backtest:
+      sell_conditions:
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+        - type: atr_trailing_stop
+          atr_period: 14
+          multiplier: 3.0
+          lookback: 20
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+      default_stock: '002050'
+      days_back: 1500
+    output:
+      sort_by: 换手率(%)
+      ascending: false
+      limit: 40
+
+  # ──────────────────────────────────────────────
+  # 4. 基本面突破（质量 + 箱体放量突破）
+  # ──────────────────────────────────────────────
+  quality_breakout:
+    name: 质量箱体突破
+    conditions:
+      - type: market_cap
+        min: 100
+        max: 10000
+      - type: pe_range
+        min: 0
+        max: 40
+      - type: roe_filter
+        min_roe: 8
+      - type: box_breakout_volume
+        lookback_bars: 60
+        breakout_pct: 0.02
+        consolidation_pct: 0.15
+        vol_lookback: 20
+        vol_multiple: 1.5
+    backtest:
+      sell_conditions:
+        - type: break_below_ma
+          ma_period: 20
+          lookback: 3
+        - type: trailing_stop
+          callback_pct: 10
+          lookback: 40
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+      default_stock: '603005'
+      days_back: 1500
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 40
+
+  # ──────────────────────────────────────────────
+  # 5. 超跌质优（低估值 + 超卖反弹）
+  # ──────────────────────────────────────────────
+  oversold_quality:
+    name: 超跌质优反弹
+    conditions:
+      - type: market_cap
+        min: 100
+        max: 20000
+      - type: pe_range
+        min: 0
+        max: 35
+      - type: pb_range
+        min: 0
+        max: 6
+      - type: rsi_oversold
+        threshold: 30
+        period: 14
+      - type: bollinger_breakout
+        period: 20
+        std_dev: 2.0
+        direction: lower
+    backtest:
+      sell_conditions:
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+        - type: stop_loss
+          max_loss_pct: 8
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.85
+      default_stock: '600895'
+      days_back: 1500
+    output:
+      sort_by: 市盈率-动态
+      ascending: true
+      limit: 40
+
+  # ──────────────────────────────────────────────
+  # 6. 小市值活跃（小盘 + 活跃度 + 金叉触发）
+  # ──────────────────────────────────────────────
+  smallcap_active:
+    name: 小市值活跃金叉
+    conditions:
+      - type: market_cap
+        min: 20
+        max: 150
+      - type: turnover_rate
+        min: 3
+        max: 15
+      - type: pe_range
+        min: 0
+        max: 80
+      - type: ma_gold_cross
+        fast_period: 5
+        slow_period: 20
+    backtest:
+      sell_conditions:
+        - type: kdj_death_cross
+          j_threshold: 80
+        - type: stop_loss
+          max_loss_pct: 7
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.8
+      default_stock: '603728'
+      days_back: 1200
+    output:
+      sort_by: 换手率(%)
+      ascending: false
+      limit: 30
+
+  # ──────────────────────────────────────────────
+  # 7. 多周期共振（周线定方向 + 日线找买点）
+  # ──────────────────────────────────────────────
+  trend_resonance:
+    name: 周日线多周期共振
+    conditions:
+      - type: market_cap
+        min: 50
+        max: 20000
+      - type: pe_range
+        min: 0
+        max: 50
+      - type: weekly_macd_gold_cross
+        require_zero_near: true
+      - type: macd_hist_positive
+        consecutive: 3
+      - type: price_above_ma
+        ma_period: 60
+    backtest:
+      sell_conditions:
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: ma_death_cross
+          fast_period: 10
+          slow_period: 30
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.9
+      default_stock: '002156'
+      days_back: 2000
+    output:
+      sort_by: 总市值(亿)
+      ascending: false
+      limit: 40
+
+  # ──────────────────────────────────────────────
+  # 8. 北向价值（外资流入 + 低估值大盘股）
+  # ──────────────────────────────────────────────
+  northbound_value:
+    name: 北向流入低估值
     conditions:
       - type: market_cap
         min: 200
         max: 50000
       - type: pe_range
         min: 0
-        max: 45
-      - type: roe_filter
-        min_roe: 12
-      - type: price_above_ma
-        ma_period: 120
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 85
-          period: 14
-        - type: trailing_stop
-          callback_pct: 12
-          lookback: 60
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 2000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  ma_long_bull:
-    name: 均线多头共振
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: multi_ma_bull
-        ma_list:
-          - 5
-          - 10
-          - 20
-          - 60
-        require_all_above: true
-        require_up_trend: true
-        tolerance: 0.015
-    backtest:
-      sell_conditions:
-        - type: ma_death_cross
-          fast_period: 5
-          slow_period: 20
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '000001'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 60
-
-  ma_gold_cross_rsi:
-    name: 均线金叉+RSI超卖反弹
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: ma_gold_cross
-        fast_period: 5
-        slow_period: 20
-      - type: rsi_oversold
-        threshold: 35
-        period: 14
-    backtest:
-      sell_conditions:
-        - type: ma_death_cross
-          fast_period: 5
-          slow_period: 20
-        - type: rsi_overbought
-          threshold: 80
-          period: 14
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  bollinger_lower_touch:
-    name: 布林带下轨缩量触底+反弹确认
-    conditions:
-      - type: market_cap
-        min: 50
-        max: 5000
-      - type: bollinger_breakout
-        period: 20
-        std_dev: 2.0
-        direction: lower
-      - type: volume_shrink
-        lookback_bars: 10
-        shrink_ratio: 0.7
-      - type: support_ma
-        ma_period: 20
-        close_touch: true
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 75
-          period: 14
-        - type: trailing_stop
-          callback_pct: 5
-          lookback: 15
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.9
-      default_stock: '000858'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  kdj_gold_cross:
-    name: KDJ低位金叉
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: kdj_gold_cross
-        n: 9
-        m1: 3
-        m2: 3
-        j_threshold: 30
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 80
-          period: 14
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 60
-
-  macd_hist_flip:
-    name: MACD柱状图连续翻红+趋势确认
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: macd_hist_positive
-        consecutive: 3
-      - type: price_above_ma
-        ma_period: 20
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 80
-          period: 14
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 80
-
-  break_250_vol:
-    name: 放量突破年线
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: price_above_ma
-        ma_period: 250
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.5
-    backtest:
-      sell_conditions:
-        - type: trailing_stop
-          callback_pct: 10
-          lookback: 60
-        - type: volume_price_divergence
-          lookback_bars: 30
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 60
-
-  pullback_stabilize:
-    name: 趋势股回踩企稳
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: price_above_ma
-        ma_period: 60
-      - type: support_ma
-        ma_period: 20
-        close_touch: true
-      - type: volume_shrink
-        lookback_bars: 10
-        shrink_ratio: 0.7
-    backtest:
-      sell_conditions:
-        - type: stop_loss
-          max_loss_pct: 10
-        - type: trailing_stop
-          callback_pct: 10
-          lookback: 30
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  value_growth:
-    name: 低估值高成长策略
-    conditions:
-      - type: market_cap
-        min: 100
-        max: 20000
-      - type: pe_range
-        min: 5
-        max: 35
-      - type: roe_filter
-        min_roe: 15
-      - type: price_above_ma
-        ma_period: 120
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.3
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 85
-          period: 14
-        - type: trailing_stop
-          callback_pct: 12
-          lookback: 60
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 2000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  rsi_oversold_bounce:
-    name: RSI超卖反弹+底背离确认
-    conditions:
-      - type: market_cap
-        min: 30
-        max: 5000
-      - type: rsi_oversold
-        threshold: 25
-        period: 14
-      - type: daily_macd_divergence
-        lookback_bars: 60
-        zero_axis_filter: false
-        multi_level_check: false
-    backtest:
-      sell_conditions:
-        - type: rsi_overbought
-          threshold: 70
-          period: 14
-        - type: trailing_stop
-          callback_pct: 5
-          lookback: 15
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.9
-      default_stock: '600519'
-      days_back: 1000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 80
-
-  tech_breakout_volume:
-    name: 科技股箱体放量突破
-    conditions:
-      - type: market_cap
-        min: 20
-        max: 3000
-      - type: box_breakout_volume
-        lookback_bars: 20
-        breakout_pct: 0.02
-        consolidation_pct: 0.15
-        vol_lookback: 20
-        vol_multiple: 1.5
-    backtest:
-      sell_conditions:
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-        - type: volume_price_divergence
-          lookback_bars: 30
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '000858'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: true
-      limit: 40
-
-  # ========================
-  # 新增策略（Phase 4 扩展）
-  # ========================
-
-  multi_timeframe_resonance:
-    name: 多周期共振(周线金叉+日线放量)
-    conditions:
-      - type: market_cap
-        min: 50
-        max: 5000
-      - type: weekly_macd_gold_cross
-        require_zero_near: true
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.5
-      - type: price_above_ma
-        ma_period: 20
-    backtest:
-      sell_conditions:
-        - type: trailing_stop
-          callback_pct: 8
-          lookback: 30
-        - type: volume_price_divergence
-          lookback_bars: 30
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.95
-      default_stock: '600519'
-      days_back: 1500
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 50
-
-  northbound_accumulation:
-    name: 北向资金持续加仓(仅实时筛选)
-    conditions:
-      - type: market_cap
-        min: 100
-        max: 50000
+        max: 30
       - type: northbound_flow
         lookback_days: 5
-        min_net_buy: 100000000
+        min_net_buy: 0
       - type: price_above_ma
         ma_period: 60
-      - type: volume_break
-        lookback_bars: 20
-        vol_multiple: 1.3
     backtest:
       sell_conditions:
         - type: trailing_stop
-          callback_pct: 10
-          lookback: 40
-        - type: volume_price_divergence
-          lookback_bars: 30
-          direction: top
-      buy_logic: all
-      sell_logic: any
-      position_size: 0.9
-      default_stock: '600519'
-      days_back: 1000
-    output:
-      sort_by: 总市值(亿)
-      ascending: false
-      limit: 30
-
-  # ========================
-  # ML 自学习策略（B 路径）
-  # ========================
-  # 使用 LightGBM 模型预测未来 20 日超额收益，取 Top-50
-  # 首次启用前需要训练模型：python -m src.ml.cli train
-  # 训练完成后模型保存在 cache/ml_models/lgbm_latest.joblib
-
-  ml_alpha_top50:
-    name: ML自学习Alpha Top50
-    conditions:
-      - type: market_cap
-        min: 50
-        max: 20000
-      - type: exclude_risk
-      - type: price_above_ma
-        ma_period: 60
-      - type: ml_top_k
-        top_k: 50
-        min_score: 0.5
-    backtest:
-      sell_conditions:
-        - type: trailing_stop
-          callback_pct: 10
-          lookback: 40
+          callback_pct: 12
+          lookback: 60
         - type: rsi_overbought
           threshold: 80
           period: 14
       buy_logic: all
       sell_logic: any
       position_size: 0.95
-      default_stock: '600519'
-      days_back: 1000
+      default_stock: '600036'
+      days_back: 2000
     output:
-      sort_by: ml_score
+      sort_by: 总市值(亿)
       ascending: false
-      limit: 50
+      limit: 40

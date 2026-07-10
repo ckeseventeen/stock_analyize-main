@@ -31,6 +31,17 @@ channels:
     template: "html"   # html / txt / json / markdown
     topic: ""          # 群发编码（可选）
 
+  # Webhook（推送到你自己的系统：自建服务 / n8n / 机器人网关）
+  # 事件以 JSON POST 到 url；配置 secret 后带 HMAC-SHA256 签名头
+  # X-Alert-Signature-256（与 GitHub Webhook 同规范）
+  webhook:
+    enable: false
+    url: ""            # 如 https://your-server.com/hooks/stock-alert
+    secret: ""         # 可选签名密钥，建议用环境变量 WEBHOOK_SECRET 注入
+    headers: {}        # 可选附加请求头，如 {Authorization: "Bearer xxx"}
+    allow_private: false  # 自建内网服务需置 true
+    timeout: 10
+
   # 控制台 + 本地日志（零配置，兜底）
   # 推送到 stdout 和 logs/alerts.log
   console:

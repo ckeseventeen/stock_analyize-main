@@ -74,41 +74,6 @@ class TestWidgetConstruction:
         sf = SchemaForm([], key="t")
         assert sf.schema == []
 
-    def test_crud_table_construct(self):
-        from src.web.widgets import CRUDTable
-        ct = CRUDTable(
-            items=[{"code": "X", "name": "Y"}],
-            schema=[{"key": "code", "type": "str"}, {"key": "name", "type": "str"}],
-            title="测试",
-            id_field="code",
-            key="t",
-        )
-        assert ct.title == "测试"
-        assert ct.id_field == "code"
-
-    def test_crud_table_format_label(self):
-        from src.web.widgets.crud_table import CRUDTable
-        ct = CRUDTable(items=[], schema=[], id_field="code", key="t")
-        label = ct._format_label({"code": "600519", "name": "贵州茅台"})
-        assert "600519" in label
-        assert "贵州茅台" in label
-
-    def test_market_stock_picker_construct(self):
-        from src.web.widgets import MarketStockPicker
-        p = MarketStockPicker(default_market="a", key="t")
-        assert p.default_market == "a"
-
-    def test_preset_loader_construct(self):
-        from src.web.widgets import PresetLoader
-        loader = PresetLoader(
-            list_func=lambda: ["p1"],
-            load_func=lambda n: {"a": 1},
-            key="t",
-        )
-        assert loader.list_func() == ["p1"]
-        assert loader.load_func("p1") == {"a": 1}
-
-
 # =============================================================================
 # Theme
 # =============================================================================

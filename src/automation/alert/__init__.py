@@ -18,6 +18,7 @@ from src.automation.alert.console import ConsoleChannel
 from src.automation.alert.pushplus import PushPlusChannel
 from src.automation.alert.serverchan import ServerChanChannel
 from src.automation.alert.state import AlertStateStore
+from src.automation.alert.webhook import WebhookChannel
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")
@@ -29,6 +30,7 @@ CHANNEL_REGISTRY: dict[str, type[AlertChannel]] = {
     "serverchan": ServerChanChannel,
     "bark": BarkChannel,
     "pushplus": PushPlusChannel,
+    "webhook": WebhookChannel,
 }
 
 
@@ -141,4 +143,5 @@ __all__ = [
     "ServerChanChannel",
     "BarkChannel",
     "PushPlusChannel",
+    "WebhookChannel",
 ]

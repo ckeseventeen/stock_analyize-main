@@ -62,6 +62,7 @@ if _PYDANTIC_OK:
         serverchan_key: str = Field(default="")
         bark_key: str = Field(default="")
         pushplus_token: str = Field(default="")
+        webhook_secret: str = Field(default="")
 
         # ---------------- 数据库（docker-compose 兼容，目前未使用）----------------
         db_host: str = Field(default="")
@@ -92,6 +93,7 @@ else:
         serverchan_key: str = ""
         bark_key: str = ""
         pushplus_token: str = ""
+        webhook_secret: str = ""
         db_host: str = ""
         db_port: int = 3306
         db_name: str = ""
@@ -110,6 +112,7 @@ else:
             self.serverchan_key = os.environ.get("SERVERCHAN_KEY", "")
             self.bark_key = os.environ.get("BARK_KEY", "")
             self.pushplus_token = os.environ.get("PUSHPLUS_TOKEN", "")
+            self.webhook_secret = os.environ.get("WEBHOOK_SECRET", "")
             self.db_host = os.environ.get("DB_HOST", "")
             self.db_port = int(os.environ.get("DB_PORT", "3306") or 3306)
             self.db_name = os.environ.get("DB_NAME", "")

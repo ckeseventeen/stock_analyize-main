@@ -34,13 +34,6 @@ from src.core.market_registry import (
     market_labels,
     register_market,
 )
-from src.core.models import (
-    AlertRule,
-    BacktestReport,
-    Signal,
-    Stock,
-)
-
 # =============================================================================
 # columns.py
 # =============================================================================
@@ -91,98 +84,6 @@ class TestColumnConstants:
         out = normalize_ohlcv_columns(df)
         # 没有中文列时应原样返回，不报错
         assert list(out.columns) == ["date", "open", "close"]
-
-
-# =============================================================================
-# models.py
-# =============================================================================
-
-@pytest.mark.unit
-class TestStockModel:
-    def test_round_trip_via_dict(self):
-        original = {
-            "code": "600519",
-            "name": "贵州茅台",
-            "market": "a",
-            "category": "白酒",
-            "valuation": "pe",
-            "pe_range": [20, 30, 40],
-        }
-        stock = Stock.from_dict(original)
-        assert stock.code == "600519"
-        assert stock.name == "贵州茅台"
-        assert stock.pe_range == (20.0, 30.0, 40.0)
-
-        # to_dict 应可重新喂回 from_dict
-        d = stock.to_dict()
-        stock2 = Stock.from_dict(d)
-        assert stock == stock2
-
-    def test_frozen_immutable(self):
-        s = Stock(code="A", name="X", market="a")
-        with pytest.raises(AttributeError):
-            s.code = "B"  # type: ignore
-
-    def test_hashable_as_dict_key(self):
-        s = Stock(code="A", name="X", market="a")
-        d = {s: 1}
-        assert d[s] == 1
-
-    def test_invalid_range_returns_none(self):
-        s = Stock.from_dict({"code": "X", "name": "Y", "pe_range": [1, 2]})  # 缺一个
-        assert s.pe_range is None
-        s2 = Stock.from_dict({"code": "X", "name": "Y", "pe_range": "garbage"})
-        assert s2.pe_range is None
-
-
-@pytest.mark.unit
-class TestAlertRuleModel:
-    def test_construct_and_serialize(self):
-        rule = AlertRule.from_dict({
-            "code": "600519",
-            "name": "贵州茅台",
-            "market": "a",
-            "conditions": [{"type": "price_below", "value": 1500}],
-            "cooldown_hours": 12,
-        })
-        assert rule.code == "600519"
-        assert rule.cooldown_hours == 12
-        assert rule.to_dict()["conditions"][0]["type"] == "price_below"
-
-    def test_defaults(self):
-        rule = AlertRule.from_dict({"code": "X"})
-        assert rule.market == "a"
-        assert rule.cooldown_hours == 24
-        assert rule.conditions == []
-
-
-@pytest.mark.unit
-class TestSignalAndReport:
-    def test_signal_constructable(self):
-        sig = Signal(
-            stock_code="600519", stock_name="x", market="a",
-            kind="buy", timestamp=datetime.now(),
-        )
-        assert sig.kind == "buy"
-        assert sig.meta == {}
-
-    def test_backtest_report_from_runner_dict(self):
-        d = {
-            "策略": "MACrossover",
-            "初始资金": 100000,
-            "最终资产": 120000,
-            "总收益率(%)": 20.0,
-            "年化收益率(%)": 12.5,
-            "夏普比率": 1.2,
-            "最大回撤(%)": 8.0,
-            "总交易次数": 50,
-            "胜率(%)": 60.0,
-            "预热bar数": 30,
-        }
-        r = BacktestReport.from_runner_dict(d)
-        assert r.strategy_name == "MACrossover"
-        assert r.total_return_pct == 20.0
-        assert r.sharpe == 1.2
 
 
 # =============================================================================

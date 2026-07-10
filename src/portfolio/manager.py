@@ -10,7 +10,7 @@ from typing import Optional
 
 from src.portfolio.models import Holding, Portfolio, Transaction
 from src.utils.logger import get_logger
-from src.web.config_ops import atomic_save_yaml, load_yaml
+from src.core.config_io import atomic_save_yaml, load_yaml
 
 logger = get_logger("portfolio_mgr")
 

@@ -1,0 +1,273 @@
+"""
+src/services/stock_service.py — 个股中心的无头服务层
+
+围绕「一只股票」聚合各引擎的单股视图：
+  - resolve_name(): 代码 → 名称（关注列表 → 全市场 spot → resolver 多级解析）
+  - earnings_for_code(): 财报披露（A/HK/US）
+  - news_for_code() / announcements_for_code(): 个股资讯
+  - scan_buy_signals() / sell_verdict(): 买点条件扫描 + 卖出引擎判定
+  - alert_rules_for_code() / add_price_alert_rule(): 该股的预警规则
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import pandas as pd
+
+from src.core.config_io import PATH_PRICE_ALERTS, atomic_save_yaml, load_yaml
+from src.utils.logger import get_logger
+
+logger = get_logger("stock_service")
+
+
+# ============================================================================
+# 名称解析（用户只输代码）
+# ============================================================================
+
+def resolve_name(code: str, market: str = "a") -> str:
+    """
+    代码 → 名称，多级解析：关注列表 → resolver（配置聚合）→ A 股全市场 spot。
+    全部失败返回空串（页面提示手动确认）。
+    """
+    code = str(code).strip()
+    if not code:
+        return ""
+
+    # 1) 关注列表
+    try:
+        from src.web.utils import list_stocks_from_market_config
+        for s in list_stocks_from_market_config(market) or []:
+            if str(s.get("code", "")).strip() == code:
+                return str(s.get("name", ""))
+    except Exception:
+        pass
+
+    # 2) 配置聚合 resolver
+    try:
+        from src.utils.name_resolver import StockNameResolver
+        name = StockNameResolver().get_name(code, market)
+        if name and name != code:
+            return name
+    except Exception:
+        pass
+
+    # 3) A 股全市场 spot（有 5000+ 名称）
+    if market == "a":
+        try:
+            from src.services.portfolio_service import build_a_share_maps
+            _, code_to_name = build_a_share_maps()
+            return code_to_name.get(code.zfill(6), "")
+        except Exception:
+            pass
+    return ""
+
+
+def current_price(code: str, market: str = "a") -> float:
+    """最新价：日线尾根收盘（全市场通用）；失败返回 0"""
+    from src.services.portfolio_service import fetch_intl_price
+    return fetch_intl_price(code, market)
+
+
+# ============================================================================
+# 财报披露（单股）
+# ============================================================================
+
+def earnings_for_code(code: str, market: str = "a", days_ahead: int = 90) -> pd.DataFrame:
+    """该股未来 days_ahead 天的披露计划；无数据返回空 df"""
+    from src.data.providers.earnings_fetcher import EarningsFetcher
+
+    fetcher = EarningsFetcher()
+    code = str(code).strip()
+    try:
+        if market == "a":
+            df = fetcher.get_a_share_upcoming(days_ahead=days_ahead)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            code_col = next((c for c in ("代码", "code", "股票代码") if c in df.columns), None)
+            if code_col is None:
+                return pd.DataFrame()
+            return df[df[code_col].astype(str).str.zfill(6) == code.zfill(6)].copy()
+        if market == "hk":
+            return fetcher.get_hk_upcoming([code], days_ahead=days_ahead)
+        return fetcher.get_us_upcoming([code], days_ahead=days_ahead)
+    except Exception as e:
+        logger.warning(f"财报披露获取失败 {market}:{code}: {e}")
+        return pd.DataFrame()
+
+
+# ============================================================================
+# 个股资讯（新闻 + 公告）
+# ============================================================================
+
+def news_for_code(code: str, limit: int = 30) -> pd.DataFrame:
+    """个股新闻（东财源，带小时级缓存）"""
+    try:
+        from src.data.scrapers.news_scraper import NewsScraper
+        df = NewsScraper()._fetch_stock_news(str(code).strip())
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return df.sort_values("time", ascending=False).head(limit).reset_index(drop=True)
+    except Exception as e:
+        logger.warning(f"个股新闻获取失败 {code}: {e}")
+        return pd.DataFrame()
+
+
+def announcements_for_code(code: str, limit: int = 30) -> pd.DataFrame:
+    """公司公告（当日为主，带缓存）"""
+    try:
+        from src.data.scrapers.announcement_scraper import AnnouncementScraper
+        scraper = AnnouncementScraper(watchlist=[str(code).strip()])
+        df = scraper.fetch()
+        if df is None or df.empty:
+            return pd.DataFrame()
+        return df.head(limit).reset_index(drop=True)
+    except Exception as e:
+        logger.warning(f"公告获取失败 {code}: {e}")
+        return pd.DataFrame()
+
+
+# ============================================================================
+# 买点 / 卖点信号
+# ============================================================================
+
+# 买点条件清单（条件自身的 ohlcv_period 决定用日线还是周线）
+_BUY_PROFILE: list[tuple[str, dict]] = [
+    ("weekly_macd_divergence", {}),
+    ("daily_macd_divergence", {}),
+    ("weekly_macd_gold_cross", {}),
+    ("rsi_oversold", {"threshold": 30}),
+    ("ma_gold_cross", {"fast_period": 5, "slow_period": 20}),
+    ("kdj_gold_cross", {}),
+    ("box_breakout", {}),
+    ("volume_break", {}),
+    ("multi_ma_bull", {}),
+]
+
+
+@dataclass
+class SignalHit:
+    """单个条件的评估结果"""
+    cond_type: str
+    label: str
+    period: str          # daily / weekly
+    hit: bool
+
+
+def scan_buy_signals(code: str, market: str = "a") -> list[SignalHit]:
+    """
+    对该股跑一遍买点条件清单。
+
+    Returns:
+        每个条件的命中情况（含未命中，页面全量展示）
+    """
+    from src.analysis.screening.conditions import CONDITION_LABELS, CONDITION_REGISTRY
+    from src.analysis.screening.data_provider import ScreenerDataProvider
+
+    provider = ScreenerDataProvider()
+    daily_df = provider.get_daily_ohlcv(code, days_back=500, market=market)
+    weekly_df = provider.get_weekly_ohlcv(code, days_back=365 * 3, market=market)
+
+    spot_row = pd.Series({"代码": code, "名称": ""})
+    out: list[SignalHit] = []
+    for cond_type, kwargs in _BUY_PROFILE:
+        cls = CONDITION_REGISTRY.get(cond_type)
+        if cls is None:
+            continue
+        try:
+            cond = cls(**kwargs)
+        except Exception:
+            continue
+        period = getattr(cond, "ohlcv_period", "daily")
+        df = weekly_df if period == "weekly" else daily_df
+        if df is None or df.empty or len(df) < 25:
+            continue
+        try:
+            hit = bool(cond.evaluate_full(spot_row, df))
+        except Exception as e:
+            logger.debug(f"{code} 买点条件 {cond_type} 异常: {e}")
+            continue
+        out.append(SignalHit(
+            cond_type=cond_type,
+            label=CONDITION_LABELS.get(cond_type, cond_type),
+            period=period,
+            hit=hit,
+        ))
+    return out
+
+
+def sell_verdict_for_code(code: str, name: str = "", market: str = "a",
+                          avg_cost: float = 0.0):
+    """
+    卖出引擎判定（无持仓也可用：avg_cost=0 时只跑 L2 信号，不触发止损）。
+
+    Returns:
+        HoldingEvaluation | None（K 线拉取失败）
+    """
+    from src.portfolio.models import Holding
+    from src.services.portfolio_service import evaluate_holding
+
+    price = current_price(code, market)
+    if price <= 0:
+        return None
+    pseudo = Holding(code=str(code).strip(), name=name or code, market=market,
+                     qty=0, avg_cost=float(avg_cost), buy_date="")
+    return evaluate_holding(pseudo, price, None)
+
+
+# ============================================================================
+# 价格预警（单股规则）
+# ============================================================================
+
+def alert_rules_for_code(code: str) -> tuple[list[dict], list[dict]]:
+    """该股关联的 (买入规则, 卖出规则)"""
+    cfg = load_yaml(PATH_PRICE_ALERTS) or {}
+    code = str(code).strip()
+
+    def _mine(rules: list) -> list[dict]:
+        return [r for r in (rules or [])
+                if str(r.get("code", "")).strip() == code]
+
+    return _mine(cfg.get("buy_alerts")), _mine(cfg.get("sell_alerts"))
+
+
+def add_price_alert_rule(
+    code: str,
+    name: str,
+    direction: str,
+    signal_type: str,
+    params: dict | None = None,
+    cooldown_hours: int = 24,
+) -> tuple[bool, str]:
+    """
+    给该股加一条预警规则（direction ∈ buy/sell）。
+
+    规则 schema 与 pages/5_价格预警 一致，调度器直接消费。
+    """
+    from src.analysis.screening.conditions import CONDITION_REGISTRY
+
+    code = str(code).strip()
+    if signal_type not in CONDITION_REGISTRY:
+        return False, f"未知信号类型: {signal_type}"
+    if direction not in ("buy", "sell"):
+        return False, f"方向必须是 buy/sell: {direction}"
+
+    cfg = load_yaml(PATH_PRICE_ALERTS) or {}
+    key = f"{direction}_alerts"
+    rules = cfg.get(key) or []
+
+    rule_id = f"hub_{code}_{signal_type}"
+    if any(r.get("id") == rule_id for r in rules):
+        return False, "该股已存在同信号规则"
+
+    rules.append({
+        "id": rule_id,
+        "name": name or f"{code} {signal_type}",
+        "code": code,
+        "enabled": True,
+        "signal": {"type": signal_type, "params": dict(params or {})},
+        "cooldown_hours": int(cooldown_hours),
+        "max_results": 5,
+    })
+    cfg[key] = rules
+    ok = atomic_save_yaml(PATH_PRICE_ALERTS, cfg)
+    return ok, ("已添加，调度器下个周期生效" if ok else "写入失败")

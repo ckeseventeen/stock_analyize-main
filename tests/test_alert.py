@@ -195,6 +195,93 @@ class TestPushPlusChannel:
             assert "<p>" in payload["content"]  # HTML 格式
 
 
+@pytest.mark.unit
+class TestWebhookChannel:
+    def test_send_posts_json_payload(self, sample_event):
+        """应向配置 URL POST 完整 JSON 事件体"""
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({"enable": True, "url": "https://example.com/hooks/alert"})
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+            assert ch.send(sample_event) is True
+            args, kwargs = mock_post.call_args
+            assert args[0] == "https://example.com/hooks/alert"
+            import json as _json
+            payload = _json.loads(kwargs["data"].decode("utf-8"))
+            assert payload["title"] == sample_event.title
+            assert payload["event_key"] == sample_event.event_key
+            assert payload["stock_code"] == "600519"
+            assert payload["event_type"] == "price_below"
+            assert kwargs["headers"]["Content-Type"].startswith("application/json")
+            assert kwargs["headers"]["X-Alert-Event"] == "price_below"
+
+    def test_hmac_signature_header(self, sample_event):
+        """配置 secret 后应带 HMAC-SHA256 签名头，且可被接收方校验"""
+        import hashlib
+        import hmac as _hmac
+
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({
+            "enable": True,
+            "url": "https://example.com/hooks/alert",
+            "secret": "top-secret",
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+
+        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+            assert ch.send(sample_event) is True
+            _, kwargs = mock_post.call_args
+            raw_body = kwargs["data"]
+            sig = kwargs["headers"]["X-Alert-Signature-256"]
+            expected = "sha256=" + _hmac.new(b"top-secret", raw_body, hashlib.sha256).hexdigest()
+            assert sig == expected
+
+    def test_custom_headers_merged(self, sample_event):
+        """headers 配置应合并进请求头（如 Authorization）"""
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({
+            "enable": True,
+            "url": "https://example.com/hooks/alert",
+            "headers": {"Authorization": "Bearer tok123"},
+        })
+        mock_resp = MagicMock()
+        mock_resp.status_code = 204
+
+        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+            assert ch.send(sample_event) is True
+            _, kwargs = mock_post.call_args
+            assert kwargs["headers"]["Authorization"] == "Bearer tok123"
+
+    def test_missing_url_disables_channel(self):
+        """无 url 时应自动禁用"""
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({"enable": True, "url": ""})
+        assert ch.enabled is False
+
+    def test_4xx_returns_false_without_retry(self, sample_event):
+        """4xx 配置类错误应直接失败，不触发重试"""
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({"enable": True, "url": "https://example.com/hooks/alert"})
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        mock_resp.text = "forbidden"
+
+        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+            assert ch.send(sample_event) is False
+            assert mock_post.call_count == 1
+
+    def test_env_secret_overrides_config(self, sample_event, monkeypatch):
+        """环境变量 WEBHOOK_SECRET 应优先于 YAML secret"""
+        monkeypatch.setenv("WEBHOOK_SECRET", "ENV_SECRET")
+        from src.automation.alert import WebhookChannel
+        ch = WebhookChannel({"enable": True, "url": "https://example.com/h", "secret": "YAML"})
+        assert ch.secret == "ENV_SECRET"
+
+
 # ========================
 # 重试机制
 # ========================

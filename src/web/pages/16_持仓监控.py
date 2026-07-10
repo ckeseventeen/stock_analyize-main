@@ -22,11 +22,9 @@ import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 
-from src.analysis.screening.data_provider import ScreenerDataProvider  # noqa: E402
 from src.portfolio import (  # noqa: E402
     Holding,
     PortfolioManager,
-    SellEngine,
     Transaction,
 )
 from src.portfolio.macro_signals import analyze_macro  # noqa: E402
@@ -37,7 +35,6 @@ from src.portfolio.position_sizing import (  # noqa: E402
 )
 from src.web.components.stock_autocomplete import stock_autocomplete  # noqa: E402
 
-st.set_page_config(page_title="持仓监控", page_icon="💼", layout="wide")
 st.title("💼 持仓监控")
 st.caption("L1 风控（止损/移动止盈）+ L2 信号（12 个卖出条件）综合判定")
 
@@ -109,41 +106,19 @@ with st.sidebar:
 # 持仓汇总卡片
 # ========================
 if pf.holdings:
-    # 拉最新价
+    from src.services import portfolio_service as psvc
+
+    # 拉最新价（A 股 spot 一次拉全市场；港/美股单独按 K 线尾根补价）
     @st.cache_data(ttl=300, show_spinner=False)
-    def _fetch_spot(_unused_key: str) -> pd.DataFrame:
-        provider = ScreenerDataProvider()
-        return provider.get_all_a_shares()
+    def _fetch_price_maps(_unused_key: str):
+        return psvc.build_a_share_maps()
 
-    with st.spinner("拉取实时行情..."):
-        spot_df = _fetch_spot("v1")
-
-    code_to_price: dict[str, float] = {}
-    code_to_name: dict[str, str] = {}
-    if spot_df is not None and not spot_df.empty:
-        code_col = "代码" if "代码" in spot_df.columns else "code"
-        price_col = "最新价" if "最新价" in spot_df.columns else "close"
-        name_col = "名称" if "名称" in spot_df.columns else "name"
-        for _, row in spot_df.iterrows():
-            c = str(row.get(code_col, "")).zfill(6)
-            try:
-                code_to_price[c] = float(row.get(price_col, 0) or 0)
-                code_to_name[c] = str(row.get(name_col, ""))
-            except (ValueError, TypeError):
-                pass
-
-    # P1-4 Bug 修：A 股 spot 不含港股/美股，单独按 market 取最新价（用 K 线尾根）
     @st.cache_data(ttl=300, show_spinner=False)
     def _fetch_intl_price(code: str, market: str) -> float:
-        try:
-            p = ScreenerDataProvider()
-            df = p.get_daily_ohlcv(code, days_back=10, market=market)
-            if df is None or df.empty:
-                return 0.0
-            close_col = "收盘" if "收盘" in df.columns else "close"
-            return float(pd.to_numeric(df[close_col], errors="coerce").dropna().iloc[-1])
-        except Exception:
-            return 0.0
+        return psvc.fetch_intl_price(code, market)
+
+    with st.spinner("拉取实时行情..."):
+        code_to_price, code_to_name = _fetch_price_maps("v1")
 
     for h in pf.holdings:
         if h.market in ("hk", "us") and h.code not in code_to_price:
@@ -170,16 +145,7 @@ if pf.holdings:
 
         # 单只持仓盈亏排行（小条形图）
         if total_mv > 0:
-            pnl_data = []
-            for h in pf.holdings:
-                price = code_to_price.get(h.code, 0.0)
-                if price > 0 and h.avg_cost > 0:
-                    pnl_data.append({
-                        "代码": h.code,
-                        "名称": h.name,
-                        "浮盈%": h.unrealized_pnl_pct(price),
-                        "市值": h.market_value(price),
-                    })
+            pnl_data = psvc.pnl_rows(pf, code_to_price)
             if pnl_data:
                 df_pnl = pd.DataFrame(pnl_data).sort_values("浮盈%", ascending=True)
                 fig_pnl = go.Figure(go.Bar(
@@ -202,14 +168,7 @@ if pf.holdings:
     with pie_col:
         # 行业暴露饼图（按 tag 分组）
         if total_mv > 0:
-            industry_mv: dict[str, float] = {}
-            for h in pf.holdings:
-                price = code_to_price.get(h.code, 0.0)
-                if price <= 0:
-                    continue
-                ind = h.tag.split("-")[0] if h.tag else "未分类"
-                industry_mv.setdefault(ind, 0.0)
-                industry_mv[ind] += h.market_value(price)
+            industry_mv = psvc.industry_exposure(pf, code_to_price)
             if industry_mv:
                 fig_ind = go.Figure(go.Pie(
                     labels=list(industry_mv.keys()),
@@ -313,34 +272,22 @@ def _render_holding_card(holding: Holding, regime_multiplier: float = 1.0):
 
 def _evaluate_and_show(holding: Holding, cur_price: float, regime_multiplier: float = 1.0):
     if cur_price <= 0:
-        st.warning(f"⚠️ 无最新价（数据源返回空），跳过卖出评估")
+        st.warning("⚠️ 无最新价（数据源返回空），跳过卖出评估")
         return
 
-    provider = ScreenerDataProvider()
-    # P1-6 Bug 修：days_back 动态。如果 buy_date 在 250 天以前（如长期持仓），
-    # K 线买入三角点会落在图外。至少拉到 buy_date 起 + 30 天余量。
-    today = date.today()
-    daily_days = 250
-    if holding.buy_date:
-        try:
-            buy_dt = datetime.strptime(holding.buy_date, "%Y-%m-%d").date()
-            need = (today - buy_dt).days + 30
-            daily_days = max(daily_days, need)
-        except ValueError:
-            pass
+    # K 线动态长度 + L1/L2 综合判定都在服务层
     with st.spinner(f"拉取 {holding.code} K 线..."):
-        daily_df = provider.get_daily_ohlcv(holding.code, days_back=daily_days,
-                                              market=holding.market)
-        weekly_df = provider.get_weekly_ohlcv(holding.code, days_back=365 * 3,
-                                                market=holding.market)
+        evaluation = psvc.evaluate_holding(
+            holding, cur_price, pf.default_alerts,
+            regime_multiplier=regime_multiplier,
+        )
 
-    if daily_df is None or daily_df.empty:
+    if evaluation is None:
         st.error(f"❌ 无法拉取 {holding.code} 的日线数据")
         return
 
-    engine = SellEngine(pf.default_alerts)
-    verdict = engine.evaluate(holding, cur_price, daily_df, weekly_df,
-                               regime_multiplier=regime_multiplier)
+    verdict = evaluation.verdict
+    daily_df = evaluation.daily_df
 
     # 缓存 verdict 给"今日操作清单"用
     if "verdicts_today" in st.session_state:
@@ -503,26 +450,8 @@ if pf.holdings:
     # 性能优化：自动扫描时先并行预热 K 线缓存（每只 ~1s × 持仓数）
     # 让后续 _evaluate_and_show 全命中缓存（~50ms）
     if auto_run and len(pf.holdings) > 1:
-        from concurrent.futures import ThreadPoolExecutor
-
-        def _prefetch_kline(h):
-            try:
-                prov = ScreenerDataProvider()
-                buy_days = 250
-                if h.buy_date:
-                    try:
-                        buy_dt = datetime.strptime(h.buy_date, "%Y-%m-%d").date()
-                        buy_days = max(250, (date.today() - buy_dt).days + 30)
-                    except ValueError:
-                        pass
-                prov.get_daily_ohlcv(h.code, days_back=buy_days, market=h.market)
-                prov.get_weekly_ohlcv(h.code, days_back=365 * 3, market=h.market)
-            except Exception:
-                pass
-
         with st.spinner(f"并行预取 {len(pf.holdings)} 只持仓的 K 线..."):
-            with ThreadPoolExecutor(max_workers=min(8, len(pf.holdings))) as pool:
-                list(pool.map(_prefetch_kline, pf.holdings))
+            psvc.prefetch_klines(pf.holdings)
 
     for holding in pf.holdings:
         with st.container(border=True):

@@ -30,7 +30,6 @@ from src.web.utils import (  # noqa: E402
     remove_code_from_earnings_watchlist,
 )
 
-st.set_page_config(page_title="财报披露", page_icon="📅", layout="wide")
 st.title("📅 财报披露日历")
 st.caption(f"配置文件：`{PATH_EARNINGS}`")
 

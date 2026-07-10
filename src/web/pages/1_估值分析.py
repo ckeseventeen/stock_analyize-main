@@ -19,7 +19,6 @@ from src.web.utils import setup_matplotlib_chinese  # noqa: E402
 
 setup_matplotlib_chinese()
 
-import matplotlib.pyplot as plt  # noqa: E402
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
@@ -32,9 +31,8 @@ from src.web.utils import (  # noqa: E402
     quick_add_stock_widget,
 )
 
-st.set_page_config(page_title="单股分析", page_icon="📊", layout="wide")
-st.title("📊 单股深度分析")
-st.caption("一次选股 → 估值 + 自由现金流 双视角")
+st.title("🎯 个股中心")
+st.caption("一次选股 → 估值 · 基本面 · 回测 · 财报 · 资讯 · 买卖信号 · 预警 全视角")
 
 # 注入全局 CSS 样式实现高级毛玻璃与暗黑卡片效果
 st.markdown("""
@@ -120,14 +118,32 @@ with st.sidebar:
     input_mode_options = ["📋 从关注列表选择", "✏️ 手动输入代码"]
     if not stocks:
         input_mode_options = ["✏️ 手动输入代码"]  # 无关注列表时只能手动
+    # 首页「直达」带来的焦点代码若不在关注列表 → 默认落到手动模式（否则会被列表首项覆盖）
+    _focus_code = str(_focus.get("code", "")).strip()
+    _focus_in_list = any(str(s.get("code", "")).strip() == _focus_code for s in stocks)
+    _default_mode_idx = (
+        len(input_mode_options) - 1
+        if (_focus_code and not _focus_in_list) else 0
+    )
     input_mode = st.radio(
         "选股方式", options=input_mode_options,
+        index=_default_mode_idx,
         horizontal=True, key="page1_input_mode",
         label_visibility="collapsed",
     )
     use_watchlist = input_mode == "📋 从关注列表选择" and stocks
 
+    # 名称自动解析（关注列表 → resolver → 全市场 spot）
+    # 注意：st.cache_data 会忽略下划线开头的参数（不参与缓存键），
+    # 参数名绝不能写成 _code/_market，否则所有代码共享同一条缓存！
+    @st.cache_data(ttl=600, show_spinner=False)
+    def _resolve_name(query_code: str, query_market: str) -> str:
+        from src.services import stock_service as ssvc
+        return ssvc.resolve_name(query_code, query_market)
+
+    # 两种模式彻底分离：代码只有一个来源，杜绝"输入被列表选中项顶回"的 bug
     if use_watchlist:
+        # 列表模式：代码/名称直接取自选中项，不再提供可编辑输入框
         selected_code = searchable_select(
             "从关注列表选择",
             options=stocks,
@@ -139,21 +155,30 @@ with st.sidebar:
             selected = next((s for s in stocks if s["code"] == selected_code), stocks[0])
         else:
             selected = stocks[0]
-        default_code = selected["code"]
-        default_name = selected["name"]
+        code = str(selected["code"]).strip()
+        name = str(selected.get("name", "")).strip()
         default_val = selected.get("valuation", "pe")
         default_range = selected.get(f"{default_val}_range", [10, 20, 30])
+        st.caption(f"✅ 当前：**{name}**（{code}）· 想输任意代码请切「✏️ 手动输入代码」")
     else:
-        st.caption("手动输入股票代码和名称：")
+        # 手动模式：输入框带稳定 key；焦点股票只做首次预填
+        _manual_default = ""
+        if _focus.get("code") and _focus.get("market") == market:
+            _manual_default = str(_focus["code"])
+        code = st.text_input(
+            "股票代码", value=_manual_default,
+            key="page1_code_manual",
+            placeholder="600519 / 00700 / AAPL",
+        ).strip()
 
-    # focus_stock 来自其他页跳转时覆盖（仅在手动模式或 focus 来源匹配时生效）
-    if _focus.get("code") and _focus.get("market") == market:
-        if not use_watchlist:
-            default_code = _focus["code"]
-            default_name = _focus.get("name", default_name)
-
-    code = st.text_input("股票代码", value=default_code)
-    name = st.text_input("股票名称", value=default_name)
+        name = ""
+        if code:
+            name = _resolve_name(code, market)
+            if name:
+                st.caption(f"✅ 已识别：**{name}**")
+            else:
+                name = st.text_input("名称未识别，请手动输入",
+                                     key="page1_name_manual").strip()
 
     # 同步焦点股票（让其他页继承）
     if code.strip():
@@ -169,7 +194,7 @@ with st.sidebar:
         run_btn_fcf = st.button("💰 FCF 分析", type="secondary", use_container_width=True)
 
     # ───── 估值专属：估值方式 + 档位 ─────
-    with st.expander("📊 估值参数（仅估值 Tab 用）", expanded=True):
+    with st.expander("📊 估值参数", expanded=False):
         val_type = st.radio("估值方式", options=["pe", "ps"],
                             index=0 if default_val == "pe" else 1, horizontal=True)
         st.caption("目标价档位（低 / 合理 / 高）")
@@ -215,7 +240,16 @@ else:
 # Tab：估值分析 / FCF 分析
 # ============================================================================
 
-tab_val, tab_fcf = st.tabs(["📊 估值分析", "💰 FCF 自由现金流"])
+# 4 个主 Tab；相关内容合并（同一 Tab 变量可多次 with，内容顺序拼接）
+tab_main, tab_bt, tab_sig_alert, tab_info = st.tabs([
+    "📊 估值与基本面", "🧪 回测", "🚦 信号与预警", "📅 财报与资讯",
+])
+tab_val = tab_main        # 估值段
+tab_fcf = tab_main        # FCF 段（紧随其后）
+tab_sig = tab_sig_alert   # 买卖信号段
+tab_alert = tab_sig_alert # 预警段
+tab_earn = tab_info       # 财报段
+tab_news = tab_info       # 资讯段
 
 
 # ─────────────────────────────────────────────────────────────────
@@ -225,43 +259,19 @@ with tab_val:
 
     @st.cache_data(ttl=300, show_spinner=False)
     def _run_valuation_pipeline(market: str, stock_config: dict):
-        from src.core.analyzer import (
-            AStockAnalyzer,
-            HKStockAnalyzer,
-            USStockAnalyzer,
-        )
-        from src.core.data_fetcher import (
-            AStockDataFetcher,
-            HKStockDataFetcher,
-            USStockDataFetcher,
-        )
-        mapping = {
-            "a": (AStockDataFetcher, AStockAnalyzer),
-            "hk": (HKStockDataFetcher, HKStockAnalyzer),
-            "us": (USStockDataFetcher, USStockAnalyzer),
-        }
-        FetcherCls, AnalyzerCls = mapping[market]
-        with FetcherCls() as fetcher:
-            fin_df = fetcher.get_financial_abstract(stock_config["code"])
-            v_type = stock_config.get("valuation", "pe")
-            hist_val_df = fetcher.get_historical_valuation(stock_config["code"], v_type)
-            market_data = fetcher.get_current_market_data(stock_config["code"])
-        analyzer = AnalyzerCls(fin_df, hist_val_df, market_data, stock_config)
-        result = analyzer.process()
-        return result, fin_df, hist_val_df, market_data
+        from src.services import valuation_service as vsvc
+        run = vsvc.run_valuation(market, stock_config)
+        return run.result, run.fin_df, run.hist_val_df, run.market_data
 
     if run_btn_val:
         if not code or not name:
             st.error("请填入股票代码和名称")
             st.stop()
 
-        stock_config = {
-            "code": code.strip(), "name": name.strip(),
-            "valuation": val_type,
-            f"{val_type}_range": [r_low, r_mid, r_high],
-            "market_name": MARKET_LABELS[market],
-            "category_name": "自定义",
-        }
+        from src.services import valuation_service as _vsvc
+        stock_config = _vsvc.build_stock_config(
+            code, name, market, val_type, [r_low, r_mid, r_high],
+        )
         with st.spinner(f"正在拉取 {name} ({code}) 估值数据..."):
             try:
                 result, fin_df, hist_val_df, market_data = _run_valuation_pipeline(
@@ -327,19 +337,11 @@ with tab_val:
                 """, unsafe_allow_html=True)
 
             # 历史分位数发光徽章卡片
+            from src.services import valuation_service as _vsvc2
             hist_pct = result.get('hist_percentile', 0)
-            if hist_pct < 20:
-                badge_class = "badge-green"
-                pct_label = "极度低估"
-            elif hist_pct < 50:
-                badge_class = "badge-green"
-                pct_label = "合理偏低"
-            elif hist_pct < 80:
-                badge_class = "badge-yellow"
-                pct_label = "合理偏高"
-            else:
-                badge_class = "badge-red"
-                pct_label = "极度高估"
+            pct_label, _pct_level = _vsvc2.percentile_badge(hist_pct)
+            badge_class = {"low": "badge-green", "mid": "badge-yellow",
+                           "high": "badge-red"}[_pct_level]
 
             st.markdown(f"""
                 <div class="metric-card-glass">
@@ -349,20 +351,9 @@ with tab_val:
                 </div>
             """, unsafe_allow_html=True)
 
-            # 目标价档位计算 (修复原本 result 没有 target_prices 的 bug)
+            # 目标价档位
             st.subheader("🎯 目标价档位")
-            scenarios = result.get("scenarios", [0, 0, 0])
-            target_prices = {
-                "保守": scenarios[0],
-                "中性": scenarios[1],
-                "乐观": scenarios[2],
-            }
-            tp_df = pd.DataFrame([
-                {"档位": level, "目标价": round(price, 2),
-                 "相对当前": f"{(price / result['price'] - 1) * 100:+.1f}%"
-                            if result.get("price") else ""}
-                for level, price in target_prices.items()
-            ])
+            tp_df = pd.DataFrame(_vsvc2.target_price_rows(result))
             st.dataframe(tp_df, width="stretch", hide_index=True)
 
             # 渲染 Plotly 交互式图表
@@ -370,46 +361,21 @@ with tab_val:
             try:
                 from src.core.visualizer import Visualizer
                 viz = Visualizer(result, stock_config)
-                
+
                 c_left, c_right = st.columns(2)
                 with c_left:
                     st.plotly_chart(viz.plot_revenue_profit_plotly(), use_container_width=True)
                 with c_right:
                     st.plotly_chart(viz.plot_hist_valuation_plotly(), use_container_width=True)
-                
+
                 st.plotly_chart(viz.plot_scenario_plotly(), use_container_width=True)
             except Exception as e:
                 st.error(f"图表渲染失败: {e}")
                 st.exception(e)
 
-            # 核心指标总览数据表 (替换原来的 matplotlib 表格)
+            # 核心指标总览数据表
             st.subheader("📋 核心指标综合总览")
-            # BUG-5 修复：使用 result['annual_df'] 获取年份（其索引始终为 DatetimeIndex），
-            # 而非 fin_df（A 股原始 fin_df 索引可能是字符串）
-            _annual_df = result.get('annual_df')
-            if _annual_df is not None and not _annual_df.empty and hasattr(_annual_df.index, 'year'):
-                latest_year = str(_annual_df.index[-1].year)
-            else:
-                latest_year = '-'
-            rev_val = result.get('ttm_revenue', 0) / 1e8
-            np_val = result.get('ttm_net_profit', 0) / 1e8
-            gm_val = 0.0
-            if fin_df is not None and not fin_df.empty and '营业总收入' in fin_df.columns and '营业成本' in fin_df.columns:
-                latest_annual = fin_df.iloc[0]
-                rev_annual = latest_annual.get('营业总收入', 0)
-                cost_annual = latest_annual.get('营业成本', 0)
-                if rev_annual > 0:
-                    gm_val = (rev_annual - cost_annual) / rev_annual * 100
-
-            summary_data = [
-                {"关键指标": "财报最新年度", "数据": latest_year, "备注解析": "最新年度数据依据"},
-                {"关键指标": "营业总收入 (亿元)", "数据": f"{rev_val:.2f}", "备注解析": "年度总计 (TTM)"},
-                {"关键指标": "归母净利润 (亿元)", "数据": f"{np_val:.2f}", "备注解析": "年度总计 (TTM)"},
-                {"关键指标": "毛利率 (%)", "数据": f"{gm_val:.2f}%", "备注解析": "(营业收入-营业成本)/营业收入"},
-                {"关键指标": "当前股价 (元)", "数据": f"{result['price']:.2f}", "备注解析": "实时动态行情"},
-                {"关键指标": f"当前 {val_type.upper()} (TTM)", "数据": f"{pe_val}" if val_type == 'pe' else f"{ps_val}", "备注解析": "基于最新滚动四个季度"},
-                {"关键指标": f"历史 {val_type.upper()} 分位数", "数据": f"{hist_pct:.2f}%", "备注解析": "处于过去历史排位"},
-            ]
+            summary_data = _vsvc2.summary_rows(result, fin_df, val_type)
             st.dataframe(pd.DataFrame(summary_data), width="stretch", hide_index=True)
 
             # 数据原表整合进 Tab
@@ -435,25 +401,14 @@ with tab_val:
 # Tab 2：FCF 分析
 # ─────────────────────────────────────────────────────────────────
 with tab_fcf:
-
-    from src.analysis.factor.fcf_analyzer import FCFAnalyzer
-    from src.data.fcf_data_fetcher import FCFDataFetcher
-
-    @st.cache_data(ttl=300, show_spinner=False)
-    def _cached_fcf_fetch(market: str, code: str, is_annual: bool):
-        return FCFDataFetcher.fetch(market, code, is_annual=is_annual)
+    st.markdown("---")
+    st.subheader("💰 FCF 基本面")
 
     @st.cache_data(ttl=300, show_spinner=False)
-    def _cached_market_cap(market: str, code: str):
-        from src.core.market_registry import get_market
-        try:
-            spec = get_market(market)
-            FetcherCls = spec.fetcher_cls
-            with FetcherCls() as fetcher:
-                return fetcher.get_current_market_data(code).get("market_cap", 0.0)
-        except Exception as e:
-            st.warning(f"获取市值失败: {e}")
-        return 0.0
+    def _cached_fcf_run(market: str, code: str, is_annual: bool):
+        from src.services import valuation_service as vsvc
+        run = vsvc.run_fcf(market, code, is_annual=is_annual)
+        return run.analyzed_df, run.score_res
 
     fcf_params = {"code": code.strip(), "market": market, "period": period}
     _fcf_state = load_result("fcf", code.strip(), market, fcf_params)
@@ -464,22 +419,17 @@ with tab_fcf:
         else:
             with st.spinner(f"正在拉取 {name} ({code}) 的 {period} 财务数据..."):
                 try:
-                    raw_df = _cached_fcf_fetch(market, code, is_annual=is_annual)
-                    if raw_df.empty:
+                    analyzed_df, score_res = _cached_fcf_run(market, code, is_annual)
+                    if analyzed_df.empty:
                         st.warning("FCF 财务数据为空 - 检查代码或数据源")
                     else:
-                        market_cap = _cached_market_cap(market, code)
-                        analyzer = FCFAnalyzer(raw_df, market_cap)
-                        analyzed_df = analyzer.calculate_metrics()
-                        score_res = analyzer.generate_scorecard()
-                        if not analyzed_df.empty:
-                            save_result("fcf", code.strip(), market, fcf_params, {
-                                "analyzed_df": analyzed_df,
-                                "score_res": score_res,
-                                "name": name, "code": code,
-                                "is_annual": is_annual,
-                            })
-                            _fcf_state = load_result("fcf", code.strip(), market, fcf_params)
+                        save_result("fcf", code.strip(), market, fcf_params, {
+                            "analyzed_df": analyzed_df,
+                            "score_res": score_res,
+                            "name": name, "code": code,
+                            "is_annual": is_annual,
+                        })
+                        _fcf_state = load_result("fcf", code.strip(), market, fcf_params)
                 except Exception as e:
                     st.error(f"FCF 分析失败: {e}")
 
@@ -608,3 +558,230 @@ with tab_fcf:
             st.info("FCF 分析结果为空")
     else:
         st.info("👈 在左侧配置后点击「💰 FCF 分析」生成 FCF 报告")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Tab 3：策略回测（多策略一键对比，精细调参去「策略回测」页）
+# ─────────────────────────────────────────────────────────────────
+with tab_bt:
+    if not code.strip():
+        st.info("👈 请先在侧边栏选股")
+    else:
+        bt_c1, bt_c2 = st.columns([1, 3])
+        with bt_c1:
+            hub_bt_days = st.number_input("回测天数", 200, 5000, 1000, 100,
+                                          key="hub_bt_days")
+        with bt_c2:
+            st.caption("跑全部已注册策略并对比 KPI。需要调参数/换策略请到「🧪 策略回测」页。")
+
+        if st.button("▶️ 一键回测全部策略", type="primary", key="hub_bt_run"):
+            from src.services import backtest_service as btsvc
+            with st.spinner(f"正在回测 {name or code} ..."):
+                try:
+                    cmp_result, bt_df = btsvc.run_compare(
+                        code.strip(), market, int(hub_bt_days))
+                except Exception as e:
+                    st.error(f"回测失败: {e}")
+                    cmp_result = None
+            if cmp_result is None:
+                st.error("未能获取数据，请检查代码/网络")
+            else:
+                st.session_state["hub_bt_result"] = cmp_result
+
+        _hub_cmp = st.session_state.get("hub_bt_result")
+        if _hub_cmp is not None:
+            from src.services import backtest_service as btsvc
+            best = btsvc.best_of(_hub_cmp)
+            if best is not None:
+                b1, b2, b3 = st.columns(3)
+                b1.metric("🏆 最佳策略", best.label)
+                b2.metric("总收益", f"{(best.report or {}).get('总收益率(%)', 0):+.2f}%")
+                b3.metric("夏普", f"{(best.report or {}).get('夏普比率', 0):.2f}")
+            _parts = []
+            for _cat in _hub_cmp.by_category():
+                _d = _hub_cmp.summary_df_by_category(_cat)
+                if not _d.empty:
+                    _parts.append(_d)
+            if _parts:
+                st.dataframe(pd.concat(_parts), width="stretch", hide_index=True)
+            eq = _hub_cmp.equity_curves_df()
+            if eq is not None and not eq.empty:
+                fig_eq = go.Figure()
+                for col in eq.columns:
+                    fig_eq.add_trace(go.Scatter(
+                        x=eq.index, y=eq[col], mode="lines", name=col,
+                        line={"width": 2 if col == "Buy & Hold" else 1.3,
+                              "dash": "dash" if col == "Buy & Hold" else "solid"}))
+                fig_eq.update_layout(height=420, hovermode="x unified",
+                                     legend={"orientation": "h", "y": 1.05})
+                st.plotly_chart(fig_eq, width="stretch")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Tab 4：财报披露
+# ─────────────────────────────────────────────────────────────────
+with tab_earn:
+    if not code.strip():
+        st.info("👈 请先在侧边栏选股")
+    else:
+        if st.button("📅 查询披露计划", type="primary", key="hub_earn_run"):
+            from src.services import stock_service as ssvc
+            with st.spinner("查询未来 90 天披露计划..."):
+                st.session_state["hub_earn"] = (
+                    code.strip(),
+                    ssvc.earnings_for_code(code.strip(), market, days_ahead=90),
+                )
+        _earn_state = st.session_state.get("hub_earn")
+        if _earn_state and _earn_state[0] == code.strip():
+            earn_df = _earn_state[1]
+            if earn_df.empty:
+                st.info("未来 90 天暂无该股披露计划（或数据源无记录）")
+            else:
+                st.dataframe(earn_df, width="stretch", hide_index=True)
+        else:
+            st.caption("查询该股未来 90 天的财报披露计划与业绩预告。全市场日历见「📅 财报披露」页。")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Tab 5：资讯（个股新闻 + 公告）
+# ─────────────────────────────────────────────────────────────────
+with tab_news:
+    st.markdown("---")
+    st.subheader("📰 个股资讯")
+    if not code.strip():
+        st.caption("👈 请先在侧边栏选股")
+    elif market != "a":
+        st.info("个股资讯目前仅支持 A 股（数据源限制）")
+    else:
+        if st.button("📰 拉取最新资讯", type="primary", key="hub_news_run"):
+            from src.services import stock_service as ssvc
+            with st.spinner("拉取新闻与公告..."):
+                st.session_state["hub_news"] = (
+                    code.strip(),
+                    ssvc.news_for_code(code.strip()),
+                    ssvc.announcements_for_code(code.strip()),
+                )
+        _news_state = st.session_state.get("hub_news")
+        if _news_state and _news_state[0] == code.strip():
+            _, news_df, ann_df = _news_state
+            nc1, nc2 = st.columns(2)
+            with nc1:
+                st.markdown("##### 📰 个股新闻")
+                if news_df.empty:
+                    st.caption("暂无新闻")
+                else:
+                    for _, row in news_df.head(15).iterrows():
+                        _t = str(row.get("time", ""))[:16]
+                        st.markdown(
+                            f"- [{row.get('title', '')}]({row.get('url', '')})  \n"
+                            f"  <small>{_t} · {row.get('source', '')}</small>",
+                            unsafe_allow_html=True)
+            with nc2:
+                st.markdown("##### 📄 公司公告")
+                if ann_df.empty:
+                    st.caption("今日暂无公告")
+                else:
+                    st.dataframe(ann_df, width="stretch", hide_index=True, height=420)
+        else:
+            st.caption("拉取该股最新新闻与公告。批量抓取（含研报/持仓）见「🌐 资讯抓取」页。")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Tab 6：买卖信号（买点条件扫描 + 卖出引擎判定）
+# ─────────────────────────────────────────────────────────────────
+with tab_sig:
+    if not code.strip():
+        st.info("👈 请先在侧边栏选股")
+    else:
+        if st.button("🚦 扫描买卖信号", type="primary", key="hub_sig_run"):
+            from src.services import stock_service as ssvc
+            with st.spinner("扫描买点条件 + 卖出引擎评估..."):
+                st.session_state["hub_sig"] = (
+                    code.strip(),
+                    ssvc.scan_buy_signals(code.strip(), market),
+                    ssvc.sell_verdict_for_code(code.strip(), name, market),
+                )
+        _sig_state = st.session_state.get("hub_sig")
+        if _sig_state and _sig_state[0] == code.strip():
+            _, buy_hits, evaluation = _sig_state
+            sig_c1, sig_c2 = st.columns(2)
+            with sig_c1:
+                st.markdown("##### 🟢 买点条件")
+                if not buy_hits:
+                    st.caption("数据不足，无法评估")
+                else:
+                    n_hit = sum(1 for h in buy_hits if h.hit)
+                    st.metric("命中 / 总条件", f"{n_hit} / {len(buy_hits)}")
+                    for h in buy_hits:
+                        icon = "✅" if h.hit else "▫️"
+                        st.markdown(f"{icon} **{h.label}** `{h.period}`")
+            with sig_c2:
+                st.markdown("##### 🔴 卖出引擎判定")
+                if evaluation is None:
+                    st.caption("无法获取行情/K 线，无法评估")
+                else:
+                    v = evaluation.verdict
+                    st.metric("综合风险分", f"{v.risk_pct:.0f}%", v.risk_level)
+                    st.markdown(v.advice)
+                    if v.signals:
+                        for s in v.signals:
+                            _pri = "🔴" if s["priority"] == 1 else "🟠" if s["priority"] == 2 else "🟡"
+                            st.markdown(f"{_pri} **{s['label']}**（权重 {s['weight']}）")
+                    else:
+                        st.caption("无卖出信号命中")
+            st.caption("💡 持仓的止损/止盈（L1）判定需在「💼 持仓监控」录入成本后查看。")
+        else:
+            st.caption("对该股跑一遍买点条件清单（MACD 背离/金叉/超卖/突破…）+ 卖出引擎 L2 信号。")
+
+
+# ─────────────────────────────────────────────────────────────────
+# Tab 7：价格预警（该股规则 + 快速添加）
+# ─────────────────────────────────────────────────────────────────
+with tab_alert:
+    st.markdown("---")
+    st.subheader("🔔 价格预警")
+    if not code.strip():
+        st.caption("👈 请先在侧边栏选股")
+    else:
+        from src.services import stock_service as ssvc
+        buy_rules, sell_rules = ssvc.alert_rules_for_code(code.strip())
+
+        st.markdown(f"##### 该股已配置规则（买入 {len(buy_rules)} / 卖出 {len(sell_rules)}）")
+        for _direction, _rules in (("买入", buy_rules), ("卖出", sell_rules)):
+            for r in _rules:
+                _sig = (r.get("signal") or {})
+                _enabled = "✅" if r.get("enabled", True) else "⏸"
+                st.markdown(
+                    f"- {_enabled} **[{_direction}] {r.get('name', r.get('id'))}** — "
+                    f"`{_sig.get('type', '?')}` · 冷却 {r.get('cooldown_hours', 24)}h")
+        if not buy_rules and not sell_rules:
+            st.caption("暂无规则。下方快速添加，或到「🔔 价格预警」页做完整配置。")
+
+        st.markdown("---")
+        st.markdown("##### ⚡ 快速添加监控")
+        qa_c1, qa_c2, qa_c3 = st.columns([1, 2, 1])
+        with qa_c1:
+            qa_dir = st.selectbox("方向", ["buy", "sell"],
+                                  format_func=lambda d: "🟢 买点" if d == "buy" else "🔴 卖点",
+                                  key="hub_qa_dir")
+        with qa_c2:
+            from src.analysis.screening.conditions import CONDITION_LABELS as _CL2
+            _buy_sigs = ["weekly_macd_divergence", "daily_macd_divergence", "rsi_oversold",
+                         "ma_gold_cross", "kdj_gold_cross", "box_breakout"]
+            _sell_sigs = ["weekly_macd_top_divergence", "daily_macd_top_divergence",
+                          "rsi_overbought", "ma_death_cross", "kdj_death_cross",
+                          "break_below_ma"]
+            qa_sig = st.selectbox(
+                "信号", _buy_sigs if qa_dir == "buy" else _sell_sigs,
+                format_func=lambda s: _CL2.get(s, s), key="hub_qa_sig")
+        with qa_c3:
+            st.markdown("&nbsp;")
+            if st.button("➕ 添加", type="primary", key="hub_qa_add"):
+                ok, msg = ssvc.add_price_alert_rule(
+                    code.strip(),
+                    f"{name or code} {_CL2.get(qa_sig, qa_sig)}",
+                    qa_dir, qa_sig)
+                (st.success if ok else st.error)(msg)
+                if ok:
+                    st.rerun()
+        st.caption("添加后由调度器按 config/scheduler.yaml 周期自动扫描并推送。")

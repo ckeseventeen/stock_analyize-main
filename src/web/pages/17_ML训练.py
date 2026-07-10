@@ -23,7 +23,6 @@ if str(_ROOT) not in sys.path:
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
 
-st.set_page_config(page_title="ML 训练", page_icon="🧠", layout="wide")
 st.title("🧠 ML 自学习模型训练")
 st.caption("基本面 + 技术指标 → LightGBM 预测未来 20 日超额收益 → ml_top_k / ML 策略 / 持仓评分")
 

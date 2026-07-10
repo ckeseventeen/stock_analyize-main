@@ -25,7 +25,6 @@ from src.web.utils import (  # noqa: E402
     set_active_factor_profile,
 )
 
-st.set_page_config(page_title="因子库", page_icon="🎯", layout="wide")
 st.title("🎯 因子库")
 st.caption(
     f"配置文件：`{PATH_FACTORS}` · 代码端通过 `build_engine_from_config()` 读取"
@@ -191,6 +190,6 @@ nav = st.columns(3)
 with nav[0]:
     st.page_link("pages/9_指标参数.py", label="📐 指标参数", icon="📐")
 with nav[1]:
-    st.page_link("pages/14_回测预设.py", label="🔁 回测预设", icon="🔁")
+    st.page_link("pages/4_策略回测.py", label="🧪 策略回测", icon="🧪")
 with nav[2]:
     st.page_link("pages/12_关注标的.py", label="📌 关注标的", icon="📌")

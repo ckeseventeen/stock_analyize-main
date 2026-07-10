@@ -28,7 +28,6 @@ from src.web.utils import (  # noqa: E402
     quick_edit_list_widget,
 )
 
-st.set_page_config(page_title="资讯抓取", page_icon="🌐", layout="wide")
 st.title("🌐 财经资讯抓取")
 st.caption(f"配置文件：`{PATH_SCRAPER}`")
 

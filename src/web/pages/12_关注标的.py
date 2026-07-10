@@ -78,8 +78,6 @@ INDUSTRY_OPTIONS = [
     "其他",
 ]
 
-st.set_page_config(page_title="关注标的管理", page_icon="📌", layout="wide")
-
 # ========================
 # 自定义样式
 # ========================

@@ -30,7 +30,6 @@ from src.analysis.screening.conditions import (  # noqa: E402
 )
 from src.analysis.screening.data_provider import ScreenerDataProvider  # noqa: E402
 
-st.set_page_config(page_title="卖点扫描", page_icon="📉", layout="wide")
 st.title("📉 个股卖点 / 回调扫描")
 st.caption("评估所有看跌信号 → 综合风险评分 | 持仓体检 / 高位减仓决策")
 

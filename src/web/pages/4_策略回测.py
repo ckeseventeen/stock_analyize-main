@@ -22,19 +22,15 @@ from src.web.utils import setup_matplotlib_chinese  # noqa: E402
 
 setup_matplotlib_chinese()
 
-import backtrader as bt  # noqa: F401, E402
 import pandas as pd  # noqa: E402
 import plotly.graph_objects as go  # noqa: E402
 import streamlit as st  # noqa: E402
 import yaml as _yaml  # noqa: E402
 
-from src.analysis.screening.data_provider import ScreenerDataProvider
 from src.strategy.backtest import (
     STRATEGY_LABELS,
     STRATEGY_PARAM_SCHEMAS,
     STRATEGY_REGISTRY,
-    BacktestRunner,
-    run_all_strategies,
 )
 from src.web.components.state import load_result, save_result  # noqa: E402
 from src.web.utils import (
@@ -47,7 +43,6 @@ from src.web.utils import (
     save_backtest_preset,
 )
 
-st.set_page_config(page_title="策略回测", page_icon="📈", layout="wide")
 st.title("📈 策略回测 (Backtest)")
 st.caption("基于 Backtrader 的量化策略验证。可从「策略配置」页编辑策略后一键回测，也可从预设加载。")
 
@@ -188,32 +183,9 @@ if _mode == "🆚 多策略对比":
             st.error("至少选一个策略")
             st.stop()
 
-        # 拉数据
-        with st.spinner(f"正在拉取 {cmp_code} 近 {cmp_days} 天日线数据..."):
-            try:
-                provider = ScreenerDataProvider()
-                df = provider.get_daily_ohlcv(cmp_code.strip(), days_back=int(cmp_days),
-                                              market=cmp_market)
-            except Exception as e:
-                st.error(f"数据拉取失败: {e}")
-                st.exception(e)
-                st.stop()
+        # 跑所有策略（带进度条）；取数/归一化/运行都在服务层
+        from src.services import backtest_service as btsvc
 
-        if df is None or df.empty:
-            st.error(f"未能获取 {cmp_code} 的数据，请检查代码 / 网络")
-            st.stop()
-
-        # 归一化列名：akshare/baostock 返回的中文列名 → 英文标准列名
-        # 这样 K 线图、CompareResult._buy_and_hold_curve、Backtrader 都能用同一份 df
-        from src.core.columns import normalize_ohlcv_columns
-        df = normalize_ohlcv_columns(df)
-        # 兜底：确保 date 列在 index 上，便于 K 线图 x 轴
-        if "date" in df.columns and df.index.name != "date":
-            df = df.copy()
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-            df = df.dropna(subset=["date"]).set_index("date")
-
-        # 跑所有策略（带进度条）
         progress_bar = st.progress(0.0, text="启动...")
         status_lines = st.empty()
         progress_log: list[str] = []
@@ -224,14 +196,23 @@ if _mode == "🆚 多策略对比":
             progress_bar.progress((idx + 1) / total, text=f"{idx + 1}/{total} {label}")
             status_lines.markdown("  \n".join(progress_log))
 
-        with st.spinner("正在并行运行所有策略..."):
-            cmp_result = run_all_strategies(
-                df, stock_code=cmp_code.strip(), market=cmp_market,
-                initial_cash=float(cmp_cash), commission=float(cmp_comm),
-                strategy_keys=chosen_strategies,
-                custom_params=cmp_custom_params or None,
-                progress_cb=_cb,
-            )
+        with st.spinner(f"正在拉取 {cmp_code} 数据并并行运行所有策略..."):
+            try:
+                cmp_result, df = btsvc.run_compare(
+                    cmp_code, cmp_market, int(cmp_days),
+                    initial_cash=float(cmp_cash), commission=float(cmp_comm),
+                    strategy_keys=chosen_strategies,
+                    custom_params=cmp_custom_params or None,
+                    progress_cb=_cb,
+                )
+            except Exception as e:
+                st.error(f"回测执行失败: {e}")
+                st.exception(e)
+                st.stop()
+
+        if cmp_result is None:
+            st.error(f"未能获取 {cmp_code} 的数据，请检查代码 / 网络")
+            st.stop()
 
         progress_bar.empty()
 
@@ -240,12 +221,7 @@ if _mode == "🆚 多策略对比":
         # ────────────────────────────────────────────
         try:
             from datetime import datetime as _dt
-            successful = [r for r in cmp_result.results if r.success]
-            best = max(
-                successful,
-                key=lambda r: (r.report or {}).get("总收益率(%)", -1e9),
-                default=None,
-            )
+            best = btsvc.best_of(cmp_result)
             history_entry = {
                 "time": _dt.now().strftime("%H:%M:%S"),
                 "market": cmp_market,
@@ -547,7 +523,6 @@ strategy_key = st.sidebar.selectbox(
     format_func=lambda k: STRATEGY_LABELS.get(k, k),
     index=default_strategy_idx,
 )
-strategy_cls = STRATEGY_REGISTRY[strategy_key]
 
 # 如果是筛选器桥接策略，提供一键导入功能（使用统一的配置体系）
 if strategy_key == "screener_rule":
@@ -814,26 +789,18 @@ if run_btn:
 
     with st.spinner("正在获取日线数据并运行回测引擎..."):
         try:
-            provider = ScreenerDataProvider()
-            if frequency == "d":
-                df = provider.get_daily_ohlcv(stock_code, days_back=days_back, market=market)
-            elif frequency == "w":
-                df = provider.get_weekly_ohlcv(stock_code, days_back=days_back, market=market)
-            elif frequency == "m":
-                df = provider.get_monthly_ohlcv(stock_code, days_back=days_back, market=market)
-            else:
-                df = provider.get_yearly_ohlcv(stock_code, days_back=days_back, market=market)
-
-            if df is None or df.empty:
+            from src.services import backtest_service as btsvc
+            single = btsvc.run_single(
+                strategy_key, stock_code, market, int(days_back),
+                frequency=frequency,
+                initial_cash=initial_cash, commission=commission,
+                params=strat_params,
+            )
+            if single is None:
                 st.error(f"获取股票 {stock_code} 的数据失败，请检查代码是否正确或网络情况。")
                 st.stop()
-
-            runner = BacktestRunner(
-                strategy_class=strategy_cls,
-                data_df=df,
-                **strat_params,
-            )
-            report = runner.run(initial_cash=initial_cash, commission=commission)
+            report = single.report
+            df = single.raw_df
 
         except Exception as e:
             st.error(f"回测执行失败: {e}")
@@ -860,7 +827,7 @@ if run_btn:
         "strategy_key": strategy_key,
         "commission": commission,
         "initial_cash": initial_cash,
-        "runner_data_df": runner._data_df.copy() if report else None,
+        "runner_data_df": single.data_df if report else None,
         "strat_params": strat_params,
         "df": df if report else None,
         "show_ma": strategy_key == "ma_crossover",
@@ -944,19 +911,10 @@ else:
             last_buy_date = None
             current_pos = 0
 
-            # 从报告数据中重建信号
-            # 注意：如果是从状态恢复的，可能没有完整的订单数据
-            # 我们使用 k_df 的数据重建 MACD 等
-            from src.analysis.technical.indicators import TechnicalAnalyzer
-            ta = TechnicalAnalyzer(k_df)
-            ta.add_macd()
-            m_df = ta.get_dataframe()
-
-            # 金叉死叉
-            m_df["prev_macd"] = m_df["macd"].shift(1)
-            m_df["prev_signal"] = m_df["macd_signal"].shift(1)
-            golden_cross = (m_df["macd"] > m_df["macd_signal"]) & (m_df["prev_macd"] <= m_df["prev_signal"])
-            death_cross = (m_df["macd"] < m_df["macd_signal"]) & (m_df["prev_macd"] >= m_df["prev_signal"])
+            # MACD / 金叉死叉 / 背离全部由服务层计算
+            from src.services import backtest_service as _btsvc
+            frames = _btsvc.build_chart_frames(k_df)
+            m_df = frames.macd_df
 
             # 均线
             if show_ma:
@@ -1023,8 +981,8 @@ else:
             hist_colors = ["#ef5350" if h >= 0 else "#26a69a" for h in m_df["macd_hist"]]
             fig.add_trace(go.Bar(x=m_df.index, y=m_df["macd_hist"], marker_color=hist_colors, name="Hist", showlegend=False), row=3, col=1)
 
-            gold_dates = m_df.index[golden_cross]
-            death_dates = m_df.index[death_cross]
+            gold_dates = frames.golden_cross_dates
+            death_dates = frames.death_cross_dates
 
             if not gold_dates.empty:
                 fig.add_trace(go.Scatter(x=gold_dates, y=m_df.loc[gold_dates, "macd"], mode="markers",
@@ -1033,38 +991,17 @@ else:
                 fig.add_trace(go.Scatter(x=death_dates, y=m_df.loc[death_dates, "macd"], mode="markers",
                                          marker={"symbol": "circle", "size": 8, "color": "#1976D2"}, name="MACD 死叉"), row=3, col=1)
 
-            # 背离检测
-            try:
-                from scipy.signal import argrelmax, argrelmin
-
-                def get_divergences(df_inner):
-                    price = df_inner["close"].values
-                    hist = df_inner["macd_hist"].values
-                    bottom_divs = []
-                    top_divs = []
-                    troughs = argrelmin(price, order=5)[0]
-                    for ii in range(1, len(troughs)):
-                        curr, prev = troughs[ii], troughs[ii-1]
-                        if price[curr] < price[prev] and hist[curr] > hist[prev] and hist[curr] < 0 and hist[prev] < 0:
-                            bottom_divs.append(df_inner.index[curr])
-                    peaks = argrelmax(price, order=5)[0]
-                    for ii in range(1, len(peaks)):
-                        curr, prev = peaks[ii], peaks[ii-1]
-                        if price[curr] > price[prev] and hist[curr] < hist[prev] and hist[curr] > 0 and hist[prev] > 0:
-                            top_divs.append(df_inner.index[curr])
-                    return bottom_divs, top_divs
-
-                bottom_div_dates, top_div_dates = get_divergences(m_df)
-                if bottom_div_dates:
-                    fig.add_trace(go.Scatter(x=bottom_div_dates, y=m_df.loc[bottom_div_dates, "low"] * 0.98, mode="markers+text",
-                                             text="底背离", textposition="bottom center",
-                                             marker={"symbol": "star-triangle-up", "size": 12, "color": "#FF5722"}, name="底背离"), row=1, col=1)
-                if top_div_dates:
-                    fig.add_trace(go.Scatter(x=top_div_dates, y=m_df.loc[top_div_dates, "high"] * 1.02, mode="markers+text",
-                                             text="顶背离", textposition="top center",
-                                             marker={"symbol": "star-triangle-down", "size": 12, "color": "#9C27B0"}, name="顶背离"), row=1, col=1)
-            except ImportError:
-                pass
+            # 背离标注（计算在服务层完成）
+            bottom_div_dates = frames.bottom_divergences
+            top_div_dates = frames.top_divergences
+            if bottom_div_dates:
+                fig.add_trace(go.Scatter(x=bottom_div_dates, y=m_df.loc[bottom_div_dates, "low"] * 0.98, mode="markers+text",
+                                         text="底背离", textposition="bottom center",
+                                         marker={"symbol": "star-triangle-up", "size": 12, "color": "#FF5722"}, name="底背离"), row=1, col=1)
+            if top_div_dates:
+                fig.add_trace(go.Scatter(x=top_div_dates, y=m_df.loc[top_div_dates, "high"] * 1.02, mode="markers+text",
+                                         text="顶背离", textposition="top center",
+                                         marker={"symbol": "star-triangle-down", "size": 12, "color": "#9C27B0"}, name="顶背离"), row=1, col=1)
 
             fig.add_trace(go.Scatter(
                 x=k_df.index, y=benchmark,

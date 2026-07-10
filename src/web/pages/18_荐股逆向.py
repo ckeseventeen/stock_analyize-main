@@ -23,7 +23,6 @@ import streamlit as st  # noqa: E402
 
 from src.web.utils import df_to_csv_bytes  # noqa: E402
 
-st.set_page_config(page_title="荐股逆向工程", page_icon="🔬", layout="wide")
 st.title("🔬 荐股逆向工程")
 st.caption("对推荐标的提取触发日量价/形态/题材特征，并与全市场做横截面对照")
 

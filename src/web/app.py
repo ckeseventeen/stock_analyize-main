@@ -1,11 +1,13 @@
 """
-src/web/app.py — Streamlit 前端入口
+src/web/app.py — Streamlit 前端入口（分组导航路由）
 
 启动命令：
     streamlit run src/web/app.py --server.port=8501
 
-pages/ 目录下的文件会自动出现在侧边栏（按文件名前缀数字排序）。
-本文件作为首页，展示系统概览与快速入口。
+架构（Streamlit 1.36+ st.navigation）：
+  - 本文件是唯一路由：统一 set_page_config + 注入全局 CSS + 分组侧栏导航
+  - pages/ 下的页面文件不再各自 set_page_config（由本路由统一）
+  - 首页是仪表盘：关键指标 + 快捷入口，不再是文字墙
 """
 from __future__ import annotations
 
@@ -19,10 +21,8 @@ if str(_ROOT) not in sys.path:
 
 import streamlit as st  # noqa: E402
 
+from src.web.theme import inject_global_css  # noqa: E402
 from src.web.utils import (  # noqa: E402
-    ALERT_STATE_PATH,
-    CONFIG_DIR,
-    OUTPUT_DIR,
     PATH_A_STOCK,
     PATH_HK_STOCK,
     PATH_PRICE_ALERTS,
@@ -32,241 +32,180 @@ from src.web.utils import (  # noqa: E402
     setup_matplotlib_chinese,
 )
 
-# 初始化 matplotlib 中文渲染（全局一次即可）
+# ── 全局初始化（路由级，只跑一次语义）──
+st.set_page_config(
+    page_title="量化投研平台",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+inject_global_css()
 setup_matplotlib_chinese()
-
-# 确保 cache/logs/output 目录存在
 ensure_project_dirs()
 
-# 自动启动后台调度器（幂等：进程级单例，Streamlit rerun 不会重复启动）
-# B24/SEC6 修复：settings.scheduler_disabled 为 True 时跳过，
-# 避免与独立 `python -m src.automation.scheduler` 进程双启动（典型场景：docker-compose 部署）
+# 自动启动后台调度器（幂等：进程级单例）
 from src.core.settings import settings as _settings  # noqa: E402
 
 if _settings.scheduler_disabled:
     import logging as _logging
-    _logging.getLogger("scheduler_mgr").info("SCHEDULER_DISABLED=1，跳过 Streamlit 内嵌调度器自动启动")
+    _logging.getLogger("scheduler_mgr").info("SCHEDULER_DISABLED=1，跳过内嵌调度器")
 else:
     try:
         from src.automation.scheduler_manager import start as _start_scheduler
         _start_scheduler()
     except Exception as _e:
         import logging as _logging
-        _logging.getLogger("scheduler_mgr").warning(f"调度器自动启动失败（不影响前端使用）: {_e}")
-
-# Streamlit 页面全局设置
-st.set_page_config(
-    page_title="股票估值分析平台",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
+        _logging.getLogger("scheduler_mgr").warning(f"调度器自动启动失败（不影响前端）: {_e}")
 
 
-# ========================
-# 首页：系统概览
-# ========================
+# ============================================================================
+# 首页：仪表盘
+# ============================================================================
 
-st.title("📊 多市场股票估值分析平台")
-st.caption("A 股 · 港股 · 美股  |  估值分析 · 筛选 · 预警 · 财报监控 · 资讯抓取")
+def _count_stocks(cfg_path: Path) -> int:
+    cfg = load_yaml(cfg_path, ttl=300)
+    if not cfg:
+        return 0
+    return sum(
+        len(cat.get("stocks") or [])
+        for cat in (cfg.get("categories") or {}).values()
+        if isinstance(cat, dict)
+    )
 
-# ────────────────────────────────────────────────────────
-# 🔍 全局命令栏 - 输入股票代码/名称跳转到分析页
-# ────────────────────────────────────────────────────────
 
-with st.container():
-    cmd_cols = st.columns([1, 4, 1, 2])
+def _home() -> None:
+    st.title("📊 量化投研平台")
+    st.caption("A 股 · 港股 · 美股 | 估值 · 筛选 · 回测 · 持仓 · 预警 · AI 周报")
+
+    # ── 快捷搜索条 ──
+    cmd_cols = st.columns([1, 4, 1.2, 1])
     with cmd_cols[0]:
         cmd_market = st.selectbox(
             "市场", options=["a", "hk", "us"],
             format_func=lambda k: {"a": "A 股", "hk": "港股", "us": "美股"}[k],
-            key="cmd_market",
-            label_visibility="collapsed",
+            key="cmd_market", label_visibility="collapsed",
         )
     with cmd_cols[1]:
         cmd_query = st.text_input(
-            "搜索",
-            placeholder="🔍 输入股票代码或名称（如 600519 / 贵州茅台）后按 Enter 直达分析页",
-            key="cmd_query",
-            label_visibility="collapsed",
+            "搜索", placeholder="🔍 输入代码或名称（如 600519 / 贵州茅台）直达分析",
+            key="cmd_query", label_visibility="collapsed",
         )
     with cmd_cols[2]:
         cmd_action = st.selectbox(
             "动作", options=["分析", "回测", "加关注"],
-            key="cmd_action",
-            label_visibility="collapsed",
+            key="cmd_action", label_visibility="collapsed",
         )
     with cmd_cols[3]:
-        cmd_go = st.button(
-            "🚀 跳转", type="primary", width="stretch",
-            disabled=not cmd_query.strip(),
-        )
+        cmd_go = st.button("🚀 直达", type="primary", use_container_width=True,
+                           disabled=not cmd_query.strip())
 
     if cmd_go and cmd_query.strip():
-        # 解析输入：纯数字 = 代码；含中文 = 名称（去关注列表找）
         q = cmd_query.strip()
-        resolved_code = q
-        resolved_name = ""
-
-        # 名称 → 代码 反查（从关注列表）
+        resolved_code, resolved_name = q, ""
         try:
             from src.web.utils import list_stocks_from_market_config
             stocks_list = list_stocks_from_market_config(cmd_market) or []
-            # 优先精确匹配代码
-            match = next((s for s in stocks_list if str(s.get("code", "")) == q), None)
-            if not match:
-                # 再按名称模糊匹配
-                match = next((s for s in stocks_list if q in str(s.get("name", ""))), None)
+            match = next((s for s in stocks_list if str(s.get("code", "")) == q), None) \
+                or next((s for s in stocks_list if q in str(s.get("name", ""))), None)
             if match:
                 resolved_code = str(match.get("code", q))
                 resolved_name = str(match.get("name", ""))
         except Exception:
             pass
-
-        # 写入全局焦点
         st.session_state["focus_stock"] = {
-            "code": resolved_code,
-            "name": resolved_name,
-            "market": cmd_market,
+            "code": resolved_code, "name": resolved_name, "market": cmd_market,
         }
+        target = {"分析": "pages/1_估值分析.py", "回测": "pages/4_策略回测.py",
+                  "加关注": "pages/12_关注标的.py"}[cmd_action]
+        st.switch_page(target)
 
-        # 跳转
-        target_page = {
-            "分析": "pages/1_估值分析.py",
-            "回测": "pages/4_策略回测.py",
-            "加关注": "pages/12_关注标的.py",
-        }[cmd_action]
-        try:
-            st.switch_page(target_page)
-        except Exception:
-            st.toast(f"已设焦点 {resolved_code}，请手动点击侧栏 {target_page}", icon="🎯")
+    _focus = st.session_state.get("focus_stock")
+    if _focus and _focus.get("code"):
+        name_str = f"{_focus.get('name', '')} ({_focus['code']})" if _focus.get("name") else _focus["code"]
+        st.caption(f"🎯 当前焦点：**{name_str}**（其他页会沿用）")
 
-# 显示当前焦点
-_current_focus = st.session_state.get("focus_stock")
-if _current_focus and _current_focus.get("code"):
-    fc = _current_focus
-    name_str = f"{fc.get('name', '')} ({fc['code']})" if fc.get("name") else fc["code"]
-    st.caption(
-        f"🎯 **当前焦点**：{name_str} · 市场 "
-        f"{ {'a': 'A 股', 'hk': '港股', 'us': '美股'}.get(fc.get('market', 'a'), '?') } "
-        f"（其他页会沿用此焦点）"
-    )
+    st.markdown("")
 
-st.markdown("---")
+    # ── 关键指标行 ──
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("🇨🇳 A 股关注", _count_stocks(PATH_A_STOCK))
+    m2.metric("🇭🇰 港股关注", _count_stocks(PATH_HK_STOCK))
+    m3.metric("🇺🇸 美股关注", _count_stocks(PATH_US_STOCK))
+    _rules = (load_yaml(PATH_PRICE_ALERTS, ttl=300) or {})
+    _n_rules = len(_rules.get("buy_alerts") or []) + len(_rules.get("sell_alerts") or []) \
+        or len(_rules.get("rules") or [])
+    m4.metric("🔔 预警规则", _n_rules)
+    _holdings = (load_yaml(_ROOT / "config" / "holdings.yaml", ttl=300) or {})
+    m5.metric("💼 持仓数", len(_holdings.get("holdings") or []))
 
-# --- 快速指标卡：统计当前配置中的股票数 ---
-col1, col2, col3, col4 = st.columns(4)
+    st.markdown("")
 
+    # ── 快捷入口卡片 ──
+    def _card(col, page_path: str, icon: str, title: str, desc: str) -> None:
+        with col:
+            st.markdown(
+                f'<div class="nav-card"><div class="nav-title">{icon} {title}</div>'
+                f'<div class="nav-desc">{desc}</div></div>',
+                unsafe_allow_html=True,
+            )
+            st.page_link(page_path, label=f"进入 {title} →", use_container_width=True)
 
-def _count_stocks(cfg_path: Path) -> int:
-    """统计某市场配置中的股票总数（累加所有 category.stocks）"""
-    cfg = load_yaml(cfg_path, ttl=300)
-    if not cfg:
-        return 0
-    total = 0
-    for cat in (cfg.get("categories") or {}).values():
-        if cat and isinstance(cat, dict):
-            total += len(cat.get("stocks") or [])
-    return total
+    row1 = st.columns(3)
+    _card(row1[0], "pages/1_估值分析.py", "🎯", "个股中心",
+          "一次选股：估值 · 基本面 · 回测 · 财报 · 资讯 · 买卖信号 · 预警")
+    _card(row1[1], "pages/23_策略中心.py", "🧠", "策略中心",
+          "8 条基本面+技术双层策略：管理 · 筛选 · 共享一页完成")
+    _card(row1[2], "pages/4_策略回测.py", "🧪", "策略回测",
+          "多策略一键对比 KPI / 收益曲线 / 买卖点标注")
 
-
-with col1:
-    st.metric("A 股关注股票", _count_stocks(PATH_A_STOCK))
-with col2:
-    st.metric("港股关注股票", _count_stocks(PATH_HK_STOCK))
-with col3:
-    st.metric("美股关注股票", _count_stocks(PATH_US_STOCK))
-with col4:
-    # 价格预警规则条数
-    rules = (load_yaml(PATH_PRICE_ALERTS, ttl=300) or {}).get("rules", []) or []
-    st.metric("价格预警规则", len(rules))
-
-
-st.markdown("---")
-
-# --- 功能导航 ---
-st.subheader("🗂 功能导航")
-
-left, right = st.columns(2)
-
-with left:
-    st.markdown(
-        """
-        ### 📈 分析与筛选
-        - **估值分析**：对单只股票跑 4 格估值图（营收利润、历史分位、目标价、汇总）
-        - **策略配置**：可视化编辑筛选策略，支持 20+ 条件类型、回测一体化配置
-        - **股票筛选**：执行策略批量筛选 A 股，支持多策略组合
-        - **策略回测**：基于 Backtrader 的量化策略历史验证
-        """
-    )
-    st.markdown(
-        """
-        ### 🔔 预警与监控
-        - **价格预警**：管理价格阈值/涨跌幅/均线突破等规则，推送至手机
-        - **财报披露**：跟踪 A/港/美三市场未来 30 天披露日历与业绩预告
-        """
-    )
-
-with right:
-    st.markdown(
-        """
-        ### 🌐 资讯抓取
-        - **资讯抓取**：财经新闻、公司公告、股东持仓、研报评级 4 类数据批量拉取
-        """
-    )
-    st.markdown(
-        """
-        ### 📜 系统管理
-        - **关注标的**：多市场关注列表增删改查、板块分类、搜索筛选
-        - **告警历史**：查看历史告警事件、冷却状态、推送日志
-        - **配置管理**：管理关注列表、指标参数、回测预设等全局配置
-        - **调度管理**：定时任务调度与监控
-        """
-    )
-
-st.info("👈 使用左侧 **侧边栏导航** 切换到具体功能页面。")
+    row2 = st.columns(3)
+    _card(row2[0], "pages/16_持仓监控.py", "💼", "持仓监控",
+          "L1 止损/止盈 + L2 信号 + L4 大盘守门员综合判定")
+    _card(row2[1], "pages/20_持仓体检.py", "🩺", "持仓体检",
+          "四维健康分：信号 / 集中度 / 盈亏结构 / 大盘环境")
+    _card(row2[2], "pages/21_AI周报.py", "📰", "AI 周报",
+          "组合诊断 + 筛选结果 → Claude 深度解读 → 一键导出")
 
 
-# ========================
-# 系统信息
-# ========================
+# ============================================================================
+# 分组导航
+# ============================================================================
 
-st.markdown("---")
-st.subheader("⚙️ 系统信息")
+_P = "pages/"
 
-info_col1, info_col2 = st.columns(2)
+nav = st.navigation({
+    "": [
+        st.Page(_home, title="总览", icon="🏠", default=True),
+    ],
+    "分析": [
+        st.Page(_P + "1_估值分析.py", title="个股中心", icon="🎯"),
+        st.Page(_P + "23_策略中心.py", title="策略中心", icon="🧠"),
+        st.Page(_P + "2_策略配置.py", title="策略编辑器", icon="⚙️"),
+        st.Page(_P + "13_因子库.py", title="因子库", icon="🧬"),
+        st.Page(_P + "18_荐股逆向.py", title="荐股逆向", icon="🕵️"),
+    ],
+    "回测与模型": [
+        st.Page(_P + "4_策略回测.py", title="策略回测", icon="🧪"),
+        st.Page(_P + "17_ML训练.py", title="ML 训练", icon="🤖"),
+    ],
+    "持仓与交易": [
+        st.Page(_P + "16_持仓监控.py", title="持仓监控", icon="💼"),
+        st.Page(_P + "20_持仓体检.py", title="持仓体检", icon="🩺"),
+        st.Page(_P + "15_卖点扫描.py", title="卖点扫描", icon="📉"),
+        st.Page(_P + "22_交易台.py", title="交易台", icon="💹"),
+        st.Page(_P + "21_AI周报.py", title="AI 周报", icon="📰"),
+    ],
+    "监控与资讯": [
+        st.Page(_P + "5_价格预警.py", title="价格预警", icon="🔔"),
+        st.Page(_P + "6_财报披露.py", title="财报披露", icon="📅"),
+        st.Page(_P + "8_告警历史.py", title="告警历史", icon="🕘"),
+        st.Page(_P + "7_资讯抓取.py", title="资讯抓取", icon="🌐"),
+    ],
+    "系统": [
+        st.Page(_P + "12_关注标的.py", title="关注标的", icon="⭐"),
+        st.Page(_P + "9_指标参数.py", title="指标参数", icon="🎛️"),
+        st.Page(_P + "10_调度管理.py", title="调度管理", icon="⏰"),
+    ],
+}, expanded=True)
 
-with info_col1:
-    st.markdown("**配置目录**")
-    st.code(str(CONFIG_DIR), language="text")
-
-    st.markdown("**告警状态文件**")
-    if ALERT_STATE_PATH.exists():
-        @st.cache_data(ttl=60, show_spinner=False)
-        def _count_alert_records(p: str) -> int:
-            import json
-            try:
-                with open(p, encoding="utf-8") as f:
-                    state = json.load(f)
-                return len(state)
-            except Exception:
-                return -1
-        n = _count_alert_records(str(ALERT_STATE_PATH))
-        st.caption(f"当前 {n} 条记录" if n >= 0 else "(读取失败)")
-    else:
-        st.caption("暂无记录")
-
-with info_col2:
-    st.markdown("**输出目录**")
-    st.code(str(OUTPUT_DIR), language="text")
-
-    # 展示输出目录下的文件数（缓存 60 秒，避免每次 rerun 递归扫描）
-    if OUTPUT_DIR.exists():
-        @st.cache_data(ttl=60, show_spinner=False)
-        def _count_output_files(d: str) -> int:
-            return sum(1 for f in Path(d).rglob("*") if f.is_file())
-        st.caption(f"共 {_count_output_files(str(OUTPUT_DIR))} 个文件")
-
-# 页脚
-st.markdown("---")
-st.caption("💡 数据源：akshare / pytdx / yfinance。推送通道：Server酱 / Bark / PushPlus / Console。")
+nav.run()

@@ -42,7 +42,6 @@ from src.web.utils import (  # noqa: E402
     load_yaml,
 )
 
-st.set_page_config(page_title="买卖预警", page_icon="🔔", layout="wide")
 st.title("🔔 买卖信号预警")
 st.caption(
     f"📈 买入信号 + 📉 卖出信号，全基于技术指标。规则文件：`{PATH_PRICE_ALERTS}`"
@@ -237,12 +236,8 @@ def _test_rule(direction: str, idx: int) -> None:
     rule = target[idx]
     with st.spinner(f"测试 '{rule.get('name')}'..."):
         try:
-            from src.automation.monitor.buy_sell_alerts import BuySellAlertMonitor
-            monitor = BuySellAlertMonitor(
-                buy_alerts=[], sell_alerts=[],
-                channels=[], state_store=None,
-            )
-            event = monitor.test_single_rule(rule, direction)
+            from src.services import alert_service as asvc
+            event = asvc.test_rule(rule, direction)
         except Exception as e:
             st.session_state[f"test_result_{direction}_{idx}"] = {
                 "error": f"{type(e).__name__}: {e}",
@@ -674,19 +669,11 @@ with tab_run:
     if st.button("立即执行扫描", type="primary", disabled=total_enabled == 0):
         with st.spinner("正在扫描..."):
             try:
-                from src.automation.alert import AlertStateStore, build_channels
-                from src.automation.monitor.buy_sell_alerts import (
-                    BuySellAlertMonitor,
-                )
-                alerts_cfg = load_yaml(PATH_ALERTS) or {}
-                channels = build_channels(alerts_cfg)
-                store = AlertStateStore()
-                monitor = BuySellAlertMonitor(
-                    buy_alerts=buy_alerts, sell_alerts=sell_alerts,
-                    channels=channels, state_store=store,
+                from src.services import alert_service as asvc
+                events = asvc.scan_all(
+                    buy_alerts, sell_alerts,
                     cooldown_hours=default_cooldown,
                 )
-                events = monitor.collect_events()
             except Exception as e:
                 st.error(f"扫描失败: {e}")
                 st.exception(e)

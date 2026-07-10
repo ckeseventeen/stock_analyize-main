@@ -1,17 +1,13 @@
 """
-pages/2_策略配置.py — 可视化策略编辑器
+pages/2_策略配置.py — 可视化策略编辑器（薄渲染层）
 
-功能：
-  - 表单化编辑筛选策略（替代原始 YAML 文本框）
-  - 按分类展示条件类型，动态渲染参数表单
-  - 支持新增/删除/复制策略
-  - 预览生成的 YAML 配置
-  - 一键保存到 screen_config.yaml
-  - 策略回测配置一体化（可选 backtest 段）
+业务编排全部在 src/services/screening_service.py；本页只负责：
+  - 收集表单输入（基于 ParamSpec 动态渲染控件）
+  - 调服务保存/试运行
+  - 渲染结果
 """
 from __future__ import annotations
 
-import copy
 import sys
 from pathlib import Path
 
@@ -22,38 +18,21 @@ if str(_ROOT) not in sys.path:
 import streamlit as st  # noqa: E402
 import yaml as _yaml  # noqa: E402
 
-from src.analysis.screening.conditions import (  # noqa: E402
-    CONDITION_CATEGORIES,
-    CONDITION_LABELS,
-    CONDITION_REGISTRY,
-)
-from src.analysis.screening.config_schema import _PARAM_MAP, SPOT_ONLY_TYPES  # noqa: E402
+from src.services import screening_service as svc  # noqa: E402
 from src.web.components.confirm import confirm_action  # noqa: E402
 from src.web.components.unsaved import mark_clean, mark_dirty, unsaved_badge  # noqa: E402
-from src.web.utils import (  # noqa: E402
-    PATH_SCREEN,
-    atomic_save_yaml,
-    load_yaml,
-)
 
-st.set_page_config(page_title="策略配置", page_icon="⚙️", layout="wide")
 st.title("⚙️ 策略配置编辑器")
 st.caption("可视化创建和编辑筛选/回测策略，无需手动编辑 YAML 文件")
 
-# 未保存变更提示
 unsaved_badge("strategy_editor")
 
 
 # ========================
-# 加载现有策略
+# 加载现有策略（session 暂存，保存时统一落盘）
 # ========================
-def _load_all_strategies() -> dict:
-    cfg = load_yaml(PATH_SCREEN) or {}
-    return cfg.get("strategies", {})
-
-
 if "strategies_data" not in st.session_state:
-    st.session_state["strategies_data"] = _load_all_strategies()
+    st.session_state["strategies_data"] = svc.load_all_strategies()
 
 strategies = st.session_state["strategies_data"]
 
@@ -64,7 +43,6 @@ st.sidebar.markdown("### 📋 策略列表")
 
 strategy_ids = list(strategies.keys())
 
-# 选择当前编辑的策略
 if strategy_ids:
     current_sid = st.sidebar.radio(
         "选择要编辑的策略",
@@ -89,15 +67,9 @@ if st.sidebar.button("创建策略", type="primary"):
     elif sid in strategies:
         st.sidebar.error(f"策略 {sid} 已存在")
     else:
-        strategies[sid] = {
-            "name": new_name.strip() or sid,
-            "conditions": [
-                {"type": "exclude_st"},
-                {"type": "exclude_delisting_risk"},
-            ],
-            "output": {"sort_by": "总市值(亿)", "ascending": False, "limit": 50},
-        }
+        strategies[sid] = svc.default_strategy_body(new_name.strip() or sid)
         st.session_state["strategies_data"] = strategies
+        mark_dirty("strategy_editor")
         st.rerun()
 
 # 复制/删除按钮
@@ -106,14 +78,9 @@ if current_sid:
     col_copy, col_del = st.sidebar.columns(2)
     with col_copy:
         if st.button("📋 复制"):
-            new_key = f"{current_sid}_copy"
-            i = 1
-            while new_key in strategies:
-                new_key = f"{current_sid}_copy{i}"
-                i += 1
-            strategies[new_key] = copy.deepcopy(strategies[current_sid])
-            strategies[new_key]["name"] = strategies[current_sid].get("name", "") + " (副本)"
+            svc.duplicate_strategy_in_memory(strategies, current_sid)
             st.session_state["strategies_data"] = strategies
+            mark_dirty("strategy_editor")
             st.rerun()
     with col_del:
         del_result = confirm_action(
@@ -128,18 +95,15 @@ if current_sid:
 # 保存所有策略
 st.sidebar.markdown("---")
 if st.sidebar.button("💾 保存全部到文件", type="primary", use_container_width=True):
-    cfg = load_yaml(PATH_SCREEN) or {}
-    cfg["strategies"] = strategies
-    if atomic_save_yaml(PATH_SCREEN, cfg):
+    if svc.save_all_strategies(strategies):
         st.sidebar.success("✅ 已保存到 screen_config.yaml")
         mark_clean("strategy_editor")
-        # 刷新内存数据
-        st.session_state["strategies_data"] = _load_all_strategies()
+        st.session_state["strategies_data"] = svc.load_all_strategies()
     else:
         st.sidebar.error("保存失败")
 
 if st.sidebar.button("🔄 从文件重新加载", use_container_width=True):
-    st.session_state["strategies_data"] = _load_all_strategies()
+    st.session_state["strategies_data"] = svc.load_all_strategies()
     st.rerun()
 
 
@@ -152,33 +116,15 @@ if not current_sid or current_sid not in strategies:
 
 s_cfg = strategies[current_sid]
 
-# 策略名称编辑
 title_cols = st.columns([4, 1])
 with title_cols[0]:
     st.subheader(f"📝 编辑策略: {s_cfg.get('name', current_sid)}")
 with title_cols[1]:
-    # ⚡ 试运行 — 不保存就跑当前编辑中的策略
     if st.button("⚡ 试运行", help="用当前编辑中的条件跑一次筛选（A 股全集）",
                  width="stretch", type="secondary"):
-        # 临时写入 yaml + 调 screener
         try:
             with st.spinner("试运行中..."):
-                from src.analysis.screening import ScreenerDataProvider, StockScreener
-
-                provider = ScreenerDataProvider()
-                screener = StockScreener(data_provider=provider, max_workers=6)
-                # 手动注入条件（绕过 yaml）
-                from src.analysis.screening.config_schema import _build_conditions
-                conds_now = _build_conditions(
-                    s_cfg.get("conditions", []),
-                    sid=current_sid,
-                )
-                for c_obj in conds_now:
-                    screener.add_condition(c_obj)
-                result = screener.run(
-                    sort_by=(s_cfg.get("output") or {}).get("sort_by", "总市值(亿)"),
-                    limit=int((s_cfg.get("output") or {}).get("limit", 30)),
-                )
+                result = svc.dry_run_strategy(s_cfg, sid=current_sid)
             if result is None or result.empty:
                 st.toast("试运行完成：0 只命中（条件可能太严）", icon="⚠️")
             else:
@@ -205,6 +151,50 @@ if _tryrun is not None and not _tryrun.empty:
             del st.session_state["_tryrun_result"]
             st.rerun()
 
+
+# ========================
+# 参数控件：基于 ParamSpec 动态渲染
+# ========================
+def render_param_input(spec, current_val, widget_key: str):
+    """按 ParamSpec.kind 渲染对应控件并返回新值"""
+    if spec.kind == "bool":
+        return st.checkbox(
+            spec.yaml_key,
+            value=bool(current_val) if current_val is not None else bool(spec.default),
+            key=widget_key,
+        )
+    if spec.kind == "choice":
+        opts = spec.choices or []
+        idx = opts.index(current_val) if current_val in opts else 0
+        return st.selectbox(spec.yaml_key, options=opts, index=idx, key=widget_key)
+    if spec.kind == "list":
+        raw = st.text_input(
+            spec.yaml_key,
+            value=str(current_val if current_val is not None else spec.default or []),
+            key=widget_key,
+            help="用逗号分隔的列表，如: [5,10,20,60]",
+        )
+        try:
+            parsed = _yaml.safe_load(raw)
+            return parsed if isinstance(parsed, list) else current_val
+        except Exception:
+            return current_val
+    if spec.kind == "float":
+        base = current_val if current_val is not None else (spec.default or 0.0)
+        return st.number_input(
+            spec.yaml_key, value=float(base), step=0.01, format="%.4f", key=widget_key,
+        )
+    if spec.kind == "int":
+        base = current_val if current_val is not None else (spec.default or 0)
+        return st.number_input(spec.yaml_key, value=int(base), step=1, key=widget_key)
+    # str 兜底
+    return st.text_input(
+        spec.yaml_key,
+        value=str(current_val) if current_val is not None else str(spec.default or ""),
+        key=widget_key,
+    )
+
+
 # ========================
 # 条件编辑区
 # ========================
@@ -213,81 +203,23 @@ st.subheader("🎯 筛选条件")
 
 conditions = s_cfg.get("conditions", [])
 
-# 显示现有条件
 for i, cond in enumerate(conditions):
     cond_type = cond.get("type", "unknown")
-    label = CONDITION_LABELS.get(cond_type, cond_type)
+    label = svc.condition_label(cond_type)
 
     with st.expander(f"**{i+1}. {label}** (`{cond_type}`)", expanded=False):
         col_params, col_actions = st.columns([4, 1])
 
         with col_params:
-            # 动态渲染参数
-            param_map = _PARAM_MAP.get(cond_type, {})
-            if param_map:
-                for yaml_key, _init_key in param_map.items():
-                    current_val = cond.get(yaml_key)
-
-                    # 根据类型推断输入控件
-                    if isinstance(current_val, bool) or yaml_key in (
-                        "zero_axis_filter", "multi_level_check",
-                        "require_all_above", "require_up_trend",
-                        "require_zero_near", "close_touch",
-                    ):
-                        new_val = st.checkbox(
-                            yaml_key,
-                            value=bool(current_val) if current_val is not None else False,
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                        )
-                    elif isinstance(current_val, list):
-                        new_val = st.text_input(
-                            yaml_key,
-                            value=str(current_val),
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                            help="用逗号分隔的列表，如: [5,10,20,60]",
-                        )
-                        try:
-                            new_val = _yaml.safe_load(new_val)
-                        except Exception:
-                            pass
-                    elif isinstance(current_val, float) or yaml_key in (
-                        "breakout_pct", "consolidation_pct", "vol_multiple",
-                        "shrink_ratio", "std_dev", "j_threshold",
-                    ):
-                        new_val = st.number_input(
-                            yaml_key,
-                            value=float(current_val) if current_val is not None else 0.0,
-                            step=0.01,
-                            format="%.4f",
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                        )
-                    elif isinstance(current_val, int) or yaml_key in (
-                        "min", "max", "lookback_bars", "period", "ma_period",
-                        "min_touches", "threshold", "n", "m1", "m2",
-                        "fast_period", "slow_period", "consecutive",
-                    ):
-                        new_val = st.number_input(
-                            yaml_key,
-                            value=int(current_val) if current_val is not None else 0,
-                            step=1,
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                        )
-                    elif yaml_key == "direction":
-                        new_val = st.selectbox(
-                            yaml_key,
-                            options=["upper", "lower"],
-                            index=0 if current_val != "lower" else 1,
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                        )
-                    else:
-                        new_val = st.text_input(
-                            yaml_key,
-                            value=str(current_val) if current_val is not None else "",
-                            key=f"cond_{current_sid}_{i}_{yaml_key}",
-                        )
-
+            specs = svc.condition_param_specs(cond_type)
+            if specs:
+                for spec in specs:
+                    new_val = render_param_input(
+                        spec, cond.get(spec.yaml_key),
+                        widget_key=f"cond_{current_sid}_{i}_{spec.yaml_key}",
+                    )
                     if new_val is not None:
-                        cond[yaml_key] = new_val
+                        cond[spec.yaml_key] = new_val
             else:
                 st.caption("该条件无额外参数")
 
@@ -315,32 +247,15 @@ for i, cond in enumerate(conditions):
 st.markdown("---")
 st.markdown("**➕ 添加新条件**")
 
-# 按分类展示可选条件
-add_cols = st.columns(len(CONDITION_CATEGORIES))
-for idx, (cat_name, cat_types) in enumerate(CONDITION_CATEGORIES.items()):
+categories = svc.condition_categories()
+add_cols = st.columns(len(categories))
+for idx, (cat_name, cat_types) in enumerate(categories.items()):
     with add_cols[idx % len(add_cols)]:
         st.markdown(f"**{cat_name}**")
         for ctype in cat_types:
-            clabel = CONDITION_LABELS.get(ctype, ctype)
+            clabel = svc.condition_label(ctype)
             if st.button(f"+ {clabel}", key=f"add_{current_sid}_{ctype}", use_container_width=True):
-                new_cond = {"type": ctype}
-                # 填入默认参数
-                param_map = _PARAM_MAP.get(ctype, {})
-                cls = CONDITION_REGISTRY.get(ctype)
-                if cls:
-                    import inspect
-                    sig = inspect.signature(cls.__init__)
-                    for pname, param in sig.parameters.items():
-                        if pname == "self":
-                            continue
-                        # 从 param_map 反查 yaml_key
-                        yaml_key = next(
-                            (yk for yk, ik in param_map.items() if ik == pname),
-                            pname,
-                        )
-                        if param.default != inspect.Parameter.empty:
-                            new_cond[yaml_key] = param.default
-                conditions.append(new_cond)
+                conditions.append(svc.new_condition_dict(ctype))
                 s_cfg["conditions"] = conditions
                 mark_dirty("strategy_editor")
                 st.rerun()
@@ -401,55 +316,34 @@ if enable_backtest:
 
     for j, sc in enumerate(sell_conditions):
         sc_type = sc.get("type", "unknown")
-        sc_label = CONDITION_LABELS.get(sc_type, sc_type)
+        sc_label = svc.condition_label(sc_type)
         col_sc, col_sca = st.columns([4, 1])
         with col_sc:
-            param_map = _PARAM_MAP.get(sc_type, {})
-            for yaml_key, _init_key in param_map.items():
-                val = sc.get(yaml_key)
-                if isinstance(val, (int, float)):
-                    new_val = st.number_input(
-                        f"[卖出] {sc_label} - {yaml_key}",
-                        value=float(val) if isinstance(val, float) else int(val),
-                        key=f"sell_{current_sid}_{j}_{yaml_key}",
-                    )
-                    sc[yaml_key] = new_val
+            for spec in svc.condition_param_specs(sc_type):
+                new_val = render_param_input(
+                    spec, sc.get(spec.yaml_key),
+                    widget_key=f"sell_{current_sid}_{j}_{spec.yaml_key}",
+                )
+                if new_val is not None:
+                    sc[spec.yaml_key] = new_val
         with col_sca:
             if st.button("🗑️", key=f"del_sell_{current_sid}_{j}"):
                 sell_conditions.pop(j)
                 st.rerun()
 
     # 添加卖出条件
-    sell_type_options = [
-        ct for ct in CONDITION_REGISTRY if ct not in SPOT_ONLY_TYPES
-    ]
     sell_add_col1, sell_add_col2 = st.columns([3, 1])
     with sell_add_col1:
         sell_add_type = st.selectbox(
             "添加卖出条件",
-            options=sell_type_options,
-            format_func=lambda x: CONDITION_LABELS.get(x, x),
+            options=svc.sellable_condition_types(),
+            format_func=svc.condition_label,
             key=f"sell_add_type_{current_sid}",
         )
     with sell_add_col2:
         st.markdown("&nbsp;")
         if st.button("➕ 添加", key=f"sell_add_btn_{current_sid}"):
-            new_sc = {"type": sell_add_type}
-            cls = CONDITION_REGISTRY.get(sell_add_type)
-            if cls:
-                import inspect
-                param_map = _PARAM_MAP.get(sell_add_type, {})
-                sig = inspect.signature(cls.__init__)
-                for pname, param in sig.parameters.items():
-                    if pname == "self":
-                        continue
-                    yaml_key = next(
-                        (yk for yk, ik in param_map.items() if ik == pname),
-                        pname,
-                    )
-                    if param.default != inspect.Parameter.empty:
-                        new_sc[yaml_key] = param.default
-            sell_conditions.append(new_sc)
+            sell_conditions.append(svc.new_condition_dict(sell_add_type))
             st.rerun()
 
     # 写回
@@ -494,17 +388,21 @@ s_cfg["output"] = {"sort_by": sort_by, "ascending": ascending, "limit": limit}
 
 
 # ========================
-# 预览生成的 YAML
+# 校验 + 预览生成的 YAML
 # ========================
 st.markdown("---")
+_errors = svc.validate_conditions(s_cfg.get("conditions", []))
+if _errors:
+    st.error("⚠️ 条件配置存在问题：\n" + "\n".join(f"- {e}" for e in _errors))
+
 with st.expander("📄 预览生成的 YAML 配置", expanded=False):
     preview = {current_sid: s_cfg}
     st.code(_yaml.safe_dump(preview, allow_unicode=True, sort_keys=False), language="yaml")
 
 # 底部统计
 st.markdown("---")
-tech_count = sum(1 for c in conditions if c.get("type") not in SPOT_ONLY_TYPES)
-spot_count = sum(1 for c in conditions if c.get("type") in SPOT_ONLY_TYPES)
+tech_count = sum(1 for c in conditions if not svc.is_spot_only(c.get("type", "")))
+spot_count = sum(1 for c in conditions if svc.is_spot_only(c.get("type", "")))
 c1, c2, c3 = st.columns(3)
 c1.metric("总条件数", len(conditions))
 c2.metric("技术面条件（可回测）", tech_count)

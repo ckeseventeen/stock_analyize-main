@@ -27,7 +27,6 @@ from src.web.utils import (  # noqa: E402
     set_active_indicator_profile,
 )
 
-st.set_page_config(page_title="指标参数", page_icon="📐", layout="wide")
 st.title("📐 技术指标参数")
 st.caption(
     f"配置文件：`{PATH_INDICATORS}` · 代码端通过 `TechnicalAnalyzer.add_all_from_config()` 读取"
@@ -172,6 +171,6 @@ nav_cols = st.columns(3)
 with nav_cols[0]:
     st.page_link("pages/13_因子库.py", label="🎯 因子库", icon="🎯")
 with nav_cols[1]:
-    st.page_link("pages/14_回测预设.py", label="🔁 回测预设", icon="🔁")
+    st.page_link("pages/4_策略回测.py", label="🧪 策略回测", icon="🧪")
 with nav_cols[2]:
     st.page_link("pages/12_关注标的.py", label="📌 关注标的", icon="📌")

@@ -78,12 +78,17 @@ class Page:
     def __init__(self):
         inject_project_path()
         st = _import_streamlit()
-        st.set_page_config(
-            page_title=self.title,
-            page_icon=self.icon,
-            layout=self.layout,
-            initial_sidebar_state=self.initial_sidebar_state,
-        )
+        # st.navigation 路由模式下由 app.py 统一 set_page_config，
+        # 这里重复调用会抛异常 → 静默跳过（独立运行页面时仍生效）
+        try:
+            st.set_page_config(
+                page_title=self.title,
+                page_icon=self.icon,
+                layout=self.layout,
+                initial_sidebar_state=self.initial_sidebar_state,
+            )
+        except Exception:
+            pass
         if self.setup_matplotlib:
             try:
                 from src.web.utils import setup_matplotlib_chinese

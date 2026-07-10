@@ -20,8 +20,6 @@ from src.automation.scheduler_manager import (
 from src.web.components.confirm import confirm_action
 from src.web.utils import CONFIG_DIR
 
-st.set_page_config(page_title="调度管理", page_icon="⏰", layout="wide")
-
 st.title("⏰ 后台调度管理")
 st.caption("APScheduler 后台守护线程 · 自动周期执行监控与抓取任务")
 

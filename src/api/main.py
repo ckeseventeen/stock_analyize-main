@@ -113,6 +113,16 @@ def stock_valuation(market: str, code: str,
     }
 
 
+@app.get("/api/stocks/{market}/{code}/strategy-signals")
+def stock_strategy_signals(market: str, code: str):
+    """逐策略扫描该股的买入点/卖出点（策略买卖两侧分别判定）"""
+    from src.services import stock_service as ssvc
+    try:
+        return ssvc.scan_strategy_signals(code, market)
+    except Exception as e:
+        raise HTTPException(502, f"策略信号扫描失败: {e}")
+
+
 @app.get("/api/stocks/{market}/{code}/signals")
 def stock_signals(market: str, code: str):
     """买点条件扫描 + 卖出引擎判定"""

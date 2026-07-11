@@ -195,6 +195,79 @@ def scan_buy_signals(code: str, market: str = "a") -> list[SignalHit]:
     return out
 
 
+def scan_strategy_signals(code: str, market: str = "a",
+                          config_path=None) -> list[dict]:
+    """
+    对单只股票逐策略扫描买入/卖出两侧信号。
+
+    每个策略：
+      买入侧 = 技术筛选条件（按 backtest.buy_logic 组合，默认 all）
+      卖出侧 = backtest.sell_conditions（按 sell_logic 组合，默认 any）
+
+    Returns:
+        [{sid, name, buy_hit, sell_hit,
+          buy_conditions: [{type, label, hit}], sell_conditions: [...]}]
+    """
+    from src.analysis.screening.conditions import CONDITION_LABELS
+    from src.analysis.screening.config_schema import _build_conditions
+    from src.analysis.screening.data_provider import ScreenerDataProvider
+    from src.services import screening_service as svc
+
+    strategies = svc.load_all_strategies(config_path)
+    if not strategies:
+        return []
+
+    provider = ScreenerDataProvider()
+    daily_df = provider.get_daily_ohlcv(code, days_back=500, market=market)
+    weekly_df = provider.get_weekly_ohlcv(code, days_back=365 * 3, market=market)
+    if daily_df is None or daily_df.empty:
+        return []
+
+    spot_row = pd.Series({"代码": code, "名称": ""})
+
+    def _eval_side(cond_dicts: list[dict]) -> list[dict]:
+        out = []
+        for cond in _build_conditions(cond_dicts, strict=False):
+            if not getattr(cond, "requires_ohlcv", True):
+                continue  # 纯 Spot 基本面条件无法对单股逐日判定，跳过
+            df = weekly_df if getattr(cond, "ohlcv_period", "daily") == "weekly" else daily_df
+            if df is None or df.empty or len(df) < 25:
+                continue
+            try:
+                hit = bool(cond.evaluate_full(spot_row, df))
+            except Exception as e:
+                logger.debug(f"{code} 策略信号 {cond.name} 异常: {e}")
+                continue
+            out.append({"type": cond.name,
+                        "label": CONDITION_LABELS.get(cond.name, cond.name),
+                        "hit": hit})
+        return out
+
+    results = []
+    for sid, body in strategies.items():
+        bt = body.get("backtest") or {}
+        buy = _eval_side(body.get("conditions", []))
+        sell = _eval_side(bt.get("sell_conditions", []))
+
+        buy_logic = str(bt.get("buy_logic", "all")).lower()
+        sell_logic = str(bt.get("sell_logic", "any")).lower()
+        buy_hit = bool(buy) and (all(c["hit"] for c in buy) if buy_logic == "all"
+                                 else any(c["hit"] for c in buy))
+        sell_hit = bool(sell) and (all(c["hit"] for c in sell) if sell_logic == "all"
+                                   else any(c["hit"] for c in sell))
+        results.append({
+            "sid": sid,
+            "name": body.get("name", sid),
+            "buy_hit": buy_hit,
+            "sell_hit": sell_hit,
+            "buy_logic": buy_logic,
+            "sell_logic": sell_logic,
+            "buy_conditions": buy,
+            "sell_conditions": sell,
+        })
+    return results
+
+
 def sell_verdict_for_code(code: str, name: str = "", market: str = "a",
                           avg_cost: float = 0.0):
     """

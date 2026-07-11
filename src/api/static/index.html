@@ -94,8 +94,11 @@ tr:hover td{background:rgba(99,102,241,.05)}
     <div class="card"><b>🎯 目标价</b><div class="scroll" id="s-targets"></div></div>
     <div class="card"><b>📋 核心指标</b><div class="scroll" id="s-summary"></div></div>
   </div>
+  <div class="card"><b>📡 策略买卖点扫描</b>
+    <span class="hint">每条策略分买入侧（筛选条件）与卖出侧（卖出条件）分别判定</span>
+    <div class="scroll" id="s-strat"></div></div>
   <div class="grid2">
-    <div class="card"><b>🟢 买点条件</b><div id="s-buy"></div></div>
+    <div class="card"><b>🟢 通用买点条件</b><div id="s-buy"></div></div>
     <div class="card"><b>🔴 卖出引擎</b><div id="s-sell"></div></div>
   </div>
 </section>
@@ -232,10 +235,22 @@ async function analyzeStock(){
       <div class="metric"><div class="k">最新价</div><div class="v">${fmt(basic.price)}</div></div>
       <div class="metric" id="s-m-pe"><div class="k">PE(TTM)</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pct"><div class="k">历史分位</div><div class="v">…</div></div>`;
-    busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));
-    const [val,sig]=await Promise.allSettled([
+    busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));busy($('#s-strat'));
+    const [val,sig,strat]=await Promise.allSettled([
       api(`/api/stocks/${mkt}/${code}/valuation`),
-      api(`/api/stocks/${mkt}/${code}/signals`)]);
+      api(`/api/stocks/${mkt}/${code}/signals`),
+      api(`/api/stocks/${mkt}/${code}/strategy-signals`)]);
+    if(strat.status==='fulfilled'){
+      const chips=cs=>cs.map(c=>`<span class="badge ${c.hit?'b-low':''}" style="${c.hit?'':'opacity:.45'}">${c.hit?'✅':''}${c.label}</span>`).join(' ');
+      $('#s-strat').innerHTML=strat.value.length?`<table>
+        <tr><th>策略</th><th>🟢 买入点</th><th>🔴 卖出点</th><th>条件明细</th></tr>`+
+        strat.value.map(s=>`<tr>
+          <td><b>${s.name}</b></td>
+          <td>${s.buy_hit?'<span class="badge b-low">✅ 触发</span>':'<span class="hint">—</span>'}</td>
+          <td>${s.sell_hit?'<span class="badge b-high">🔴 触发</span>':'<span class="hint">—</span>'}</td>
+          <td style="white-space:normal;max-width:460px">买:${chips(s.buy_conditions)}<br>卖:${chips(s.sell_conditions)}</td>
+        </tr>`).join('')+'</table>':'<span class="hint">无可判定策略</span>';
+    }else{$('#s-strat').innerHTML=`<div class="err">${strat.reason}</div>`}
     if(val.status==='fulfilled'){const v=val.value;
       $('#s-m-pe').innerHTML=`<div class="k">PE(TTM)</div><div class="v">${fmt(v.core.current_pe)}</div>`;
       $('#s-m-pct').innerHTML=`<div class="k">历史分位</div><div class="v">${fmt(v.core.hist_percentile,1)}%

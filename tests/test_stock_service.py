@@ -88,3 +88,79 @@ class TestResolveName:
         from src.analysis.screening.conditions import CONDITION_REGISTRY
         for cond_type, _ in ssvc._BUY_PROFILE:
             assert cond_type in CONDITION_REGISTRY, f"未注册: {cond_type}"
+
+
+@pytest.mark.unit
+class TestScanStrategySignals:
+    def _synthetic(self, n=300):
+        import numpy as np
+        import pandas as pd
+        idx = pd.date_range("2025-01-01", periods=n, freq="D")
+        base = 100 + 10 * np.sin(np.linspace(0, 8 * np.pi, n))
+        close = pd.Series(base, index=idx)
+        return pd.DataFrame({
+            "date": idx, "open": close.shift(1).fillna(close.iloc[0]),
+            "high": close + 1, "low": close - 1, "close": close,
+            "volume": 1_000_000,
+        })
+
+    def test_per_strategy_buy_sell_sides(self, tmp_path, monkeypatch):
+        import yaml
+
+        from src.analysis.screening.data_provider import ScreenerDataProvider
+        from src.services import screening_service as svc
+
+        cfg = tmp_path / "screen.yaml"
+        cfg.write_text(yaml.safe_dump({"strategies": {
+            "s1": {
+                "name": "双侧策略",
+                "conditions": [
+                    {"type": "market_cap", "min": 100},          # spot-only → 应被跳过
+                    {"type": "ma_gold_cross", "fast_period": 5, "slow_period": 20},
+                    {"type": "rsi_oversold", "threshold": 30},
+                ],
+                "backtest": {
+                    "buy_logic": "any",
+                    "sell_logic": "any",
+                    "sell_conditions": [
+                        {"type": "rsi_overbought", "threshold": 70},
+                        {"type": "ma_death_cross", "fast_period": 5, "slow_period": 20},
+                    ],
+                },
+            },
+        }}, allow_unicode=True), encoding="utf-8")
+
+        df = self._synthetic()
+        monkeypatch.setattr(ScreenerDataProvider, "get_daily_ohlcv",
+                            lambda self, *a, **k: df)
+        monkeypatch.setattr(ScreenerDataProvider, "get_weekly_ohlcv",
+                            lambda self, *a, **k: df)
+
+        res = ssvc.scan_strategy_signals("600519", "a", config_path=cfg)
+        assert len(res) == 1
+        s = res[0]
+        assert s["sid"] == "s1" and s["name"] == "双侧策略"
+        # 买卖两侧分离，spot-only 条件被剔除
+        buy_types = [c["type"] for c in s["buy_conditions"]]
+        assert "market_cap" not in buy_types
+        assert set(buy_types) == {"ma_gold_cross", "rsi_oversold"}
+        assert {c["type"] for c in s["sell_conditions"]} == {"rsi_overbought", "ma_death_cross"}
+        # hit 是 bool，聚合逻辑与 any 一致
+        assert s["buy_hit"] == any(c["hit"] for c in s["buy_conditions"])
+        assert s["sell_hit"] == any(c["hit"] for c in s["sell_conditions"])
+        assert isinstance(s["buy_hit"], bool)
+
+    def test_empty_kline_returns_empty(self, tmp_path, monkeypatch):
+        import pandas as pd
+        import yaml
+
+        from src.analysis.screening.data_provider import ScreenerDataProvider
+        cfg = tmp_path / "screen.yaml"
+        cfg.write_text(yaml.safe_dump({"strategies": {"s1": {
+            "name": "x", "conditions": [{"type": "ma_gold_cross"}]}}},
+            allow_unicode=True), encoding="utf-8")
+        monkeypatch.setattr(ScreenerDataProvider, "get_daily_ohlcv",
+                            lambda self, *a, **k: pd.DataFrame())
+        monkeypatch.setattr(ScreenerDataProvider, "get_weekly_ohlcv",
+                            lambda self, *a, **k: pd.DataFrame())
+        assert ssvc.scan_strategy_signals("600519", "a", config_path=cfg) == []

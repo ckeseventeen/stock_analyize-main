@@ -75,3 +75,7 @@ ruff>=0.1.0               # 代码规范检查（替代 flake8/isort）
 # fpdf2>=2.7.0             # 周报 PDF 直出（未装可用 HTML 打印为 PDF）
 # futu-api                 # 富途实盘适配（需本地 OpenD 网关）
 # tigeropen                # 老虎证券实盘适配
+
+# REST API 层（新版单页界面）
+fastapi>=0.110
+uvicorn>=0.29

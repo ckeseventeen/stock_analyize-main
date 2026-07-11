@@ -11,7 +11,7 @@ src/automation/scheduler_manager.py — 进程级单例调度器管理
     get_job_history() — 最近 N 次执行记录
     trigger_job(id)  — 立即手动触发一个 Job
 
-使用示例（在 streamlit_app.py 中）:
+使用示例（在 Web 服务进程中）:
     from src.automation.scheduler_manager import start as start_scheduler
     start_scheduler()  # 幂等，Streamlit rerun 不会重复启动
 """

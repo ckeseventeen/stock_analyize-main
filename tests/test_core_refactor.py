@@ -199,12 +199,12 @@ class TestMarketRegistry:
 @pytest.mark.unit
 class TestConfigOpsIntegration:
     def test_market_labels_re_export_matches_registry(self):
-        from src.web.config_ops import MARKET_LABELS
+        from src.core.config_io import MARKET_LABELS
         labels = market_labels()
         assert MARKET_LABELS == labels
 
     def test_market_config_paths_re_export(self):
-        from src.web.config_ops import MARKET_CONFIG_PATHS
+        from src.core.config_io import MARKET_CONFIG_PATHS
         for key in ("a", "hk", "us"):
             assert key in MARKET_CONFIG_PATHS
             assert get_market(key).config_path == MARKET_CONFIG_PATHS[key]

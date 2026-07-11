@@ -256,19 +256,19 @@ class TestB17CacheHeader:
 @pytest.mark.unit
 class TestB5PathTraversal:
     def test_reject_parent_traversal(self):
-        from src.web.config_ops import validate_user_path
+        from src.core.config_io import validate_user_path
 
         with pytest.raises(ValueError):
             validate_user_path("../../../etc/passwd")
 
     def test_reject_outside_allowed_roots(self, tmp_path):
-        from src.web.config_ops import validate_user_path
+        from src.core.config_io import validate_user_path
 
         with pytest.raises(ValueError):
             validate_user_path(str(tmp_path / "evil.yaml"))
 
     def test_accept_legit_config(self):
-        from src.web.config_ops import CONFIG_DIR, validate_user_path
+        from src.core.config_io import CONFIG_DIR, validate_user_path
 
         # 仅当 config 目录里存在 screen_config.yaml 时才校验
         target = CONFIG_DIR / "screen_config.yaml"

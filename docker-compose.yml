@@ -53,14 +53,14 @@ services:
     networks:
       - stock_net
 
-  # ──── Streamlit Web GUI ────
+  # ──── Web 界面（FastAPI + SPA）────
   webui:
     build: .
     image: stock-analyize:latest
     container_name: stock_analyize_webui
     restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "8600:8600"
     environment:
       - TZ=Asia/Shanghai
       - DB_HOST=db
@@ -69,7 +69,7 @@ services:
       - ./config:/app/config             # SEC5: RW，Web UI 需要写 YAML（关注列表、预警规则）
       - ./output:/app/output
       - ./cache:/app/cache               # 共享告警状态（必须 RW）
-    command: ["streamlit", "run", "src/web/app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+    command: ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8600"]
     networks:
       - stock_net
 

@@ -1,7 +1,7 @@
 # 多市场量化投研分析平台
 
 集估值分析、技术筛选、因子分析、回测验证、自动化监控于一体的一站式工具，
-支持 **A 股 / 港股 / 美股** 三市场，提供 CLI 批量处理、Streamlit Web 交互界面与 APScheduler 长驻调度器三种运行模式。
+支持 **A 股 / 港股 / 美股** 三市场，提供 Web 界面（FastAPI + 单页应用）、CLI 批量处理与 APScheduler 长驻调度器三种运行模式。
 
 ## 功能概览
 
@@ -14,7 +14,7 @@
 | 🔔 **价格预警** | 价格阈值 / 涨跌幅 / 相对成本 / 均线突破，推送至手机 | 调度器 |
 | 📅 **财报监控** | A/港/美三市场未来 30 天披露日历 + 业绩预告 | 调度器 |
 | 🌐 **资讯抓取** | 财经新闻 / 公司公告 / 股东持仓 / 研报评级 | CLI / 调度器 |
-| 🖥️ **Web 界面** | 12 个功能页面，覆盖全部操作（Streamlit） | Web |
+| 🖥️ **Web 界面** | 单页应用：个股/策略/回测/持仓体检/模拟交易 5 大视图 + REST API | Web |
 | ⏰ **定时任务** | APScheduler 长驻进程，自动周期执行监控与抓取 | 调度器 |
 | 🐳 **Docker 部署** | app / scheduler / webui / db 四服务容器栈 | Docker |
 
@@ -28,11 +28,8 @@
 # 安装依赖
 pip install -r requirements.txt
 
-# 新版界面（API 驱动的单页应用）→ http://localhost:8600
+# Web 界面 → http://localhost:8600（API 文档在 /docs）
 python -m uvicorn src.api.main:app --port 8600
-
-# 经典界面（Streamlit）→ http://localhost:8501
-streamlit run src/web/app.py
 ```
 
 ### 方式二：CLI 批量模式
@@ -146,22 +143,9 @@ stock_analyize-main/
 │   │       ├── price_monitor.py    # 价格预警（4 种规则类型）
 │   │       └── earnings_monitor.py # 财报披露监控
 │   │
-│   ├── web/                         # Streamlit Web 前端
-│   │   ├── app.py                  # 入口 + 首页仪表盘
-│   │   ├── utils.py                # 配置 CRUD + 组件工具
-│   │   └── pages/                  # 12 个功能页面
-│   │       ├── 1_估值分析.py        # 四格估值分析
-│   │       ├── 2_策略配置.py        # 筛选策略可视化编辑
-│   │       ├── 3_股票筛选.py        # 一键执行筛选
-│   │       ├── 4_策略回测.py        # 回测 + 多策略对比
-│   │       ├── 5_价格预警.py        # 预警规则管理
-│   │       ├── 6_财报披露.py        # 三市场披露日历
-│   │       ├── 7_资讯抓取.py        # 4 类数据抓取
-│   │       ├── 8_告警历史.py        # 告警事件查看
-│   │       ├── 9_配置管理.py        # 全局配置管理
-│   │       ├── 10_调度管理.py       # APScheduler 状态
-│   │       ├── 11_FCF分析.py        # 自由现金流仪表盘
-│   │       └── 12_关注标的.py       # 关注列表管理
+│   ├── api/                         # Web 界面（FastAPI + SPA）
+│   │   ├── main.py                 # REST API（20+ 端点，/docs 自动文档）
+│   │   └── static/index.html       # 单页前端（个股/策略/回测/持仓/交易）
 │   │
 │   └── utils/                       # 工具模块
 │       ├── logger.py                # 日志（按天轮转保留30天）
@@ -176,7 +160,6 @@ stock_analyize-main/
 │   ├── backtest_history/            # 回测历史记录
 │   └── scrapers/                    # 抓取数据 CSV
 │
-├── .streamlit/config.toml           # Streamlit 主题配置
 ├── .github/workflows/test.yml       # GitHub Actions CI
 ├── .pre-commit-config.yaml          # 代码规范 pre-commit 钩子
 ├── pyproject.toml                   # 项目元数据 + mypy/ruff/pytest 配置
@@ -188,37 +171,23 @@ stock_analyize-main/
 
 ## 三种运行模式详解
 
-### Web 交互界面（12 个功能页面）
+### Web 界面（FastAPI + 单页应用）
 
 ```bash
-streamlit run src/web/app.py
+python -m uvicorn src.api.main:app --port 8600
 ```
 
-打开 http://localhost:8501 后，侧边栏分为 3 组：
+打开 http://localhost:8600，左栏 5 个视图：
 
-**📊 分析与筛选**
-| 页面 | 功能 |
+| 视图 | 功能 |
 |------|------|
-| 1_估值分析 | 选股 → 拉取财务数据 → 生成四格估值图 |
-| 2_策略配置 | 可视化编辑筛选策略参数 |
-| 3_股票筛选 | 一键执行策略筛选，结果可排序导出 |
-| 4_策略回测 | Backtrader 回测 + 多策略绩效对比 |
+| 🎯 个股 | 代码/名称搜索联想 → 估值、目标价、策略买卖点、通用信号一次出 |
+| 🧠 策略 | 策略管理（改名/复制/删除/条件编辑）+ 全市场筛选 + 按策略回测（含回撤与资金曲线） |
+| 🧪 回测 | 多策略对比：KPI 表 + 收益曲线 |
+| 🩺 持仓体检 | 四维健康分 + 问题清单 + 持仓明细 |
+| 💹 模拟交易 | 本地模拟盘：下单/撤单/持仓/订单流水（A 股费用模型） |
 
-**🔔 预警与监控**
-| 页面 | 功能 |
-|------|------|
-| 5_价格预警 | 添加/编辑/删除预警规则 |
-| 6_财报披露 | A/港/美股未来 30 天披露日历 |
-| 7_资讯抓取 | 新闻/公告/持仓/研报 4 类抓取 |
-| 8_告警历史 | 已触发事件 + 冷却状态 |
-
-**⚙️ 系统管理**
-| 页面 | 功能 |
-|------|------|
-| 9_配置管理 | 全局配置、指标参数、回测预设 |
-| 10_调度管理 | APScheduler 状态监控 |
-| 11_FCF分析 | 自由现金流多标的横向对比 |
-| 12_关注标的 | 多市场关注列表增删改查 |
+REST API 文档：http://localhost:8600/docs（所有能力均可编程调用）。
 
 ### CLI 批量模式
 

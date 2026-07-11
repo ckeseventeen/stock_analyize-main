@@ -35,7 +35,7 @@ def resolve_name(code: str, market: str = "a") -> str:
 
     # 1) 关注列表
     try:
-        from src.web.utils import list_stocks_from_market_config
+        from src.core.config_io import list_stocks_from_market_config
         for s in list_stocks_from_market_config(market) or []:
             if str(s.get("code", "")).strip() == code:
                 return str(s.get("name", ""))
@@ -97,7 +97,7 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
         # （spot 源抖动降级时可能只有部分股票，关注股必须始终可搜）
         merged = dict(_a_share_names())
         try:
-            from src.web.utils import list_stocks_from_market_config
+            from src.core.config_io import list_stocks_from_market_config
             for s in list_stocks_from_market_config("a") or []:
                 c = str(s.get("code", "")).strip()
                 if c:
@@ -107,7 +107,7 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
         universe = merged.items()
     else:
         try:
-            from src.web.utils import list_stocks_from_market_config
+            from src.core.config_io import list_stocks_from_market_config
             universe = [(str(s.get("code", "")), str(s.get("name", "")))
                         for s in (list_stocks_from_market_config(market) or [])]
         except Exception:

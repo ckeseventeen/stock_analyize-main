@@ -123,16 +123,18 @@ def load_yaml(path: Path | str, ttl: int = 0) -> dict:
     return _read_yaml_file(p)
 
 
+_YAML_CACHE: dict = {}  # path -> (ts, data)
+
+
 def _cached_load_yaml(path_str: str, ttl: int) -> dict:
-    """带 Streamlit 缓存的 YAML 读取"""
-    try:
-        import streamlit as st
-        @st.cache_data(ttl=ttl, show_spinner=False)
-        def _inner(p: str) -> dict:
-            return _read_yaml_file(Path(p))
-        return _inner(path_str)
-    except Exception:
-        return _read_yaml_file(Path(path_str))
+    """进程级 TTL 缓存的 YAML 读取（原为 Streamlit 缓存，界面下线后自管理）"""
+    import time
+    hit = _YAML_CACHE.get(path_str)
+    if hit and time.time() - hit[0] < ttl:
+        return hit[1]
+    data = _read_yaml_file(Path(path_str))
+    _YAML_CACHE[path_str] = (time.time(), data)
+    return data
 
 
 def _read_yaml_file(p: Path) -> dict:
@@ -374,3 +376,30 @@ def remove_from_yaml_list(path: Path | str, dotted_key: str, value: str) -> tupl
     parent[leaf] = new_list
     ok = atomic_save_yaml(path, cfg)
     return ok, ("已删除" if ok else "写入失败")
+
+
+def list_stocks_from_market_config(market: str, ttl: int = 300) -> list[dict]:
+    """
+    从市场 YAML 提取所有股票（展平 categories）。
+
+    原 src/web/utils.py 迁入（Streamlit 界面删除后归位核心层）。
+
+    Returns:
+        [{"code", "name", "category", "valuation", ...}, ...]
+    """
+    cfg_path = MARKET_CONFIG_PATHS.get(market)
+    if not cfg_path:
+        return []
+    cfg = load_yaml(cfg_path, ttl=ttl)
+    if not cfg:
+        return []
+    stocks: list[dict] = []
+    for cat_key, cat_data in (cfg.get("categories") or {}).items():
+        if not cat_data:
+            continue
+        cat_name = cat_data.get("name", cat_key)
+        for stock in cat_data.get("stocks", []) or []:
+            entry = dict(stock)
+            entry["category"] = cat_name
+            stocks.append(entry)
+    return stocks

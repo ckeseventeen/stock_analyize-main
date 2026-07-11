@@ -8,14 +8,18 @@
 | 功能模块 | 说明 | 运行方式 |
 |----------|------|---------|
 | 📈 **估值分析** | TTM 净利润推演 → PE/PS 三情景目标价 → 历史分位数 → 四格估值图 | CLI / Web |
-| 🔍 **股票筛选** | 15 个预设策略、28 种可组合条件，两阶段过滤（向量化 Spot + OHLCV 深度验证） | CLI / Web |
+| 🔍 **股票筛选** | 8 条「基本面+技术」双层策略、40 种可组合条件，两阶段过滤（向量化 Spot + OHLCV 深度验证） | CLI / Web |
 | 🔬 **因子分析** | FCF 自由现金流评分、动量因子、质量因子、估值因子、技术因子 | Web |
 | 📊 **策略回测** | Backtrader 回测引擎 + 多策略对比 + 历史回测持久化 | Web |
 | 🔔 **价格预警** | 价格阈值 / 涨跌幅 / 相对成本 / 均线突破，推送至手机 | 调度器 |
 | 📅 **财报监控** | A/港/美三市场未来 30 天披露日历 + 业绩预告 | 调度器 |
 | 🌐 **资讯抓取** | 财经新闻 / 公司公告 / 股东持仓 / 研报评级 | CLI / 调度器 |
 | 🖥️ **Web 界面** | 单页应用：个股/策略/回测/持仓体检/模拟交易 5 大视图 + REST API | Web |
-| ⏰ **定时任务** | APScheduler 长驻进程，自动周期执行监控与抓取 | 调度器 |
+| 🩺 **持仓体检** | 四维健康分（卖出信号/集中度/盈亏结构/大盘环境）+ 问题清单 | Web |
+| 💹 **模拟交易** | 本地模拟盘（A 股费用模型：佣金/印花税/过户费），券商实盘适配层预留 | Web |
+| 📰 **AI 周报** | 持仓体检 + 筛选结果 → Claude 深度解读 → md/html/pdf 导出 | Web |
+| 🏪 **策略市场** | 策略打包（sha256 校验）→ 发布/导入/分享 | Web |
+| ⏰ **定时任务** | APScheduler 长驻进程，自动周期执行监控与抓取（含 Webhook 推送） | 调度器 |
 | 🐳 **Docker 部署** | app / scheduler / webui / db 四服务容器栈 | Docker |
 
 ---
@@ -73,7 +77,8 @@ stock_analyize-main/
 │   │   ├── a_stock.yaml            # A 股（科技/消费/高端制造）
 │   │   ├── hk_stock.yaml           # 港股（科技巨头/消费）
 │   │   └── us_stock.yaml           # 美股（科技巨头/消费）
-│   ├── screen_config.yaml           # 15 个筛选策略定义
+│   ├── screen_config.yaml           # 8 条双层筛选策略（基本面+技术）
+│   ├── holdings.yaml                # 持仓记录（持仓监控/体检数据源）
 │   ├── scheduler.yaml               # 定时任务（价格/财报/抓取/每日筛选）
 │   ├── alerts.yaml                  # 告警通道 Server酱/Bark/PushPlus
 │   ├── price_alerts.yaml            # 价格预警规则
@@ -84,10 +89,14 @@ stock_analyize-main/
 │   └── backtest_presets.yaml        # 回测预设
 │
 ├── src/
-│   ├── core/                        # 核心引擎
+│   ├── core/                        # 核心层
 │   │   ├── analyzer.py             # TTM 估值 + 分位数 + 目标价推演
 │   │   ├── data_fetcher.py         # A/HK/US 三市场数据获取器
-│   │   └── visualizer.py           # 四格估值图 matplotlib
+│   │   ├── config_io.py            # YAML 读写 + 路径常量（唯一权威）
+│   │   ├── market_registry.py      # 市场注册中心（加市场只改一处）
+│   │   ├── plugin.py               # 策略/因子/条件插件注册
+│   │   ├── settings.py             # 环境变量集中管理
+│   │   └── visualizer.py           # 估值图表
 │   │
 │   ├── analysis/                    # 分析引擎
 │   │   ├── technical/              # 技术指标（MACD/RSI/KDJ/布林带/均线）
@@ -102,7 +111,7 @@ stock_analyize-main/
 │   │   │   └── technical.py        # 技术因子
 │   │   └── screening/              # 股票筛选引擎
 │   │       ├── screener.py         # 两阶段过滤（向量化 + 线程池）
-│   │       ├── conditions.py       # 28 种筛选条件
+│   │       ├── conditions.py       # 40 种筛选条件（含买卖双向）
 │   │       ├── config_schema.py    # YAML 策略解析器
 │   │       └── data_provider.py    # 筛选数据提供层
 │   │
@@ -137,14 +146,29 @@ stock_analyize-main/
 │   │   │   ├── bark.py             # Bark（iOS）
 │   │   │   ├── pushplus.py         # PushPlus（微信）
 │   │   │   ├── console.py          # 控制台
+│   │   │   ├── webhook.py          # Webhook（HMAC-SHA256 签名）
 │   │   │   └── state.py            # 告警去重 + 冷却
 │   │   └── monitor/                # 监控器
 │   │       ├── base.py             # BaseMonitor
 │   │       ├── price_monitor.py    # 价格预警（4 种规则类型）
 │   │       └── earnings_monitor.py # 财报披露监控
 │   │
+│   ├── services/                    # 无头服务层（API 与调度器共用）
+│   │   ├── screening_service.py    # 策略 CRUD + 条件 schema + 筛选执行
+│   │   ├── valuation_service.py    # 估值 / FCF 编排
+│   │   ├── backtest_service.py     # 单策略/多策略/按策略回测
+│   │   ├── stock_service.py        # 个股聚合（搜索/名称/信号/财报/资讯/预警）
+│   │   ├── portfolio_service.py    # 持仓行情/评估编排
+│   │   ├── alert_service.py        # 预警试跑与全量扫描
+│   │   └── strategy_market.py      # 策略包 打包/校验/发布/导入
+│   │
+│   ├── portfolio/                   # 持仓域（卖出引擎/大盘状态/组合诊断）
+│   ├── trading/                     # 交易域（模拟盘 + 券商适配层）
+│   ├── report/                      # AI 周报（Claude + 模板降级 + 导出）
+│   ├── ml/                          # 机器学习（数据集构建 + 训练）
+│   │
 │   ├── api/                         # Web 界面（FastAPI + SPA）
-│   │   ├── main.py                 # REST API（20+ 端点，/docs 自动文档）
+│   │   ├── main.py                 # REST API（25+ 端点，/docs 自动文档）
 │   │   └── static/index.html       # 单页前端（个股/策略/回测/持仓/交易）
 │   │
 │   └── utils/                       # 工具模块
@@ -153,7 +177,7 @@ stock_analyize-main/
 │       ├── exception_handler.py     # 异常处理
 │       └── name_resolver.py         # 股票名称解析
 │
-├── tests/                           # 89+ 单元测试（pytest）
+├── tests/                           # 440+ 单元测试（pytest）
 ├── output/                          # 自动生成的输出
 │   ├── reports/                     # 估值分析 PNG 图
 │   ├── screens/                     # 筛选结果 CSV
@@ -298,10 +322,19 @@ mypy src/ --ignore-missing-imports
 pre-commit install
 ```
 
-### 测试覆盖
+### 测试覆盖（440+ 用例）
 
-| 测试文件 | 用例数 | 关注点 |
-|---------|-------|-------|
+| 领域 | 测试文件 | 关注点 |
+|------|---------|-------|
+| 服务层 | test_screening/valuation/backtest/stock_service.py | 策略 CRUD、条件 schema、买卖点扫描 |
+| API | test_api.py | 端点契约、策略管理、模拟盘下单 |
+| 交易 | test_trading.py | 费用模型、限价撮合、状态持久化 |
+| 组合 | test_portfolio.py / test_diagnostics.py | 卖出引擎、四维诊断 |
+| 报告 | test_report.py | 上下文组装、LLM 降级、导出 |
+| 引擎 | test_screener/factors/technical/divergence.py | 筛选、因子、指标、背离 |
+| 监控 | test_alert/price_monitor/earnings_monitor/scheduler.py | 通道、去重、cron |
+
+---------|-------|-------|
 | test_analyzer.py | 16 | TTM 计算、估值推演、bug 回归 |
 | test_alert.py | 18 | 4 通道推送、去重、重试 |
 | test_price_monitor.py | 17 | 规则评估、cooldown、mock 行情 |
@@ -331,7 +364,7 @@ docker-compose up
 docker-compose 默认启动：
 - `app` — 主分析服务（main.py）
 - `scheduler` — APScheduler 长驻调度
-- `webui` — Streamlit 前端（端口 8501）
+- `webui` — Web 界面（FastAPI + SPA，端口 8600）
 - `db` — MySQL 数据库
 
 ---
@@ -344,10 +377,11 @@ docker-compose 默认启动：
 | 数据处理 | pandas, numpy, scipy |
 | 技术分析 | ta (MACD/RSI/布林带), 手工实现 KDJ |
 | 回测 | backtrader |
-| 可视化 | matplotlib (静态), plotly (交互), Streamlit (Web) |
+| Web | FastAPI + 原生单页前端（ECharts 图表） |
+| 可视化 | matplotlib (静态), ECharts (交互) |
 | 调度 | APScheduler (cron/interval) |
-| 告警 | Server酱 / Bark / PushPlus |
-| 测试 | pytest (89+ 用例), ruff (代码规范), mypy (类型检查) |
+| 告警 | Server酱 / Bark / PushPlus / Webhook(HMAC) |
+| 测试 | pytest (440+ 用例), ruff (代码规范), mypy (类型检查) |
 | CI/CD | GitHub Actions, pre-commit |
 | 部署 | Docker, docker-compose |
 

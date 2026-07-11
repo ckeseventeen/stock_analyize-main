@@ -75,6 +75,13 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/api/stocks/search")
+def stocks_search(q: str, market: str = "a", limit: int = 10):
+    """代码前缀或名称子串搜索 → [{code, name}]"""
+    from src.services import stock_service as ssvc
+    return ssvc.search_stocks(q, market, limit=min(limit, 30))
+
+
 @app.get("/api/stocks/{market}/{code}")
 def stock_basic(market: str, code: str):
     """代码 → 名称 + 最新价"""

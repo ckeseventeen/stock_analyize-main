@@ -150,3 +150,20 @@ class TestStrategyManagementApi:
     def test_backtest_missing_strategy_400(self, strat_client):
         r = strat_client.post("/api/strategies/nope/backtest", json={"code": "600519"})
         assert r.status_code == 400
+
+
+@pytest.mark.unit
+class TestStockSearchApi:
+    def test_search_route(self, client, monkeypatch):
+        from src.services import stock_service as ssvc
+        monkeypatch.setattr(ssvc, "_a_share_names",
+                            lambda: {"600519": "贵州茅台"})
+        r = client.get("/api/stocks/search", params={"q": "茅台"})
+        assert r.status_code == 200
+        assert r.json() == [{"code": "600519", "name": "贵州茅台"}]
+
+    def test_search_not_shadowed_by_market_route(self, client):
+        # /api/stocks/search 不应被 /{market}/{code} 吞掉
+        r = client.get("/api/stocks/search", params={"q": "x", "market": "hk"})
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)

@@ -62,6 +62,69 @@ def resolve_name(code: str, market: str = "a") -> str:
     return ""
 
 
+# A 股全市场名称表的进程级缓存（搜索联想每敲一个键都会查，不能每次拉全市场）
+_A_NAME_CACHE: dict = {"ts": 0.0, "map": {}}
+_A_NAME_TTL = 600.0
+
+
+def _a_share_names() -> dict[str, str]:
+    """{code: name}，10 分钟缓存"""
+    import time
+    if time.time() - _A_NAME_CACHE["ts"] > _A_NAME_TTL or not _A_NAME_CACHE["map"]:
+        try:
+            from src.services.portfolio_service import build_a_share_maps
+            _, names = build_a_share_maps()
+            if names:
+                _A_NAME_CACHE.update(ts=time.time(), map=names)
+        except Exception as e:
+            logger.warning(f"全市场名称表获取失败: {e}")
+    return _A_NAME_CACHE["map"]
+
+
+def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
+    """
+    按代码前缀或名称子串搜索。
+
+    A 股搜全市场（spot 名称表）；港/美股搜关注列表。
+    代码前缀命中排前，名称命中排后。
+    """
+    q = str(query).strip()
+    if not q:
+        return []
+
+    if market == "a":
+        # 全市场 spot 名称表 + 关注列表兜底合并
+        # （spot 源抖动降级时可能只有部分股票，关注股必须始终可搜）
+        merged = dict(_a_share_names())
+        try:
+            from src.web.utils import list_stocks_from_market_config
+            for s in list_stocks_from_market_config("a") or []:
+                c = str(s.get("code", "")).strip()
+                if c:
+                    merged.setdefault(c, str(s.get("name", "")))
+        except Exception:
+            pass
+        universe = merged.items()
+    else:
+        try:
+            from src.web.utils import list_stocks_from_market_config
+            universe = [(str(s.get("code", "")), str(s.get("name", "")))
+                        for s in (list_stocks_from_market_config(market) or [])]
+        except Exception:
+            universe = []
+
+    q_upper = q.upper()
+    by_code, by_name = [], []
+    for code, name in universe:
+        if code.upper().startswith(q_upper):
+            by_code.append({"code": code, "name": name})
+        elif q in name:
+            by_name.append({"code": code, "name": name})
+        if len(by_code) >= limit:
+            break
+    return (by_code + by_name)[:limit]
+
+
 def current_price(code: str, market: str = "a") -> float:
     """最新价：日线尾根收盘（全市场通用）；失败返回 0"""
     from src.services.portfolio_service import fetch_intl_price

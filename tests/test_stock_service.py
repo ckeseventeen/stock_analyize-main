@@ -164,3 +164,32 @@ class TestScanStrategySignals:
         monkeypatch.setattr(ScreenerDataProvider, "get_weekly_ohlcv",
                             lambda self, *a, **k: pd.DataFrame())
         assert ssvc.scan_strategy_signals("600519", "a", config_path=cfg) == []
+
+
+@pytest.mark.unit
+class TestSearchStocks:
+    @pytest.fixture(autouse=True)
+    def _fake_universe(self, monkeypatch):
+        monkeypatch.setattr(ssvc, "_a_share_names", lambda: {
+            "600519": "贵州茅台", "600518": "康美药业",
+            "000001": "平安银行", "002156": "通富微电",
+        })
+
+    def test_code_prefix(self):
+        res = ssvc.search_stocks("6005")
+        codes = [r["code"] for r in res]
+        assert set(codes) == {"600519", "600518"}
+
+    def test_name_substring(self):
+        res = ssvc.search_stocks("茅台")
+        assert res == [{"code": "600519", "name": "贵州茅台"}]
+
+    def test_code_hits_rank_first(self):
+        res = ssvc.search_stocks("000001")
+        assert res[0]["code"] == "000001"
+
+    def test_empty_query(self):
+        assert ssvc.search_stocks("  ") == []
+
+    def test_limit(self):
+        assert len(ssvc.search_stocks("0", limit=1)) == 1

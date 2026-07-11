@@ -60,6 +60,13 @@ tr:hover td{background:rgba(99,102,241,.05)}
   border-radius:50%;animation:sp .7s linear infinite;vertical-align:-3px;margin-right:6px}
 @keyframes sp{to{transform:rotate(360deg)}}
 .view{display:none}.view.on{display:block}
+/* 搜索联想下拉 */
+.drop{position:absolute;top:100%;left:0;right:0;z-index:50;display:none;
+  background:var(--panel2);border:1px solid var(--line);border-radius:10px;
+  margin-top:4px;max-height:260px;overflow-y:auto;box-shadow:0 10px 30px rgba(0,0,0,.5)}
+.drop .it{padding:8px 12px;cursor:pointer;display:flex;gap:10px}
+.drop .it:hover,.drop .it.hl{background:rgba(99,102,241,.18)}
+.drop .it b{color:var(--pri);min-width:64px}
 .chart{height:380px}
 .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
 @media(max-width:900px){#app{grid-template-columns:1fr}aside{display:flex;height:auto;position:static;overflow-x:auto}.grid2{grid-template-columns:1fr}}
@@ -85,7 +92,10 @@ tr:hover td{background:rgba(99,102,241,.05)}
   <h1>个股分析</h1><div class="sub">输入代码回车 — 名称、价格、估值、买卖信号一次出</div>
   <div class="card"><div class="row">
     <div><label>市场</label><select id="s-mkt"><option value="a">A 股</option><option value="hk">港股</option><option value="us">美股</option></select></div>
-    <div><label>代码</label><input id="s-code" placeholder="600519" style="width:150px"></div>
+    <div style="position:relative"><label>代码或名称</label>
+      <input id="s-code" placeholder="600519 / 茅台" style="width:200px" autocomplete="off">
+      <div id="s-drop" class="drop"></div>
+    </div>
     <button id="s-go">分析</button>
     <span id="s-status" class="hint"></span>
   </div></div>
@@ -222,10 +232,45 @@ document.querySelectorAll('.nav-item').forEach(n=>n.onclick=()=>{
   if(n.dataset.v==='trade')loadAccount();
 });
 
-/* ── 个股 ── */
+/* ── 个股：代码/名称搜索联想 ── */
+let _dropTimer=null;
+const _drop=$('#s-drop');
+function hideDrop(){_drop.style.display='none';_drop.innerHTML=''}
+$('#s-code').addEventListener('input',()=>{
+  clearTimeout(_dropTimer);
+  const q=$('#s-code').value.trim();
+  if(!q){hideDrop();return}
+  _dropTimer=setTimeout(async()=>{
+    try{
+      const list=await api(`/api/stocks/search?q=${encodeURIComponent(q)}&market=${$('#s-mkt').value}`);
+      if(!list.length){hideDrop();return}
+      _drop.innerHTML=list.map(s=>
+        `<div class="it" data-code="${s.code}"><b>${s.code}</b>${s.name}</div>`).join('');
+      _drop.style.display='block';
+      _drop.querySelectorAll('.it').forEach(el=>el.onmousedown=e=>{
+        e.preventDefault();
+        $('#s-code').value=el.dataset.code;
+        hideDrop();analyzeStock();
+      });
+    }catch(e){hideDrop()}
+  },250);
+});
+$('#s-code').addEventListener('blur',()=>setTimeout(hideDrop,150));
+$('#s-code').addEventListener('keydown',e=>{if(e.key==='Escape')hideDrop()});
+
 async function analyzeStock(){
-  const mkt=$('#s-mkt').value,code=$('#s-code').value.trim();
+  hideDrop();
+  const mkt=$('#s-mkt').value;
+  let code=$('#s-code').value.trim();
   if(!code)return;
+  // 输入的是名称（含非字母数字字符）→ 搜索取第一个匹配
+  if(/[^0-9A-Za-z.]/.test(code)){
+    try{
+      const hits=await api(`/api/stocks/search?q=${encodeURIComponent(code)}&market=${mkt}`);
+      if(hits.length){code=hits[0].code;$('#s-code').value=code}
+      else{$('#s-status').innerHTML='<span class="err">没找到匹配的股票</span>';return}
+    }catch(e){}
+  }
   const st=$('#s-status');busy(st,'解析中...');$('#s-go').disabled=true;
   try{
     const basic=await api(`/api/stocks/${mkt}/${code}`);

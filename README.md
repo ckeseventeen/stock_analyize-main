@@ -22,20 +22,17 @@
 
 ## 快速开始
 
-### 方式一：Web 交互界面（推荐日常使用）
+### 方式一：Web 界面（推荐日常使用）
 
 ```bash
 # 安装依赖
 pip install -r requirements.txt
 
-# 启动 Web 服务 → 自动打开浏览器 http://localhost:8501
-streamlit run src/web/app.py
+# 新版界面（API 驱动的单页应用）→ http://localhost:8600
+python -m uvicorn src.api.main:app --port 8600
 
-# 或者使用一键脚本（自动创建虚拟环境 + 安装依赖）
-# Windows:
-run.bat --gui
-# Linux/macOS:
-./run.sh --gui
+# 经典界面（Streamlit）→ http://localhost:8501
+streamlit run src/web/app.py
 ```
 
 ### 方式二：CLI 批量模式

@@ -104,6 +104,11 @@ tr:hover td{background:rgba(99,102,241,.05)}
     <div class="card"><b>🎯 目标价</b><div class="scroll" id="s-targets"></div></div>
     <div class="card"><b>📋 核心指标</b><div class="scroll" id="s-summary"></div></div>
   </div>
+  <div class="card"><b>📉 K 线走势（近一年 · MA20/60）</b>
+    <div class="chart" id="s-kline" style="height:340px"></div></div>
+  <div class="card"><b>💰 现金流（FCF）分析</b>
+    <div id="s-fcf-score"></div>
+    <div class="chart" id="s-fcf-chart" style="height:280px;display:none"></div></div>
   <div class="card"><b>📡 策略买卖点扫描</b>
     <span class="hint">每条策略分买入侧（筛选条件）与卖出侧（卖出条件）分别判定</span>
     <div class="scroll" id="s-strat"></div></div>
@@ -280,11 +285,61 @@ async function analyzeStock(){
       <div class="metric"><div class="k">最新价</div><div class="v">${fmt(basic.price)}</div></div>
       <div class="metric" id="s-m-pe"><div class="k">PE(TTM)</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pct"><div class="k">历史分位</div><div class="v">…</div></div>`;
-    busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));busy($('#s-strat'));
-    const [val,sig,strat]=await Promise.allSettled([
+    busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));
+    busy($('#s-strat'));busy($('#s-fcf-score'));
+    const [val,sig,strat,kline,fcf]=await Promise.allSettled([
       api(`/api/stocks/${mkt}/${code}/valuation`),
       api(`/api/stocks/${mkt}/${code}/signals`),
-      api(`/api/stocks/${mkt}/${code}/strategy-signals`)]);
+      api(`/api/stocks/${mkt}/${code}/strategy-signals`),
+      api(`/api/stocks/${mkt}/${code}/kline?days=250`),
+      api(`/api/stocks/${mkt}/${code}/fcf`)]);
+    // ── K 线图 ──
+    if(kline.status==='fulfilled'){
+      const d=kline.value;
+      const ch=echarts.init($('#s-kline'),'dark');
+      ch.setOption({backgroundColor:'transparent',
+        tooltip:{trigger:'axis',axisPointer:{type:'cross'}},
+        legend:{textStyle:{color:'#8b98ad'}},
+        axisPointer:{link:[{xAxisIndex:'all'}]},
+        grid:[{left:70,right:20,top:30,height:'58%'},{left:70,right:20,top:'76%',height:'16%'}],
+        xAxis:[{type:'category',data:d.dates},{type:'category',data:d.dates,gridIndex:1,axisLabel:{show:false}}],
+        yAxis:[{scale:true},{gridIndex:1,axisLabel:{show:false},splitLine:{show:false}}],
+        dataZoom:[{type:'inside',xAxisIndex:[0,1]}],
+        series:[
+          {name:'K线',type:'candlestick',data:d.k,
+           itemStyle:{color:'#ef5350',color0:'#26a69a',borderColor:'#ef5350',borderColor0:'#26a69a'}},
+          {name:'MA20',type:'line',data:d.ma20,showSymbol:false,lineStyle:{width:1.2,color:'#fb8c00'}},
+          {name:'MA60',type:'line',data:d.ma60,showSymbol:false,lineStyle:{width:1.2,color:'#8b5cf6'}},
+          {name:'成交量',type:'bar',xAxisIndex:1,yAxisIndex:1,data:d.volume,
+           itemStyle:{color:'rgba(99,102,241,.45)'}}]});
+    }else{$('#s-kline').innerHTML=`<div class="err">${kline.reason}</div>`}
+    // ── FCF 现金流 ──
+    if(fcf.status==='fulfilled'){
+      const f=fcf.value,sc=f.scores||{},su=f.summary||{};
+      $('#s-fcf-score').innerHTML=`
+        <div class="metrics" style="margin:10px 0 6px">
+          <div class="metric"><div class="k">综合评分</div>
+            <div class="v ${sc.total>=60?'':'down'}" style="${sc.total>=60?'color:var(--green)':''}">${sc.total??'—'} / 100</div></div>
+          <div class="metric"><div class="k">评级</div><div class="v">${su.rating||'—'}</div></div>
+          <div class="metric"><div class="k">FCF Yield</div><div class="v">${fmt(su.current_fcf_yield)}%</div></div>
+        </div>
+        <div class="hint">💡 ${su.judgement||''}　⚠️ ${su.main_risk||''}</div>`;
+      const el=$('#s-fcf-chart');el.style.display='block';
+      const years=f.dates.map(x=>x.slice(0,4));
+      const ch2=echarts.init(el,'dark');
+      ch2.setOption({backgroundColor:'transparent',tooltip:{trigger:'axis'},
+        legend:{textStyle:{color:'#8b98ad'}},
+        grid:{left:70,right:60,top:34,bottom:30},
+        xAxis:{type:'category',data:years},
+        yAxis:[{name:'亿元'},{name:'FCF利润率%',splitLine:{show:false}}],
+        series:[
+          {name:'净利润',type:'bar',data:f.series.net_profit||[],itemStyle:{color:'#3b82f6'}},
+          {name:'自由现金流',type:'bar',data:f.series.fcf||[],
+           itemStyle:{color:p=>p.value>=0?'#34d399':'#f87171'}},
+          {name:'FCF利润率',type:'line',yAxisIndex:1,data:f.series.fcf_margin||[],
+           showSymbol:false,lineStyle:{width:2,color:'#fbbf24'}}]});
+    }else{$('#s-fcf-score').innerHTML=`<div class="hint">现金流数据不可用：${fcf.reason}</div>`;
+      $('#s-fcf-chart').style.display='none'}
     if(strat.status==='fulfilled'){
       const chips=cs=>cs.map(c=>`<span class="badge ${c.hit?'b-low':''}" style="${c.hit?'':'opacity:.45'}">${c.hit?'✅':''}${c.label}</span>`).join(' ');
       $('#s-strat').innerHTML=strat.value.length?`<table>
@@ -482,7 +537,10 @@ $('#sc-go').onclick=async()=>{
     const r=await api('/api/screening/run',{method:'POST',
       headers:{'Content-Type':'application/json'},body:JSON.stringify({strategy_ids:ids})});
     $('#sc-status').textContent=`✅ 命中 ${r.count} 只 · ${r.elapsed}s`;
-    $('#sc-result').innerHTML=table(r.rows);
+    $('#sc-result').innerHTML=r.count===0
+      ? '<span class="hint">0 命中 ≠ 故障：背离/突破/金叉等技术触发条件只有「当天出现信号」才命中；'+
+        '换个交易日再跑，或先用「质量价值白马」（通常命中几十只）验证链路。</span>'
+      : table(r.rows);
   }catch(e){$('#sc-status').innerHTML=`<span class="err">${e.message}</span>`}
   $('#sc-go').disabled=false;
 };

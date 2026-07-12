@@ -120,6 +120,50 @@ def stock_valuation(market: str, code: str,
     }
 
 
+@app.get("/api/stocks/{market}/{code}/kline")
+def stock_kline(market: str, code: str, days: int = 250):
+    """日线 K 线 + MA20/60 + 成交量（ECharts 蜡烛图格式 [开,收,低,高]）"""
+    from src.services import backtest_service as btsvc
+    df = btsvc.fetch_ohlcv(code, market, days)
+    if df is None or df.empty:
+        raise HTTPException(404, "未能获取 K 线数据")
+    df = btsvc._normalize_for_charts(df)
+    close = df["close"]
+    return {
+        "dates": [str(d)[:10] for d in df.index],
+        "k": _jsonable([[float(o), float(c), float(lo), float(h)]
+                        for o, c, lo, h in zip(df["open"], close, df["low"], df["high"])]),
+        "volume": _jsonable([float(v) for v in df.get("volume", [0] * len(df))]),
+        "ma20": _jsonable(list(close.rolling(20).mean().round(2))),
+        "ma60": _jsonable(list(close.rolling(60).mean().round(2))),
+    }
+
+
+@app.get("/api/stocks/{market}/{code}/fcf")
+def stock_fcf(market: str, code: str, annual: bool = True):
+    """自由现金流分析：五维评分卡 + 年度序列（亿元）"""
+    from src.services import valuation_service as vsvc
+    try:
+        run = vsvc.run_fcf(market, code, is_annual=annual)
+    except Exception as e:
+        raise HTTPException(502, f"FCF 数据源失败: {e}")
+    if run.analyzed_df.empty or not run.score_res:
+        raise HTTPException(404, "FCF 财务数据为空（新股/数据源无记录）")
+    df = run.analyzed_df
+    series = {}
+    for col in ("operating_cash_flow", "capex", "fcf", "net_profit"):
+        if col in df.columns:
+            series[col] = _jsonable([round(float(v) / 1e8, 2) for v in df[col]])
+    if "fcf_margin" in df.columns:
+        series["fcf_margin"] = _jsonable([round(float(v), 1) for v in df["fcf_margin"]])
+    return {
+        "dates": [str(i)[:10] for i in df.index],
+        "series": series,
+        "scores": _jsonable(run.score_res.get("scores", {})),
+        "summary": _jsonable(run.score_res.get("summary", {})),
+    }
+
+
 @app.get("/api/stocks/{market}/{code}/strategy-signals")
 def stock_strategy_signals(market: str, code: str):
     """逐策略扫描该股的买入点/卖出点（策略买卖两侧分别判定）"""

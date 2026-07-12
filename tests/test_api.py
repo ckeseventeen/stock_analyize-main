@@ -167,3 +167,62 @@ class TestStockSearchApi:
         r = client.get("/api/stocks/search", params={"q": "x", "market": "hk"})
         assert r.status_code == 200
         assert isinstance(r.json(), list)
+
+
+@pytest.mark.unit
+class TestKlineAndFcfApi:
+    def test_kline_shape(self, client, monkeypatch):
+        import numpy as np
+        import pandas as pd
+
+        from src.services import backtest_service as btsvc
+        idx = pd.date_range("2025-01-01", periods=80, freq="D")
+        close = pd.Series(100 + np.arange(80.0), index=idx)
+        df = pd.DataFrame({"open": close - 1, "high": close + 1,
+                           "low": close - 2, "close": close,
+                           "volume": 1000}, index=idx)
+        monkeypatch.setattr(btsvc, "fetch_ohlcv", lambda *a, **k: df.reset_index(names="date"))
+        r = client.get("/api/stocks/a/600519/kline?days=80")
+        assert r.status_code == 200
+        j = r.json()
+        assert len(j["dates"]) == 80
+        assert len(j["k"][0]) == 4          # [开, 收, 低, 高]
+        assert j["ma20"][0] is None         # 前 19 根无 MA20 → null
+        assert j["ma20"][-1] is not None
+
+    def test_kline_404_when_empty(self, client, monkeypatch):
+        import pandas as pd
+
+        from src.services import backtest_service as btsvc
+        monkeypatch.setattr(btsvc, "fetch_ohlcv", lambda *a, **k: pd.DataFrame())
+        assert client.get("/api/stocks/a/999999/kline").status_code == 404
+
+    def test_fcf_shape(self, client, monkeypatch):
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        idx = pd.to_datetime(["2023-12-31", "2024-12-31"])
+        adf = pd.DataFrame({
+            "operating_cash_flow": [2e9, 3e9], "capex": [5e8, 6e8],
+            "fcf": [1.5e9, 2.4e9], "net_profit": [1.8e9, 2.2e9],
+            "fcf_margin": [15.0, 18.0],
+        }, index=idx)
+        fake = vsvc.FCFRun(analyzed_df=adf, market_cap=1e11, score_res={
+            "scores": {"total": 80}, "summary": {"rating": "优", "judgement": "j",
+                                                  "main_risk": "r", "current_fcf_yield": 2.4},
+        })
+        monkeypatch.setattr(vsvc, "run_fcf", lambda *a, **k: fake)
+        r = client.get("/api/stocks/a/600519/fcf")
+        assert r.status_code == 200
+        j = r.json()
+        assert j["scores"]["total"] == 80
+        assert j["series"]["fcf"] == [15.0, 24.0]   # 亿元换算
+        assert len(j["dates"]) == 2
+
+    def test_fcf_404_when_empty(self, client, monkeypatch):
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        fake = vsvc.FCFRun(analyzed_df=pd.DataFrame(), score_res={}, market_cap=0)
+        monkeypatch.setattr(vsvc, "run_fcf", lambda *a, **k: fake)
+        assert client.get("/api/stocks/a/999999/fcf").status_code == 404

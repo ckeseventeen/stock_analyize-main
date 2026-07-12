@@ -28,6 +28,21 @@ from src.trading import OrderSide, PaperBroker  # noqa: E402
 
 app = FastAPI(title="量化投研平台 API", version="0.1.0")
 
+
+@app.on_event("startup")
+def _warm_caches() -> None:
+    """后台预热全市场名称表（3-4 分钟的首次拉取不能落在用户第一次点击上）"""
+    import threading
+
+    def _warm():
+        try:
+            from src.services.stock_service import _a_share_names
+            _a_share_names()
+        except Exception:
+            pass
+
+    threading.Thread(target=_warm, daemon=True, name="warm-names").start()
+
 _STATIC_DIR = Path(__file__).parent / "static"
 
 # 模拟盘单例（进程级）

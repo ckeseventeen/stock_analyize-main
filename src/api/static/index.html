@@ -276,23 +276,33 @@ async function analyzeStock(){
       else{$('#s-status').innerHTML='<span class="err">没找到匹配的股票</span>';return}
     }catch(e){}
   }
-  const st=$('#s-status');busy(st,'解析中...');$('#s-go').disabled=true;
+  const st=$('#s-status');busy(st,'6 路数据并行加载中（首次约 30-60 秒）...');
+  $('#s-go').disabled=true;
   try{
-    const basic=await api(`/api/stocks/${mkt}/${code}`);
-    st.innerHTML=`✅ <b>${basic.name||code}</b>`;
+    // 骨架先渲染，各请求到位后逐个填充——任何一路慢都不阻塞其他
     $('#s-metrics').innerHTML=`
-      <div class="metric"><div class="k">名称</div><div class="v">${basic.name||'—'}</div></div>
-      <div class="metric"><div class="k">最新价</div><div class="v">${fmt(basic.price)}</div></div>
+      <div class="metric" id="s-m-name"><div class="k">名称</div><div class="v">…</div></div>
+      <div class="metric" id="s-m-price"><div class="k">最新价</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pe"><div class="k">PE(TTM)</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pct"><div class="k">历史分位</div><div class="v">…</div></div>`;
     busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));
     busy($('#s-strat'));busy($('#s-fcf-score'));
-    const [val,sig,strat,kline,fcf]=await Promise.allSettled([
+    const pBasic=api(`/api/stocks/${mkt}/${code}`).then(b=>{
+      st.innerHTML=`✅ <b>${b.name||code}</b>`;
+      $('#s-m-name').innerHTML=`<div class="k">名称</div><div class="v">${b.name||'—'}</div>`;
+      $('#s-m-price').innerHTML=`<div class="k">最新价</div><div class="v">${fmt(b.price)}</div>`;
+      return b;
+    });
+    const [basic,val,sig,strat,kline,fcf]=await Promise.allSettled([pBasic,
       api(`/api/stocks/${mkt}/${code}/valuation`),
       api(`/api/stocks/${mkt}/${code}/signals`),
       api(`/api/stocks/${mkt}/${code}/strategy-signals`),
       api(`/api/stocks/${mkt}/${code}/kline?days=250`),
       api(`/api/stocks/${mkt}/${code}/fcf`)]);
+    if(basic.status!=='fulfilled'){
+      st.innerHTML=`<span class="err">名称解析失败：${basic.reason}</span>`;
+      $('#s-m-name').innerHTML=`<div class="k">名称</div><div class="v">${code}</div>`;
+    }
     // ── K 线图 ──
     if(kline.status==='fulfilled'){
       const d=kline.value;

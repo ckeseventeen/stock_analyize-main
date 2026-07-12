@@ -51,33 +51,108 @@ def resolve_name(code: str, market: str = "a") -> str:
     except Exception:
         pass
 
-    # 3) A 股全市场 spot（有 5000+ 名称）
+    # 3) A 股全市场名称表（走 _a_share_names 的进程级缓存，启动时已预热）
     if market == "a":
         try:
-            from src.services.portfolio_service import build_a_share_maps
-            _, code_to_name = build_a_share_maps()
-            return code_to_name.get(code.zfill(6), "")
+            return _a_share_names().get(code.zfill(6), "")
         except Exception:
             pass
     return ""
 
 
-# A 股全市场名称表的进程级缓存（搜索联想每敲一个键都会查，不能每次拉全市场）
+# ── A 股全市场名称表 ──
+# 名称解析/搜索只需要 code→name，绝不能走「全市场行情」重量级链路
+# （非交易时段 akshare/问财 挂掉时，那条链兜底到 Baostock 逐只补行情 ~20 分钟，
+#  曾把整个界面拖死）。这里用轻量通道：纯股票列表接口，秒级返回。
+import threading as _threading
+
 _A_NAME_CACHE: dict = {"ts": 0.0, "map": {}}
-_A_NAME_TTL = 600.0
+_A_NAME_TTL = 6 * 3600.0          # 名称几乎不变，6 小时足够
+_A_NAME_LOCK = _threading.Lock()  # 并发去重：预热线程与首个请求只拉一次
+_A_NAME_DISK = None               # 延迟解析磁盘缓存路径
+
+
+def _names_disk_path():
+    global _A_NAME_DISK
+    if _A_NAME_DISK is None:
+        from src.core.config_io import CACHE_DIR
+        _A_NAME_DISK = CACHE_DIR / "stock_names.json"
+    return _A_NAME_DISK
+
+
+def _fetch_names_light() -> dict[str, str]:
+    """轻量拉取全 A 股 {code: name}（无行情字段，秒级）"""
+    # 1) akshare 股票列表接口
+    try:
+        import akshare as ak
+        df = ak.stock_info_a_code_name()
+        if df is not None and not df.empty:
+            return dict(zip(df["code"].astype(str).str.zfill(6),
+                            df["name"].astype(str)))
+    except Exception as e:
+        logger.warning(f"akshare 股票列表失败: {e}")
+    # 2) Baostock query_all_stock 兜底（同样秒级，含名称）
+    try:
+        from datetime import date, timedelta
+
+        import baostock as bs
+        bs.login()
+        try:
+            for back in range(0, 10):
+                day = (date.today() - timedelta(days=back)).isoformat()
+                rs = bs.query_all_stock(day=day)
+                rows = []
+                while rs.error_code == "0" and rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    out = {}
+                    for r in rows:  # [code(sh.600519), tradeStatus, code_name]
+                        code = str(r[0]).split(".")[-1]
+                        if len(code) == 6 and code[0] in "036":
+                            out[code] = str(r[2])
+                    if out:
+                        return out
+        finally:
+            bs.logout()
+    except Exception as e:
+        logger.warning(f"Baostock 股票列表失败: {e}")
+    return {}
 
 
 def _a_share_names() -> dict[str, str]:
-    """{code: name}，10 分钟缓存"""
+    """{code: name}；内存 6h + 磁盘 24h 双层缓存，带并发锁"""
+    import json
     import time
-    if time.time() - _A_NAME_CACHE["ts"] > _A_NAME_TTL or not _A_NAME_CACHE["map"]:
+
+    if _A_NAME_CACHE["map"] and time.time() - _A_NAME_CACHE["ts"] < _A_NAME_TTL:
+        return _A_NAME_CACHE["map"]
+
+    with _A_NAME_LOCK:
+        if _A_NAME_CACHE["map"] and time.time() - _A_NAME_CACHE["ts"] < _A_NAME_TTL:
+            return _A_NAME_CACHE["map"]
+
+        # 磁盘缓存（跨进程重启复用，24h 有效）
+        disk = _names_disk_path()
         try:
-            from src.services.portfolio_service import build_a_share_maps
-            _, names = build_a_share_maps()
-            if names:
-                _A_NAME_CACHE.update(ts=time.time(), map=names)
-        except Exception as e:
-            logger.warning(f"全市场名称表获取失败: {e}")
+            if disk.exists():
+                cached = json.loads(disk.read_text(encoding="utf-8"))
+                if time.time() - cached.get("ts", 0) < 24 * 3600 and cached.get("map"):
+                    _A_NAME_CACHE.update(ts=time.time(), map=cached["map"])
+                    return _A_NAME_CACHE["map"]
+        except Exception:
+            pass
+
+        names = _fetch_names_light()
+        if names:
+            _A_NAME_CACHE.update(ts=time.time(), map=names)
+            try:
+                disk.parent.mkdir(parents=True, exist_ok=True)
+                disk.write_text(json.dumps({"ts": time.time(), "map": names},
+                                           ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+        else:
+            logger.warning("全市场名称表获取失败（akshare 与 Baostock 均不可用）")
     return _A_NAME_CACHE["map"]
 
 

@@ -203,3 +203,118 @@ class RankingCondition(BaseCondition):
         except Exception:
             pass
         return True
+
+
+class CompositeCondition(BaseCondition):
+    """
+    组合条件：把若干子条件用 AND / OR / NOT 组合起来。
+
+    解决什么问题：策略的买入条件此前恒为 AND、卖出恒为 OR，写不出
+    "站上均线 **且** (RSI超卖 **或** 触及布林下轨)" 这类表达。真实策略里
+    "多个入场信号取其一"是很常见的诉求。
+
+    YAML 写法（`logic` + `conditions` 即为组合节点，可任意嵌套）::
+
+        conditions:
+          - type: market_cap          # 普通条件
+            min: 300
+          - logic: any                # 组合节点：任一满足即可
+            conditions:
+              - type: rsi_oversold
+              - type: bollinger_breakout
+
+    语义：
+      all / and  → 全部子条件为真
+      any / or   → 任一子条件为真
+      none / not → 全部子条件为假（用于排除）
+
+    数据需求（requires_ohlcv / ohlcv_period / required_bars）自动从子条件
+    聚合，因此筛选器的两轮架构与数据深度推断都不需要为组合条件特判。
+    """
+
+    name = "composite"
+
+    _ALL = ("all", "and")
+    _ANY = ("any", "or")
+    _NONE = ("none", "not")
+
+    def __init__(self, logic: str = "all",
+                 conditions: list[BaseCondition] | None = None):
+        raw = str(logic or "all").strip().lower()
+        if raw not in self._ALL + self._ANY + self._NONE:
+            raise ValueError(
+                f"未知组合逻辑 {logic!r}，支持 "
+                f"{list(self._ALL + self._ANY + self._NONE)}")
+        self.logic = raw
+        self.children: list[BaseCondition] = list(conditions or [])
+        self.name = f"composite({raw})"
+
+    # ---- 数据需求：从子条件聚合，无需调用方特判 ----
+
+    @property
+    def requires_ohlcv(self) -> bool:
+        return any(getattr(c, "requires_ohlcv", False) for c in self.children)
+
+    @property
+    def ohlcv_period(self) -> str:
+        """任一子条件需要周线，则整体按周线取数（周线含日线信息的超集需求）"""
+        for c in self.children:
+            if getattr(c, "requires_ohlcv", False) and \
+                    getattr(c, "ohlcv_period", "daily") == "weekly":
+                return "weekly"
+        return "daily"
+
+    def required_bars(self) -> int:
+        need = [c.required_bars() for c in self.children
+                if getattr(c, "requires_ohlcv", False)]
+        return max(need) if need else self._DEFAULT_MIN_BARS
+
+    # ---- 求值 ----
+
+    def _combine(self, results: list[bool]) -> bool:
+        if not results:
+            return True          # 空组合视为不约束
+        if self.logic in self._ALL:
+            return all(results)
+        if self.logic in self._ANY:
+            return any(results)
+        return not any(results)  # none / not
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        """
+        Spot 阶段：**需要 K 线的子条件一律先视为通过**，留到 evaluate_full 再判。
+
+        这样才不会在第一轮就把"技术信号尚未确认"的股票误杀——与筛选器
+        两轮架构（Pass1 快速过滤 / Pass2 精筛）的语义保持一致。
+        """
+        results = []
+        for c in self.children:
+            if getattr(c, "requires_ohlcv", False):
+                continue
+            try:
+                results.append(bool(c.evaluate_spot(spot_row)))
+            except Exception as e:
+                logger.debug(f"[{self.name}] 子条件 {c.name} spot 异常: {e}")
+                results.append(False)
+        # OR 组合里若含 K 线子条件，spot 阶段无法定论 → 放行到第二轮
+        if self.logic in self._ANY and any(
+                getattr(c, "requires_ohlcv", False) for c in self.children):
+            return True
+        return self._combine(results)
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        results = []
+        for c in self.children:
+            try:
+                if getattr(c, "requires_ohlcv", False):
+                    results.append(bool(c.evaluate_full(spot_row, ohlcv_df)))
+                else:
+                    results.append(bool(c.evaluate_spot(spot_row)))
+            except Exception as e:
+                logger.debug(f"[{self.name}] 子条件 {c.name} 求值异常: {e}")
+                results.append(False)
+        return self._combine(results)
+
+    def __repr__(self) -> str:
+        inner = ", ".join(getattr(c, "name", "?") for c in self.children)
+        return f"Composite[{self.logic}]({inner})"

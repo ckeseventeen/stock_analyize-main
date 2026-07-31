@@ -473,6 +473,22 @@ class StrategyBody(BaseModel):
     body: dict
 
 
+class StrategyCreate(BaseModel):
+    name: str = ""
+    id: str = ""
+
+
+@app.post("/api/strategies")
+def strategy_create(req: StrategyCreate):
+    """从零新建策略（此前前端只能克隆已有策略，无法新建）"""
+    from src.services import screening_service as svc
+
+    sid, err = svc.create_strategy(name=req.name, sid=req.id)
+    if err:
+        raise HTTPException(400, err)
+    return {"id": sid, "ok": True}
+
+
 @app.put("/api/strategies/{sid}")
 def strategy_put(sid: str, req: StrategyBody):
     """整体更新策略（带条件校验）"""

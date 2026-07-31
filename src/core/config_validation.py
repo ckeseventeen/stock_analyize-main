@@ -104,7 +104,7 @@ def _validate_scheduler(cfg: dict, name: str) -> list[str]:
         for rule in (
             FieldRule("id", required=True, types=(str,)),
             FieldRule("type", required=True, types=(str,)),
-            FieldRule("enabled", types=(bool,)),
+            FieldRule("enable", types=(bool,)),   # scheduler.yaml 用 enable
         ):
             issues += rule.check(job, path)
         jid = job.get("id")
@@ -132,6 +132,41 @@ def _validate_screen_config(cfg: dict, name: str) -> list[str]:
     from src.analysis.screening.conditions import CONDITION_REGISTRY
     known = set(CONDITION_REGISTRY)
 
+    # 组合节点允许的逻辑词（与 CompositeCondition 保持一致）
+    valid_logic = {"all", "and", "any", "or", "none", "not"}
+
+    def _check_conditions(conds, cpath_prefix: str, depth: int = 0) -> None:
+        """递归校验条件列表——条件可以是普通条件或 logic 组合节点"""
+        if depth > 5:
+            issues.append(f"{cpath_prefix} 组合嵌套过深（>5 层），请简化")
+            return
+        for j, c in enumerate(conds):
+            cpath = f"{cpath_prefix}[{j}]"
+            if not isinstance(c, dict):
+                issues.append(f"{cpath} 应为字典")
+                continue
+
+            # 组合节点：{logic: any, conditions: [...]}
+            if "logic" in c or ("conditions" in c and "type" not in c):
+                lg = str(c.get("logic", "")).lower()
+                if lg not in valid_logic:
+                    issues.append(
+                        f"{cpath}.logic={c.get('logic')!r} 无效，"
+                        f"可选 {sorted(valid_logic)}")
+                sub = c.get("conditions")
+                if not isinstance(sub, list) or not sub:
+                    issues.append(f"{cpath}.conditions 应为非空列表")
+                else:
+                    _check_conditions(sub, f"{cpath}.conditions", depth + 1)
+                continue
+
+            ctype = c.get("type")
+            if not ctype:
+                issues.append(f"{cpath} 缺少 'type'")
+            elif ctype not in known:
+                issues.append(
+                    f"{cpath}.type={ctype!r} 不是已注册条件，**该条件会被静默忽略**")
+
     for sid, body in strategies.items():
         path = f"{name}:strategies.{sid}"
         if not isinstance(body, dict):
@@ -141,17 +176,7 @@ def _validate_screen_config(cfg: dict, name: str) -> list[str]:
         if not isinstance(conds, list) or not conds:
             issues.append(f"{path}.conditions 应为非空列表")
             continue
-        for j, c in enumerate(conds):
-            cpath = f"{path}.conditions[{j}]"
-            if not isinstance(c, dict):
-                issues.append(f"{cpath} 应为字典")
-                continue
-            ctype = c.get("type")
-            if not ctype:
-                issues.append(f"{cpath} 缺少 'type'")
-            elif ctype not in known:
-                issues.append(
-                    f"{cpath}.type={ctype!r} 不是已注册条件，**该条件会被静默忽略**")
+        _check_conditions(conds, f"{path}.conditions")
     return issues
 
 

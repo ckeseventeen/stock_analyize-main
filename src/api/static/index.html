@@ -219,8 +219,15 @@ tr:hover td{background:rgba(99,102,241,.05)}
 
 <!-- ══════════ 策略（统一管理：管理 + 筛选 + 回测） ══════════ -->
 <section class="view" id="v-screen">
-  <h1>策略中心</h1><div class="sub">管理 · 筛选 · 回测（含回撤）一站式 — 勾选做筛选，行内按钮做回测/改名/删除</div>
-  <div class="card"><div class="scroll" id="sc-list"><span class="spin"></span>加载策略...</div></div>
+  <h1>策略中心</h1><div class="sub">管理 · 筛选 · 回测（含回撤）一站式 — 勾选做筛选，行内按钮做回测/编辑/改名/克隆/删除</div>
+  <div class="card">
+    <div class="row" style="margin-bottom:10px">
+      <button id="sc-new">➕ 新建策略</button>
+      <input id="sc-new-name" placeholder="策略名称（可留空）" style="width:200px">
+      <span id="sc-new-status" class="hint">新建后点「✏️编辑」配置条件</span>
+    </div>
+    <div class="scroll" id="sc-list"><span class="spin"></span>加载策略...</div>
+  </div>
   <div class="card"><div class="row">
     <button id="sc-go">▶️ 用勾选策略筛选全市场</button>
     <span id="sc-status" class="hint">多选 = 条件 AND 组合 · 约 1-5 分钟</span>
@@ -753,6 +760,23 @@ $('#sc-ed-save').onclick=async()=>{
   }catch(e){$('#sc-ed-status').innerHTML=`<span class="err">${e.message}</span>`}
   $('#sc-ed-save').disabled=false;
 };
+/* 新建策略（此前只能克隆已有策略，无法从零创建）*/
+$('#sc-new').onclick=async()=>{
+  const nameEl=$('#sc-new-name'),st=$('#sc-new-status');
+  $('#sc-new').disabled=true;busy(st,'创建中...');
+  try{
+    const r=await api('/api/strategies',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({name:nameEl.value.trim()})});
+    nameEl.value='';
+    st.innerHTML=`✅ 已创建 <b>${r.id}</b> — 点「✏️编辑」配置条件`;
+    await loadStrategies(true);
+    openEd(r.id);            // 直接打开编辑器，省一次点击
+  }catch(e){st.innerHTML=`<span class="err">${e.message}</span>`}
+  $('#sc-new').disabled=false;
+};
+$('#sc-new-name').addEventListener('keydown',e=>e.key==='Enter'&&$('#sc-new').click());
+
 async function dupStrat(sid){
   try{await api(`/api/strategies/${sid}/duplicate`,{method:'POST'});loadStrategies(true);}
   catch(e){alert(e.message)}

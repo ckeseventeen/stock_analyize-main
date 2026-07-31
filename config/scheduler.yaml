@@ -1,157 +1,98 @@
-# ============================================
-# 调度器配置 scheduler.yaml
-# ============================================
-# 启动命令：python -m src.automation.scheduler
-#
-# 每个 job 支持以下字段：
-#   id                 : Job 唯一标识（日志与去重）
-#   type               : price_monitor | earnings_monitor | scraper
-#   enable             : false 时跳过注册
-#   cron               : "分 时 日 月 星期"（五字段，CronTrigger）
-#   interval_minutes   : 周期性触发，单位分钟（IntervalTrigger，与 cron 二选一）
-#   timezone           : 默认 Asia/Shanghai
-#   scraper_type       : 仅对 type=scraper 有效，值：news/announcements/holdings/research/all
-#   alerts_config      : 告警通道配置路径（默认 ./config/alerts.yaml）
-#   rules_config       : 价格预警规则路径（仅 price_monitor）
-#   earnings_config    : 财报监控路径（仅 earnings_monitor）
-#   scraper_config     : 抓取配置路径（仅 scraper）
-#   output_dir         : 落盘目录
-# ============================================
-
 jobs:
-  # ---------- 买入 / 卖出预警 ----------
-  # 交易时段内每 15 分钟扫一遍 buy_alerts / sell_alerts
-  # （比原 5 分钟稀疏一些，因为信号触发频率本身就慢，5 分钟意义不大）
-  - id: buy_sell_alerts
-    type: buy_sell_alerts
-    enable: true
-    cron: "*/15 9-11,13-15 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    rules_config: "./config/price_alerts.yaml"
-    alerts_config: "./config/alerts.yaml"
-    misfire_grace_time: 600
-
-  # ---------- 财报披露监控 ----------
-  # 每天 08:30 检查未来 30 天披露日历 + 业绩预告
-  - id: earnings_monitor
-    type: earnings_monitor
-    enable: true
-    cron: "30 8 * * *"
-    timezone: "Asia/Shanghai"
-    earnings_config: "./config/earnings_monitor.yaml"
-    alerts_config: "./config/alerts.yaml"
-
-  # ---------- 持仓监控（L1+L2+L4 卖出体系） ----------
-  # 每个交易日 09:25 开盘前 + 15:05 收盘后扫描所有持仓
-  # 触发 L1 止损 / L2 信号 ≥ 60% 时通过告警通道推送
-  # 启用前先在 config/holdings.yaml 配置持仓
-  - id: holding_monitor_open
-    type: holding_monitor
-    enable: false                              # 默认关闭，配置完持仓后改 true
-    cron: "25 9 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    holdings_path: "./config/holdings.yaml"
-    alerts_config: "./config/alerts.yaml"
-    cooldown_hours: 4                          # 同信号 4 小时内只推一次
-    enable_regime: true                        # 启用 L4 大盘环境守门员
-
-  - id: holding_monitor_close
-    type: holding_monitor
-    enable: false
-    cron: "5 15 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    holdings_path: "./config/holdings.yaml"
-    alerts_config: "./config/alerts.yaml"
-    cooldown_hours: 4
-    enable_regime: true
-
-  # ---------- 新闻抓取 ----------
-  # 每 30 分钟刷新财经新闻
-  - id: news_scraper
-    type: scraper
-    scraper_type: news
-    enable: false
-    interval_minutes: 30
-    scraper_config: "./config/scraper.yaml"
-    output_dir: "./output"
-
-  # ---------- 公告/持仓抓取 ----------
-  # 每天收盘后 18:00 拉取当日公告和持仓快照
-  - id: announcements_scraper
-    type: scraper
-    scraper_type: announcements
-    enable: true
-    cron: "0 18 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    scraper_config: "./config/scraper.yaml"
-    output_dir: "./output"
-
-  - id: holdings_scraper
-    type: scraper
-    scraper_type: holdings
-    enable: true
-    cron: "10 18 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    scraper_config: "./config/scraper.yaml"
-    output_dir: "./output"
-
-  # ---------- 研报抓取 ----------
-  # 每天 09:00（盘前）刷新研报
-  - id: research_scraper
-    type: scraper
-    scraper_type: research
-    enable: true
-    cron: "0 9 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    scraper_config: "./config/scraper.yaml"
-    output_dir: "./output"
-
-  # ---------- 每日收盘后自动筛选 ----------
-  # 每天 15:05（收盘后5分钟）自动运行全部筛选策略，
-  # 结果通过告警通道推送摘要 + 保存 CSV
-  - id: daily_screening
-    type: screener
-    enable: true
-    cron: "5 15 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    screen_config: "./config/screen_config.yaml"
-    alerts_config: "./config/alerts.yaml"
-    output_dir: "./output"
-    # strategies: ["double_breakout", "box_breakout_only"]  # 可选：指定策略列表
-
-  # ---------- ML 模型月度重训（B 路径自学习） ----------
-  # 每月 1 号 18:00 触发：拉沪深 300 历史 + 算特征 + 训练 LightGBM + 写入 lgbm_latest.joblib
-  # 训练耗时取决于股票池大小，一般 10-30 分钟
-  # 第一次启用前请先 `python -m src.ml.cli train` 完成初次训练
-  - id: ml_retrain
-    type: ml_retrain
-    enable: true               # 已启用，每月 1 号自动重训
-    cron: "0 18 1 * *"          # 每月 1 号 18:00
-    timezone: "Asia/Shanghai"
-    misfire_grace_time: 3600    # 重训慢，宽限 1 小时
-    label_horizon_days: 20
-    start_date: "2020-01-01"
-    num_boost_round: 500
-    n_splits: 5
-    # max_codes: 100             # 可选：调试时限制股票数
-
-  # ---------- 美股盘前总结 ----------
-  # 每个交易日 08:30 生成美股三大指数总结，通过告警通道推送
-  - id: us_market_summary
-    type: market_monitor
-    enable: true
-    cron: "30 8 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    monitor_type: us_summary       # 生成美股盘前总结
-    alerts_config: "./config/alerts.yaml"
-
-  # ---------- A股交易时段情绪监控（每30分钟） ----------
-  # 交易时段 9:30-11:30, 13:00-15:00 每 30 分钟刷新情绪面板
-  - id: market_sentiment_refresh
-    type: market_monitor
-    enable: true
-    cron: "0,30 9-11,13-14 * * MON-FRI"
-    timezone: "Asia/Shanghai"
-    monitor_type: sentiment_panel  # 刷新六大情绪维度
-    alerts_config: "./config/alerts.yaml"
-    misfire_grace_time: 300
+- id: buy_sell_alerts
+  type: buy_sell_alerts
+  enable: true
+  cron: '*/15 9-11,13-15 * * MON-FRI'
+  timezone: Asia/Shanghai
+  rules_config: ./config/price_alerts.yaml
+  alerts_config: ./config/alerts.yaml
+  misfire_grace_time: 600
+- id: earnings_monitor
+  type: earnings_monitor
+  enable: true
+  cron: 30 8 * * *
+  timezone: Asia/Shanghai
+  earnings_config: ./config/earnings_monitor.yaml
+  alerts_config: ./config/alerts.yaml
+- id: holding_monitor_open
+  type: holding_monitor
+  enable: false
+  cron: 25 9 * * MON-FRI
+  timezone: Asia/Shanghai
+  holdings_path: ./config/holdings.yaml
+  alerts_config: ./config/alerts.yaml
+  cooldown_hours: 4
+  enable_regime: true
+- id: holding_monitor_close
+  type: holding_monitor
+  enable: false
+  cron: 5 15 * * MON-FRI
+  timezone: Asia/Shanghai
+  holdings_path: ./config/holdings.yaml
+  alerts_config: ./config/alerts.yaml
+  cooldown_hours: 4
+  enable_regime: true
+- id: news_scraper
+  type: scraper
+  scraper_type: news
+  enable: false
+  interval_minutes: 30
+  scraper_config: ./config/scraper.yaml
+  output_dir: ./output
+- id: announcements_scraper
+  type: scraper
+  scraper_type: announcements
+  enable: true
+  cron: 0 18 * * MON-FRI
+  timezone: Asia/Shanghai
+  scraper_config: ./config/scraper.yaml
+  output_dir: ./output
+- id: holdings_scraper
+  type: scraper
+  scraper_type: holdings
+  enable: true
+  cron: 10 18 * * MON-FRI
+  timezone: Asia/Shanghai
+  scraper_config: ./config/scraper.yaml
+  output_dir: ./output
+- id: research_scraper
+  type: scraper
+  scraper_type: research
+  enable: true
+  cron: 0 9 * * MON-FRI
+  timezone: Asia/Shanghai
+  scraper_config: ./config/scraper.yaml
+  output_dir: ./output
+- id: daily_screening
+  type: screener
+  enable: true
+  cron: 5 15 * * MON-FRI
+  timezone: Asia/Shanghai
+  screen_config: ./config/screen_config.yaml
+  alerts_config: ./config/alerts.yaml
+  output_dir: ./output
+- id: ml_retrain
+  type: ml_retrain
+  enable: true
+  cron: 0 18 1 * *
+  timezone: Asia/Shanghai
+  misfire_grace_time: 3600
+  label_horizon_days: 20
+  start_date: '2022-01-01'
+  num_boost_round: 400
+  n_splits: 3
+- id: us_market_summary
+  type: market_monitor
+  enable: true
+  cron: 30 8 * * MON-FRI
+  timezone: Asia/Shanghai
+  monitor_type: us_summary
+  alerts_config: ./config/alerts.yaml
+- id: market_sentiment_refresh
+  type: market_monitor
+  enable: true
+  cron: 0,30 9-11,13-14 * * MON-FRI
+  timezone: Asia/Shanghai
+  monitor_type: sentiment_panel
+  alerts_config: ./config/alerts.yaml
+  misfire_grace_time: 300

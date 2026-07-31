@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from src.analysis.screening.conditions_pkg.base import (
     BaseCondition,
+    CompositeCondition,
     RankingCondition,
     _MACrossCondition,
 )
@@ -160,6 +161,7 @@ __all__ = [
     "LowVolatilityCondition",
     "MomentumRankCondition",
     "RankingCondition",
+    "CompositeCondition",
     "DividendYieldCondition",
     "MADeathCrossCondition",
     "RSIOverboughtCondition",

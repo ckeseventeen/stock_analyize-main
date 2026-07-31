@@ -2,27 +2,27 @@ strategies:
   quality_value:
     name: 质量价值白马
     conditions:
-    - type: market_cap
-      min: 300
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 30
-    - type: pb_range
-      min: 0
-      max: 8
-    - type: roe_filter
-      min_roe: 10
-    - type: price_above_ma
-      ma_period: 120
+      - type: market_cap
+        min: 300
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 30
+      - type: pb_range
+        min: 0
+        max: 8
+      - type: roe_filter
+        min_roe: 10
+      - type: price_above_ma
+        ma_period: 120
     backtest:
       sell_conditions:
-      - type: rsi_overbought
-        threshold: 85
-        period: 14
-      - type: trailing_stop
-        callback_pct: 12
-        lookback: 60
+        - type: rsi_overbought
+          threshold: 85
+          period: 14
+        - type: trailing_stop
+          callback_pct: 12
+          lookback: 60
       buy_logic: all
       sell_logic: any
       position_size: 0.95
@@ -35,25 +35,25 @@ strategies:
   value_reversal:
     name: 低估值底背离反转
     conditions:
-    - type: market_cap
-      min: 100
-      max: 5000
-    - type: pe_range
-      min: 0
-      max: 20
-    - type: pb_range
-      min: 0
-      max: 3
-    - type: weekly_macd_divergence
-      lookback_bars: 60
-      zero_axis_filter: true
+      - type: market_cap
+        min: 100
+        max: 5000
+      - type: pe_range
+        min: 0
+        max: 20
+      - type: pb_range
+        min: 0
+        max: 3
+      - type: weekly_macd_divergence
+        lookback_bars: 60
+        zero_axis_filter: true
     backtest:
       sell_conditions:
-      - type: weekly_macd_top_divergence
-        lookback_bars: 60
-      - type: trailing_stop
-        callback_pct: 15
-        lookback: 60
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: trailing_stop
+          callback_pct: 15
+          lookback: 60
       buy_logic: all
       sell_logic: any
       position_size: 0.9
@@ -66,32 +66,32 @@ strategies:
   growth_momentum:
     name: 成长动量多头
     conditions:
-    - type: market_cap
-      min: 50
-      max: 2000
-    - type: pe_range
-      min: 0
-      max: 60
-    - type: multi_ma_bull
-      ma_list:
-      - 5
-      - 10
-      - 20
-      - 60
-      require_all_above: true
-      require_up_trend: true
-    - type: volume_break
-      lookback_bars: 20
-      vol_multiple: 1.8
+      - type: market_cap
+        min: 50
+        max: 2000
+      - type: pe_range
+        min: 0
+        max: 60
+      - type: multi_ma_bull
+        ma_list:
+          - 5
+          - 10
+          - 20
+          - 60
+        require_all_above: true
+        require_up_trend: true
+      - type: volume_break
+        lookback_bars: 20
+        vol_multiple: 1.8
     backtest:
       sell_conditions:
-      - type: ma_death_cross
-        fast_period: 5
-        slow_period: 20
-      - type: atr_trailing_stop
-        atr_period: 14
-        multiplier: 3.0
-        lookback: 20
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+        - type: atr_trailing_stop
+          atr_period: 14
+          multiplier: 3.0
+          lookback: 20
       buy_logic: all
       sell_logic: any
       position_size: 0.9
@@ -104,28 +104,28 @@ strategies:
   quality_breakout:
     name: 质量箱体突破
     conditions:
-    - type: market_cap
-      min: 100
-      max: 10000
-    - type: pe_range
-      min: 0
-      max: 40
-    - type: roe_filter
-      min_roe: 8
-    - type: box_breakout_volume
-      lookback_bars: 60
-      breakout_pct: 0.02
-      consolidation_pct: 0.15
-      vol_lookback: 20
-      vol_multiple: 1.5
+      - type: market_cap
+        min: 100
+        max: 10000
+      - type: pe_range
+        min: 0
+        max: 40
+      - type: roe_filter
+        min_roe: 8
+      - type: box_breakout_volume
+        lookback_bars: 60
+        breakout_pct: 0.02
+        consolidation_pct: 0.15
+        vol_lookback: 20
+        vol_multiple: 1.5
     backtest:
       sell_conditions:
-      - type: break_below_ma
-        ma_period: 20
-        lookback: 3
-      - type: trailing_stop
-        callback_pct: 10
-        lookback: 40
+        - type: break_below_ma
+          ma_period: 20
+          lookback: 3
+        - type: trailing_stop
+          callback_pct: 10
+          lookback: 40
       buy_logic: all
       sell_logic: any
       position_size: 0.9
@@ -138,29 +138,29 @@ strategies:
   oversold_quality:
     name: 超跌质优反弹
     conditions:
-    - type: market_cap
-      min: 100
-      max: 20000
-    - type: pe_range
-      min: 0
-      max: 35
-    - type: pb_range
-      min: 0
-      max: 6
-    - type: rsi_oversold
-      threshold: 30
-      period: 14
-    - type: bollinger_breakout
-      period: 20
-      std_dev: 2.0
-      direction: lower
+      - type: market_cap
+        min: 100
+        max: 20000
+      - type: pe_range
+        min: 0
+        max: 35
+      - type: pb_range
+        min: 0
+        max: 6
+      - type: rsi_oversold
+        threshold: 30
+        period: 14
+      - type: bollinger_breakout
+        period: 20
+        std_dev: 2.0
+        direction: lower
     backtest:
       sell_conditions:
-      - type: rsi_overbought
-        threshold: 75
-        period: 14
-      - type: stop_loss
-        max_loss_pct: 8
+        - type: rsi_overbought
+          threshold: 75
+          period: 14
+        - type: stop_loss
+          max_loss_pct: 8
       buy_logic: all
       sell_logic: any
       position_size: 0.85
@@ -173,24 +173,24 @@ strategies:
   smallcap_active:
     name: 小市值活跃金叉
     conditions:
-    - type: market_cap
-      min: 20
-      max: 150
-    - type: turnover_rate
-      min: 3
-      max: 15
-    - type: pe_range
-      min: 0
-      max: 80
-    - type: ma_gold_cross
-      fast_period: 5
-      slow_period: 20
+      - type: market_cap
+        min: 20
+        max: 150
+      - type: turnover_rate
+        min: 3
+        max: 15
+      - type: pe_range
+        min: 0
+        max: 80
+      - type: ma_gold_cross
+        fast_period: 5
+        slow_period: 20
     backtest:
       sell_conditions:
-      - type: kdj_death_cross
-        j_threshold: 80
-      - type: stop_loss
-        max_loss_pct: 7
+        - type: kdj_death_cross
+          j_threshold: 80
+        - type: stop_loss
+          max_loss_pct: 7
       buy_logic: all
       sell_logic: any
       position_size: 0.8
@@ -203,25 +203,25 @@ strategies:
   trend_resonance:
     name: 周日线多周期共振
     conditions:
-    - type: market_cap
-      min: 50
-      max: 20000
-    - type: pe_range
-      min: 0
-      max: 50
-    - type: weekly_macd_gold_cross
-      require_zero_near: true
-    - type: macd_hist_positive
-      consecutive: 3
-    - type: price_above_ma
-      ma_period: 60
+      - type: market_cap
+        min: 50
+        max: 20000
+      - type: pe_range
+        min: 0
+        max: 50
+      - type: weekly_macd_gold_cross
+        require_zero_near: true
+      - type: macd_hist_positive
+        consecutive: 3
+      - type: price_above_ma
+        ma_period: 60
     backtest:
       sell_conditions:
-      - type: weekly_macd_top_divergence
-        lookback_bars: 60
-      - type: ma_death_cross
-        fast_period: 10
-        slow_period: 30
+        - type: weekly_macd_top_divergence
+          lookback_bars: 60
+        - type: ma_death_cross
+          fast_period: 10
+          slow_period: 30
       buy_logic: all
       sell_logic: any
       position_size: 0.9
@@ -234,25 +234,25 @@ strategies:
   northbound_value:
     name: 北向流入低估值
     conditions:
-    - type: market_cap
-      min: 200
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 30
-    - type: northbound_flow
-      lookback_days: 5
-      min_net_buy: 0
-    - type: price_above_ma
-      ma_period: 60
+      - type: market_cap
+        min: 200
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 30
+      - type: northbound_flow
+        lookback_days: 5
+        min_net_buy: 0
+      - type: price_above_ma
+        ma_period: 60
     backtest:
       sell_conditions:
-      - type: trailing_stop
-        callback_pct: 12
-        lookback: 60
-      - type: rsi_overbought
-        threshold: 80
-        period: 14
+        - type: trailing_stop
+          callback_pct: 12
+          lookback: 60
+        - type: rsi_overbought
+          threshold: 80
+          period: 14
       buy_logic: all
       sell_logic: any
       position_size: 0.95
@@ -266,16 +266,16 @@ strategies:
     name: ML 增强选股
     description: LightGBM 预测未来 20 日超额收益，取模型打分最高的一批；叠加基本面下限过滤，避免模型选到垃圾股
     conditions:
-    - type: market_cap
-      min: 50
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 100
-    - type: exclude_risk
-      strict: true
-    - type: ml_top_k
-      top_k: 30
+      - type: market_cap
+        min: 50
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 100
+      - type: exclude_risk
+        strict: true
+      - type: ml_top_k
+        top_k: 30
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -283,24 +283,24 @@ strategies:
       sell_logic: any
       position_size: 0.9
       sell_conditions:
-      - type: trailing_stop
-        drawdown_pct: 8
-      - type: rsi_overbought
-        period: 14
-        threshold: 75
+        - type: trailing_stop
+          drawdown_pct: 8
+        - type: rsi_overbought
+          period: 14
+          threshold: 75
   dual_ma_trend:
     name: 双均线趋势跟踪
     description: 最经典的趋势跟踪：短均线上穿长均线买入、下穿卖出，配 ATR 移动止损控制回撤
     conditions:
-    - type: market_cap
-      min: 50
-      max: 50000
-    - type: turnover_rate
-      min_rate: 0.5
-      max_rate: 20
-    - type: ma_gold_cross
-      fast_period: 5
-      slow_period: 20
+      - type: market_cap
+        min: 50
+        max: 50000
+      - type: turnover_rate
+        min_rate: 0.5
+        max_rate: 20
+      - type: ma_gold_cross
+        fast_period: 5
+        slow_period: 20
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -308,30 +308,30 @@ strategies:
       sell_logic: any
       position_size: 0.9
       sell_conditions:
-      - type: ma_death_cross
-        fast_period: 5
-        slow_period: 20
-      - type: atr_trailing_stop
-        atr_period: 14
-        multiplier: 2.5
+        - type: ma_death_cross
+          fast_period: 5
+          slow_period: 20
+        - type: atr_trailing_stop
+          atr_period: 14
+          multiplier: 2.5
   mean_reversion:
     name: 均值回归（布林下轨）
     description: 价格跌破布林带下轨且乖离率过大时买入，回归中轨附近卖出。适合震荡市，趋势市要靠止损保护
     conditions:
-    - type: market_cap
-      min: 100
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 60
-    - type: bollinger_breakout
-      period: 20
-      std_multiplier: 2.0
-      direction: below_lower
-    - type: bias
-      ma_period: 20
-      threshold: -8
-      direction: below
+      - type: market_cap
+        min: 100
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 60
+      - type: bollinger_breakout
+        period: 20
+        std_multiplier: 2.0
+        direction: below_lower
+      - type: bias
+        ma_period: 20
+        threshold: -8
+        direction: below
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -339,27 +339,27 @@ strategies:
       sell_logic: any
       position_size: 0.8
       sell_conditions:
-      - type: rsi_overbought
-        period: 14
-        threshold: 70
-      - type: stop_loss
-        stop_pct: 8
+        - type: rsi_overbought
+          period: 14
+          threshold: 70
+        - type: stop_loss
+          stop_pct: 8
   low_vol_quality:
     name: 低波动质优
     description: 低波动异象：波动率低的股票长期风险调整后收益反而更优。叠加 ROE 与估值约束，排除低波动的僵尸股
     conditions:
-    - type: market_cap
-      min: 200
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 35
-    - type: roe_filter
-      min_roe: 8
-    - type: low_volatility
-      period: 60
-      max_vol: 28
-      min_vol: 8
+      - type: market_cap
+        min: 200
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 35
+      - type: roe_filter
+        min_roe: 8
+      - type: low_volatility
+        period: 60
+        max_vol: 28
+        min_vol: 8
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -367,26 +367,26 @@ strategies:
       sell_logic: any
       position_size: 0.9
       sell_conditions:
-      - type: break_below_ma
-        ma_period: 60
-      - type: trailing_stop
-        drawdown_pct: 10
+        - type: break_below_ma
+          ma_period: 60
+        - type: trailing_stop
+          drawdown_pct: 10
   dividend_value:
     name: 红利价值
     description: 高股息 + 低估值的防守型策略，适合震荡市与长期持有。股息率取真实值，数据源缺失时用 派息率/PE 估算
     conditions:
-    - type: market_cap
-      min: 300
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 20
-    - type: pb_range
-      min: 0
-      max: 3
-    - type: dividend_yield
-      min_yield: 2.5
-      max_yield: 15
+      - type: market_cap
+        min: 300
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 20
+      - type: pb_range
+        min: 0
+        max: 3
+      - type: dividend_yield
+        min_yield: 2.5
+        max_yield: 15
     backtest:
       default_stock: '601398'
       days_back: 750
@@ -394,25 +394,25 @@ strategies:
       sell_logic: any
       position_size: 0.9
       sell_conditions:
-      - type: break_below_ma
-        ma_period: 120
-      - type: trailing_stop
-        drawdown_pct: 12
+        - type: break_below_ma
+          ma_period: 120
+        - type: trailing_stop
+          drawdown_pct: 12
   daily_divergence_rebound:
     name: 日线底背离反弹
     description: 日线 MACD 底背离 + 缩量企稳，比周线级别更敏捷的左侧信号。配合均线支撑提高胜率
     conditions:
-    - type: market_cap
-      min: 50
-      max: 50000
-    - type: pe_range
-      min: 0
-      max: 80
-    - type: daily_macd_divergence
-      lookback_bars: 60
-    - type: support_ma
-      ma_period: 60
-      tolerance: 0.03
+      - type: market_cap
+        min: 50
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 80
+      - type: daily_macd_divergence
+        lookback_bars: 60
+      - type: support_ma
+        ma_period: 60
+        tolerance: 0.03
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -420,26 +420,27 @@ strategies:
       sell_logic: any
       position_size: 0.85
       sell_conditions:
-      - type: daily_macd_top_divergence
-        lookback_bars: 60
-      - type: stop_loss
-        stop_pct: 7
+        - type: daily_macd_top_divergence
+          lookback_bars: 60
+        - type: stop_loss
+          stop_pct: 7
   momentum_rotation:
     name: 动量轮动 TOP20
-    description: 按 60 日涨幅在全市场排序取最强 20 只（跳过最近 5 日以规避短期反转）。与固定阈值不同，排序法在熊市里同样能选出相对最强的标的
+    description: 按 60 日涨幅在全市场排序取最强 20 只（跳过最近 5 
+      日以规避短期反转）。与固定阈值不同，排序法在熊市里同样能选出相对最强的标的
     conditions:
-    - type: market_cap
-      min: 100
-      max: 50000
-    - type: turnover_rate
-      min_rate: 1.0
-      max_rate: 25
-    - type: exclude_risk
-      strict: true
-    - type: momentum_rank
-      period: 60
-      top_k: 20
-      skip_recent_days: 5
+      - type: market_cap
+        min: 100
+        max: 50000
+      - type: turnover_rate
+        min_rate: 1.0
+        max_rate: 25
+      - type: exclude_risk
+        strict: true
+      - type: momentum_rank
+        period: 60
+        top_k: 20
+        skip_recent_days: 5
     backtest:
       default_stock: '600519'
       days_back: 750
@@ -447,9 +448,44 @@ strategies:
       sell_logic: any
       position_size: 0.9
       sell_conditions:
-      - type: ma_death_cross
-        fast_period: 10
-        slow_period: 30
-      - type: atr_trailing_stop
-        atr_period: 14
-        multiplier: 3.0
+        - type: ma_death_cross
+          fast_period: 10
+          slow_period: 30
+        - type: atr_trailing_stop
+          atr_period: 14
+          multiplier: 3.0
+  multi_signal_entry:
+    name: 多信号择一入场（嵌套逻辑示例）
+    description: 基本面达标 且 (超跌反弹 或 底背离 或 均线金叉) —— 三个入场信号任一触发即可，比单信号策略捕获机会更多。演示 
+      conditions 里的 logic 组合节点用法
+    conditions:
+      - type: market_cap
+        min: 100
+        max: 50000
+      - type: pe_range
+        min: 0
+        max: 50
+      - type: roe_filter
+        min_roe: 5
+      - logic: any
+        conditions:
+          - type: rsi_oversold
+            period: 14
+            threshold: 32
+          - type: daily_macd_divergence
+            lookback_bars: 60
+          - type: ma_gold_cross
+            fast_period: 5
+            slow_period: 20
+    backtest:
+      default_stock: '600519'
+      days_back: 750
+      buy_logic: all
+      sell_logic: any
+      position_size: 0.85
+      sell_conditions:
+        - type: rsi_overbought
+          period: 14
+          threshold: 72
+        - type: trailing_stop
+          drawdown_pct: 9

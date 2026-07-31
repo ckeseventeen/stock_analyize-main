@@ -1,5 +1,12 @@
 from src.analysis.factor.base import BaseFactor
 from src.analysis.factor.engine import FACTOR_REGISTRY, FactorEngine, build_engine_from_config, register_factor
+from src.analysis.factor.expression import (
+    ExpressionError,
+    ExpressionFactor,
+    build_alpha158_factors,
+    evaluate_expression,
+    load_alpha158_config,
+)
 from src.analysis.factor.ml_factor import MLScoreFactor
 from src.analysis.factor.momentum import Return5D, Return20D, Return60D, Return120D, ReturnFactor
 from src.analysis.factor.quality import AmplitudeFactor, GrossMarginFactor, RevenueGrowthFactor, ROEFactor
@@ -34,6 +41,9 @@ register_factor("price_above_ma", PriceAboveMAFactor)
 # ML 预测因子（依赖 cache/ml_models/lgbm_latest.joblib，未训练时返回 NaN）
 register_factor("ml_score", MLScoreFactor)
 
+# 表达式因子（Alpha 158 风格；params: {name, expr, higher_is_better?, min_bars?}）
+register_factor("expression", ExpressionFactor)
+
 
 __all__ = [
     "BaseFactor", "FactorEngine", "FACTOR_REGISTRY",
@@ -43,4 +53,6 @@ __all__ = [
     "RSIFactor", "MACDDivergenceFactor", "PriceAboveMAFactor",
     "ROEFactor", "GrossMarginFactor", "RevenueGrowthFactor", "AmplitudeFactor",
     "MLScoreFactor",
+    "ExpressionFactor", "ExpressionError", "evaluate_expression",
+    "build_alpha158_factors", "load_alpha158_config",
 ]

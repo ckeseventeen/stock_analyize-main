@@ -13,7 +13,7 @@ API 文档：https://www.pushplus.plus/doc/
 """
 from __future__ import annotations
 
-from src.automation.alert.base import AlertChannel, AlertEvent
+from src.notify.base import AlertChannel, AlertEvent
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")

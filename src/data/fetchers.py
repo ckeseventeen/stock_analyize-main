@@ -14,6 +14,7 @@ logger = get_logger(__name__)
 import time
 from functools import wraps
 
+
 def retry_on_exception(max_retries=3, initial_delay=1.0):
     """网络请求重试装饰器，支持指数退避"""
     def decorator(func):
@@ -110,8 +111,8 @@ class AStockDataFetcher(BaseDataFetcher):
                 servers = cfg.get("tdx_servers")
                 if servers and isinstance(servers, list):
                     return [(s["host"], int(s["port"])) for s in servers if "host" in s]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"_load_tdx_servers 忽略异常: {type(e).__name__}: {e}")
         return cls._DEFAULT_TDX_SERVERS
 
     TDX_SERVERS = _DEFAULT_TDX_SERVERS  # 类属性保持向后兼容
@@ -200,8 +201,8 @@ class AStockDataFetcher(BaseDataFetcher):
         if self._tdx_api is not None:
             try:
                 self._tdx_api.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"__exit__ 忽略异常: {type(e).__name__}: {e}")
         return False
 
     def __del__(self):
@@ -209,8 +210,8 @@ class AStockDataFetcher(BaseDataFetcher):
         if self._tdx_api is not None:
             try:
                 self._tdx_api.disconnect()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"__del__ 忽略异常: {type(e).__name__}: {e}")
 
     def get_financial_abstract(self, code: str) -> pd.DataFrame:
         """

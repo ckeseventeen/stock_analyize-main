@@ -202,6 +202,32 @@ def _build_conditions(conditions_config: list[dict], sid: str = "",
     result = []
     unknown_types: list[str] = []
     for cond_dict in conditions_config:
+        if not isinstance(cond_dict, dict):
+            logger.warning(f"[{sid}] 条件项不是字典，跳过: {cond_dict!r}")
+            continue
+
+        # 组合节点（含 logic + conditions）→ 递归构建 CompositeCondition，
+        # 支持 "A 且 (B 或 C)" 这类嵌套表达
+        if "logic" in cond_dict and "conditions" in cond_dict:
+            from src.analysis.screening.conditions import CompositeCondition
+
+            children = _build_conditions(
+                cond_dict.get("conditions") or [], sid=sid, strict=strict)
+            if not children:
+                logger.warning(f"[{sid}] 组合条件无有效子条件，跳过")
+                continue
+            try:
+                result.append(CompositeCondition(
+                    logic=cond_dict.get("logic", "all"), conditions=children))
+                logger.debug(
+                    f"解析组合条件 [{sid}]: {cond_dict.get('logic')} "
+                    f"× {len(children)} 个子条件")
+            except Exception as e:
+                logger.error(f"构建组合条件 [{sid}] 失败: {e}")
+                if strict:
+                    raise
+            continue
+
         cond_type = cond_dict.get("type", "")
         if cond_type not in CONDITION_REGISTRY:
             unknown_types.append(cond_type)

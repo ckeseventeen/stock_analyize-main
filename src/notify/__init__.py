@@ -1,5 +1,12 @@
 """
-src/automation/alert/ — 告警通道包
+src/notify/ — 告警通道包（跨层横切能力）
+
+位置说明：本包原在 `src/automation/alert/`。告警是**横切关注点**——
+services（页面触发的预警）、automation（调度任务）、ml（训练完成通知）
+都要用它。放在 automation 下导致 services↔automation、ml↔automation
+两对循环依赖，故下沉为与业务层平级的独立包。
+
+依赖方向：notify 只依赖 core/utils，不反向依赖任何业务层。
 
 对外 API：
   - AlertChannel / AlertEvent   : 基类与数据结构
@@ -12,13 +19,13 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from src.automation.alert.bark import BarkChannel
-from src.automation.alert.base import AlertChannel, AlertEvent
-from src.automation.alert.console import ConsoleChannel
-from src.automation.alert.pushplus import PushPlusChannel
-from src.automation.alert.serverchan import ServerChanChannel
-from src.automation.alert.state import AlertStateStore
-from src.automation.alert.webhook import WebhookChannel
+from src.notify.bark import BarkChannel
+from src.notify.base import AlertChannel, AlertEvent
+from src.notify.console import ConsoleChannel
+from src.notify.pushplus import PushPlusChannel
+from src.notify.serverchan import ServerChanChannel
+from src.notify.state import AlertStateStore
+from src.notify.webhook import WebhookChannel
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")

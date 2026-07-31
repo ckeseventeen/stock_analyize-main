@@ -106,9 +106,11 @@ class TestDefaults:
         assert defaults.get("buy_conditions")
         assert defaults.get("sell_conditions")
 
-    def test_ml_default_no_skip_in_compare(self):
+    def test_ml_default_skips_when_no_model(self):
+        # 行为变更：模型未训练时策略抛 RuntimeError，由 compare.py 捕获并标记
+        # skipped=True，在对比结果中显示"请先训练"的明确提示（而不是静默零交易）
         defaults = get_default_params("ml_rebalance")
-        assert defaults.get("skip_if_no_model") is False
+        assert defaults.get("skip_if_no_model") is True
 
 
 # =============================================================================

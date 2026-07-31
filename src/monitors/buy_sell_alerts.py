@@ -1,5 +1,5 @@
 """
-src/automation/monitor/buy_sell_alerts.py — 买入/卖出信号预警监控器
+src/monitors/buy_sell_alerts.py — 买入/卖出信号预警监控器
 
 **唯一的预警入口**（替代旧 PriceMonitor + BatchSignalMonitor）。
 
@@ -33,12 +33,10 @@ src/automation/monitor/buy_sell_alerts.py — 买入/卖出信号预警监控器
 """
 from __future__ import annotations
 
-from datetime import datetime
-
 import pandas as pd
 
-from src.automation.alert import AlertEvent, AlertStateStore
-from src.automation.monitor.base import BaseMonitor
+from src.monitors.base import BaseMonitor
+from src.notify import AlertEvent, AlertStateStore
 from src.utils.logger import get_logger
 
 logger = get_logger("buy_sell_alerts")

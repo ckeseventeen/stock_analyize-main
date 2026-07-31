@@ -1,5 +1,10 @@
 version: '3.9'
 
+# 说明：本项目为**纯文件存储**（YAML 配置 + pickle/parquet 缓存），不使用数据库。
+# 历史上这里曾定义 mysql:8.0 服务，但代码从未引用（requirements.txt 亦注明
+# "SQLAlchemy / pymysql（数据库层从未落地）"）——已移除，省下 400MB+ 内存，
+# 使本栈可跑在 1GB 级别的小 VPS 上。
+
 services:
   # ──── 主应用（量化分析） ────
   app:
@@ -9,20 +14,12 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
-      - DB_HOST=db
-      - DB_PORT=3306
-      - DB_NAME=stock_db
-      - DB_USER=stock_user
-      - DB_PASSWORD=${DB_PASSWORD:-stock_password}
       - SCHEDULER_DISABLED=1            # B24/SEC6: 仅在 scheduler 服务里跑调度器
     volumes:
       - ./config:/app/config             # SEC5: 改 RW，允许 Web/CLI 写 YAML
       - ./output:/app/output
       - ./logs:/app/logs
       - ./cache:/app/cache               # 共享告警状态、PID 锁、缓存
-    depends_on:
-      db:
-        condition: service_healthy
     command: ["python", "main.py", "--market", "all"]
     networks:
       - stock_net
@@ -35,20 +32,12 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
-      - DB_HOST=db
-      - DB_PORT=3306
-      - DB_NAME=stock_db
-      - DB_USER=stock_user
-      - DB_PASSWORD=${DB_PASSWORD:-stock_password}
       - SCHEDULER_ENABLED=true           # 只有这个容器跑调度器
     volumes:
       - ./config:/app/config             # SEC5: RW，scheduler 也可能更新缓存配置
       - ./output:/app/output
       - ./logs:/app/logs
       - ./cache:/app/cache               # 共享告警状态、PID 锁
-    depends_on:
-      db:
-        condition: service_healthy
     command: ["python", "-m", "src.automation.scheduler"]
     networks:
       - stock_net
@@ -63,7 +52,6 @@ services:
       - "8600:8600"
     environment:
       - TZ=Asia/Shanghai
-      - DB_HOST=db
       - SCHEDULER_DISABLED=1            # B24/SEC6: webui 内不再自动启动调度器，避免与 scheduler 服务双启动
     volumes:
       - ./config:/app/config             # SEC5: RW，Web UI 需要写 YAML（关注列表、预警规则）
@@ -72,35 +60,6 @@ services:
     command: ["python", "-m", "uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8600"]
     networks:
       - stock_net
-
-  # ──── MySQL 数据库 ────
-  db:
-    image: mysql:8.0
-    container_name: stock_analyize_db
-    restart: unless-stopped
-    environment:
-      MYSQL_DATABASE: stock_db
-      MYSQL_USER: stock_user
-      MYSQL_PASSWORD: ${DB_PASSWORD:-stock_password}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root_password}
-      TZ: Asia/Shanghai
-    volumes:
-      - mysql_data:/var/lib/mysql
-      - ./config/db_init.sql:/docker-entrypoint-initdb.d/init.sql:ro
-    ports:
-      - "3306:3306"
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "stock_user", "-p${DB_PASSWORD:-stock_password}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    networks:
-      - stock_net
-
-volumes:
-  mysql_data:
-    driver: local
 
 networks:
   stock_net:

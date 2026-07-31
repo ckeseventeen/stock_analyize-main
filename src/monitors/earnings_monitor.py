@@ -1,5 +1,5 @@
 """
-src/automation/monitor/earnings_monitor.py — 财报披露监控器
+src/monitors/earnings_monitor.py — 财报披露监控器
 
 对关注列表中的股票，
   1. 拉取未来 N 天的披露日历
@@ -14,9 +14,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.automation.alert import AlertEvent, AlertStateStore
-from src.automation.monitor.base import BaseMonitor
 from src.data.providers.earnings_fetcher import EarningsFetcher
+from src.monitors.base import BaseMonitor
+from src.notify import AlertEvent, AlertStateStore
 from src.utils.logger import get_logger
 
 logger = get_logger("earnings")

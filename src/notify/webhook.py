@@ -21,7 +21,7 @@ import hashlib
 import hmac
 import json
 
-from src.automation.alert.base import AlertChannel, AlertEvent
+from src.notify.base import AlertChannel, AlertEvent
 from src.utils.logger import get_logger
 
 logger = get_logger("alert")

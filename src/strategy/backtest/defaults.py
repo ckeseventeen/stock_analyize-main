@@ -79,7 +79,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, Any]] = {
         "sell_threshold": -0.5,
         "position_size": 0.95,
         "warmup_bars": 250,
-        "skip_if_no_model": False,    # 多策略对比时不抛错，让用户看到提示
+        "skip_if_no_model": True,     # 模型未训练时直接跳过，在对比结果中显示明确提示
     },
 }
 

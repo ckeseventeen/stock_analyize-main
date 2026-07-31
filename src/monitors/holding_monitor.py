@@ -1,5 +1,5 @@
 """
-src/automation/monitor/holding_monitor.py — 持仓监控 + 卖出提醒推送
+src/monitors/holding_monitor.py — 持仓监控 + 卖出提醒推送
 
 每日扫描所有持仓，对触发 L1 风控或 L2 信号 ≥ 阈值的持仓发推送。
 集成 Server酱 / Bark / PushPlus 等已有告警通道。
@@ -14,8 +14,8 @@ from pathlib import Path
 import pandas as pd
 
 from src.analysis.screening.data_provider import ScreenerDataProvider
-from src.automation.alert import AlertEvent, AlertStateStore
-from src.automation.monitor.base import BaseMonitor
+from src.monitors.base import BaseMonitor
+from src.notify import AlertEvent, AlertStateStore
 from src.portfolio import PortfolioManager, SellEngine
 from src.portfolio.market_regime import MarketRegimeAnalyzer
 from src.utils.logger import get_logger
@@ -29,9 +29,9 @@ class HoldingMonitor(BaseMonitor):
 
     用法（注册到 scheduler）::
 
-        from src.automation.alert import build_channels
-        from src.automation.alert.state import AlertStateStore
-        from src.automation.monitor.holding_monitor import HoldingMonitor
+        from src.notify import build_channels
+        from src.notify.state import AlertStateStore
+        from src.monitors.holding_monitor import HoldingMonitor
 
         channels = build_channels(alerts_config)
         store = AlertStateStore(".cache/alert_state.db")

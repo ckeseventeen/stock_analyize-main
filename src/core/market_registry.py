@@ -11,7 +11,7 @@ src/core/market_registry.py — 多市场元数据注册中心
   - `get_market("a")` 单点查询，找不到抛 KeyError + 友好提示
 
 注意：
-  - 为避免循环 import，fetcher_cls / analyzer_cls 用字符串路径（如 "src.core.data_fetcher:AStockDataFetcher"）
+  - 为避免循环 import，fetcher_cls / analyzer_cls 用字符串路径（如 "src.data.fetchers:AStockDataFetcher"）
     + 惰性 import + lru_cache。这样 market_registry 自己只依赖 stdlib。
 """
 from __future__ import annotations
@@ -108,7 +108,7 @@ def _register_defaults() -> None:
         key="a",
         label="A 股",
         config_path=Path("./config/stocks/a_stock.yaml"),
-        fetcher_class_path="src.core.data_fetcher:AStockDataFetcher",
+        fetcher_class_path="src.data.fetchers:AStockDataFetcher",
         analyzer_class_path="src.core.analyzer:AStockAnalyzer",
         default_picker_code="600519",
         default_picker_name="贵州茅台",
@@ -120,7 +120,7 @@ def _register_defaults() -> None:
         key="hk",
         label="港股",
         config_path=Path("./config/stocks/hk_stock.yaml"),
-        fetcher_class_path="src.core.data_fetcher:HKStockDataFetcher",
+        fetcher_class_path="src.data.fetchers:HKStockDataFetcher",
         analyzer_class_path="src.core.analyzer:HKStockAnalyzer",
         default_picker_code="00700",
         default_picker_name="腾讯控股",
@@ -132,7 +132,7 @@ def _register_defaults() -> None:
         key="us",
         label="美股",
         config_path=Path("./config/stocks/us_stock.yaml"),
-        fetcher_class_path="src.core.data_fetcher:USStockDataFetcher",
+        fetcher_class_path="src.data.fetchers:USStockDataFetcher",
         analyzer_class_path="src.core.analyzer:USStockAnalyzer",
         default_picker_code="AAPL",
         default_picker_name="Apple",

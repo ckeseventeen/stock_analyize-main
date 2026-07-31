@@ -239,6 +239,64 @@ def upsert_strategy(sid: str, body: dict,
     return ok, ("已保存" if ok else "写入失败")
 
 
+# 新建策略的默认骨架：一条最宽松的市值条件 + 可回测的卖出条件。
+# 不给空 conditions，否则新策略一保存就过不了校验，用户还得先猜要填什么。
+_NEW_STRATEGY_TEMPLATE: dict = {
+    "conditions": [
+        {"type": "market_cap", "min": 50, "max": 50000},
+    ],
+    "backtest": {
+        "default_stock": "600519",
+        "days_back": 750,
+        "buy_logic": "all",
+        "sell_logic": "any",
+        "position_size": 0.9,
+        "sell_conditions": [
+            {"type": "trailing_stop", "drawdown_pct": 10},
+        ],
+    },
+}
+
+
+def create_strategy(name: str = "", sid: str = "",
+                    config_path: Path | str | None = None) -> tuple[str, str]:
+    """
+    从零新建一个策略（此前只能克隆已有策略，缺 CRUD 的 C）。
+
+    Args:
+        name: 显示名；缺省自动生成
+        sid: 策略 ID；缺省从 name 派生并保证不重名
+
+    Returns:
+        (新策略 id, 错误消息)；成功时错误消息为空串
+    """
+    import re
+    from datetime import datetime
+
+    strategies = load_all_strategies(config_path)
+
+    name = (name or "").strip() or f"新策略 {datetime.now().strftime('%m-%d %H:%M')}"
+    sid = (sid or "").strip()
+    if not sid:
+        # 从名称派生 ID：只保留 ascii 字母数字下划线；中文名则用时间戳兜底
+        base = re.sub(r"[^0-9a-zA-Z_]+", "_", name).strip("_").lower()
+        sid = base or f"strategy_{datetime.now().strftime('%m%d_%H%M%S')}"
+    if sid in strategies:
+        suffix = 2
+        while f"{sid}_{suffix}" in strategies:
+            suffix += 1
+        sid = f"{sid}_{suffix}"
+
+    body = {"name": name, "description": "新建策略，请编辑条件后保存",
+            **{k: (v.copy() if isinstance(v, dict) else list(v))
+               for k, v in _NEW_STRATEGY_TEMPLATE.items()}}
+    strategies[sid] = body
+    if not save_all_strategies(strategies, config_path):
+        return "", "写入配置失败"
+    logger.info(f"新建策略: {sid} ({name})")
+    return sid, ""
+
+
 def delete_strategy(sid: str, config_path: Path | str | None = None) -> tuple[bool, str]:
     """删除策略"""
     strategies = load_all_strategies(config_path)
@@ -313,6 +371,7 @@ def run_screening(
     request_delay: float = 0.0,
     clear_cache: bool = False,
     config_path: Path | str | None = None,
+    use_processes: bool = False,
 ) -> ScreeningRunResult:
     """
     执行筛选（原 pages/3 内嵌的编排逻辑）。
@@ -322,6 +381,7 @@ def run_screening(
         scope_keys: 板块/指数 key 列表；None 或含 "all" = 全市场
         scope_labels: 对应显示名（仅用于结果记录）
         clear_cache: 强制清 K 线缓存
+        use_processes: Pass2 用进程池并行（CPU 密集条件多时提速；小候选集自动退回线程池）
     """
     from src.analysis.screening import ScreenerDataProvider, StockScreener
 
@@ -343,6 +403,7 @@ def run_screening(
         data_provider=provider,
         request_delay=float(request_delay),
         max_workers=int(max_workers),
+        use_processes=bool(use_processes),
     )
     t0 = time.perf_counter()
     df = screener.run_from_config(
@@ -351,6 +412,10 @@ def run_screening(
         stock_scope=stock_scope,
     )
     elapsed = time.perf_counter() - t0
+
+    # 行情数据源退化时把原因带给用户（否则 0 命中会被误读成策略太严）
+    if getattr(screener, "data_warning", ""):
+        warnings.append(screener.data_warning)
 
     return ScreeningRunResult(
         df=df if df is not None else pd.DataFrame(),

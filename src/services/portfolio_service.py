@@ -190,3 +190,18 @@ def evaluate_holding(
         daily_df=daily_df,
         weekly_df=weekly_df if weekly_df is not None else pd.DataFrame(),
     )
+
+
+# ============================================================================
+# 持仓体检（服务层入口）
+# ============================================================================
+
+def run_portfolio_diagnosis() -> dict:
+    """
+    四维持仓体检（卖出信号/集中度/盈亏结构/大盘环境）→ 可 JSON 化的报告。
+
+    服务层入口：API 不再直接 import src.portfolio.diagnostics。
+    """
+    from src.portfolio.diagnostics import run_diagnosis
+
+    return run_diagnosis().to_report_dict()

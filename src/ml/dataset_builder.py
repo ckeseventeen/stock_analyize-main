@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.core.cache_policy import ttl_for
 from src.data.providers.cache_manager import CacheManager
 from src.utils.logger import get_logger
 
@@ -42,7 +43,8 @@ def _baostock_with_timeout(code: str, start_date: str, end_date: str,
 
     超时返回 None，调用方自己处理。
     """
-    from concurrent.futures import ThreadPoolExecutor, TimeoutError as FT
+    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import TimeoutError as FT
     global _BAOSTOCK_TIMEOUT_POOL
     if _BAOSTOCK_TIMEOUT_POOL is None:
         _BAOSTOCK_TIMEOUT_POOL = ThreadPoolExecutor(max_workers=2,
@@ -90,18 +92,36 @@ class DatasetBuilder:
         cache_ttl_hours: int = 24 * 7,  # 数据缓存一周
         label_horizon_days: int = DEFAULT_LABEL_HORIZON_DAYS,
         sample_freq: str = "W-FRI",  # 每周五采样
+        data_provider=None,
+        use_alpha158: bool = True,
     ):
+        """
+        Args:
+            data_provider: 行情数据源（需提供 get_scope_codes / get_daily_ohlcv 等）。
+                缺省时按需自建 ScreenerDataProvider。**显式注入是解开
+                analysis↔ml 循环依赖的关键**：ml 不再在模块层依赖 analysis。
+            use_alpha158: 是否把 31 个 Alpha158 标准因子并入特征（默认开）。
+                手写特征偏基础，Alpha158 覆盖 K线形态/量价/趋势斜率等维度，
+                对 IC 的贡献通常比再手搓指标更实在。
+        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cache = CacheManager(cache_dir=cache_dir, ttl_hours=cache_ttl_hours, max_mb=2048)
         self.label_horizon = int(label_horizon_days)
+        self.use_alpha158 = bool(use_alpha158)
         self.sample_freq = sample_freq
+        self._screener_provider = data_provider
 
     # ---------------- 数据源 ----------------
 
     def _get_screener_provider(self):
-        """延迟创建 ScreenerDataProvider 单例（akshare→pytdx→Baostock 三级 fallback）"""
-        if not hasattr(self, "_screener_provider"):
+        """
+        取行情数据源：优先用注入的实例；未注入时才按需自建。
+
+        自建路径是**函数内**导入 analysis 层，属运行期依赖而非模块级依赖，
+        因此 `import src.ml.*` 不会拉起 analysis，静态依赖图上无环。
+        """
+        if self._screener_provider is None:
             from src.analysis.screening.data_provider import ScreenerDataProvider
             self._screener_provider = ScreenerDataProvider()
         return self._screener_provider
@@ -122,7 +142,7 @@ class DatasetBuilder:
                 logger.error(f"拉取沪深 300 成分股失败: {e}", exc_info=True)
                 return []
 
-        codes = self.cache.get_or_fetch(cache_key, _fetch, ttl_hours=24 * 30)
+        codes = self.cache.get_or_fetch(cache_key, _fetch, ttl_hours=ttl_for("ml_dataset"))
         logger.info(f"沪深 300 成分股: {len(codes)} 只")
         return codes or []
 
@@ -252,24 +272,80 @@ class DatasetBuilder:
 
     def fetch_csi300_returns(self, start_date: str, end_date: str) -> pd.Series:
         """
-        拉沪深 300 指数日线 → 收盘价 Series（日期为 DatetimeIndex）
+        拉沪深 300 指数日线 → 收盘价 Series（日期为 DatetimeIndex）。
 
-        三级 fallback：akshare 新浪 → pytdx 直连 → Baostock
+        多级 fallback：akshare 新浪 → pytdx 直连 → Baostock → 沪深300ETF 代理。
+
+        **缓存键刻意不含 end_date**（历史事故）：原本键是
+        `csi300_returns_{start}_{end}`，而调用方传的 end_date 每天都在变，
+        导致缓存永远 miss、每次都要重新联网拉取。一旦指数源限流（东财/pytdx
+        都有动态限流），标签就算不出来 → build 返回空 → **训练永远没有模型**。
+        指数历史数据不会变，改为按起点缓存 + 命中后只判断覆盖范围是否够用。
         """
-        cache_key = f"csi300_returns_{start_date}_{end_date}"
+        cache_key = f"csi300_close_from_{start_date}"
 
-        def _fetch() -> pd.Series:
-            df = self._fetch_index_kline_raw(_CSI300_INDEX_CODE, start_date, end_date)
+        cached = self.cache.get(cache_key, ttl_hours=ttl_for("ml_dataset"))
+        if cached is not None and len(cached) > 0:
+            need_end = pd.to_datetime(end_date)
+            have_end = pd.to_datetime(cached.index.max())
+            # 缓存覆盖到需求终点、或已到最近 10 天内（指数不会有更新的数据了）
+            if have_end >= need_end - pd.Timedelta(days=10):
+                logger.info(f"沪深 300 指数走缓存: {len(cached)} 个交易日 "
+                            f"(~{have_end.date()})")
+                return cached
+
+        df = self._fetch_index_kline_raw(_CSI300_INDEX_CODE, start_date, end_date)
+        if df is None or df.empty:
+            df = self._fetch_index_proxy_etf(start_date, end_date)
+
+        if df is None or df.empty:
+            if cached is not None and len(cached) > 0:
+                logger.warning(
+                    f"沪深 300 所有数据源均失败，沿用缓存（覆盖到 "
+                    f"{pd.to_datetime(cached.index.max()).date()}）")
+                return cached
+            logger.error(
+                f"沪深 300 ({_CSI300_INDEX_CODE}) 所有数据源都失败且无缓存——"
+                f"标签无法计算，数据集会为空")
+            return pd.Series(dtype=float)
+
+        df = df.sort_values("日期").set_index("日期")
+        close = pd.to_numeric(df["收盘"], errors="coerce").dropna()
+        logger.info(f"沪深 300 指数加载: {len(close)} 个交易日 "
+                    f"({close.index.min().date()} ~ {close.index.max().date()})")
+        self.cache.set(cache_key, close)
+        return close
+
+    @staticmethod
+    def _fetch_index_proxy_etf(start_date: str, end_date: str) -> pd.DataFrame:
+        """
+        用沪深300ETF(510300) 作为指数代理。
+
+        为什么有效：ETF 是**普通证券**，走 pytdx 的 get_security_bars 通道，
+        与指数专用通道的限流策略不同——指数被限流时 ETF 往往仍可拉。
+        ETF 净值走势与指数高度一致，用于计算"相对大盘超额收益"完全够用。
+        """
+        try:
+            from src.data.providers.pytdx_provider import get_global_pytdx
+
+            pytdx = get_global_pytdx()
+            if not pytdx.is_available():
+                return pd.DataFrame()
+            df = pytdx.get_k_data("510300", days_back=800, frequency="d")
             if df is None or df.empty:
-                logger.warning(f"沪深 300 ({_CSI300_INDEX_CODE}) 所有数据源都失败")
-                return pd.Series(dtype=float)
-            df = df.sort_values("日期").set_index("日期")
-            close = pd.to_numeric(df["收盘"], errors="coerce")
-            logger.info(f"沪深 300 指数加载: {len(close)} 个交易日 "
-                        f"({close.index.min().date()} ~ {close.index.max().date()})")
-            return close
-
-        return self.cache.get_or_fetch(cache_key, _fetch)
+                return pd.DataFrame()
+            df = df.copy()
+            df["日期"] = pd.to_datetime(df["日期"]).dt.normalize()
+            mask = ((df["日期"] >= pd.to_datetime(start_date))
+                    & (df["日期"] <= pd.to_datetime(end_date)))
+            df = df[mask]
+            if df.empty:
+                return pd.DataFrame()
+            logger.info(f"沪深300ETF(510300) 代理指数成功: {len(df)} 个交易日")
+            return df.reset_index(drop=True)
+        except Exception as e:
+            logger.debug(f"ETF 代理指数失败: {type(e).__name__}: {e}")
+            return pd.DataFrame()
 
     # ---------------- 特征工程 ----------------
 
@@ -346,6 +422,48 @@ class DatasetBuilder:
             feats["turnover_ma20"] = np.nan
 
         return feats
+
+    @staticmethod
+    def _compute_alpha158_features(df_daily: pd.DataFrame) -> pd.DataFrame:
+        """
+        用 Alpha158 表达式因子引擎产出特征（QLib 标准因子集）。
+
+        为什么加这个：手写特征只有 24 个且偏基础（收益/均线/RSI/MACD），
+        而项目已有 31 个标准 Alpha 因子（K线形态/量价/趋势斜率/RSV…）
+        却一直没喂给模型。这些因子经过学术与业界检验，对 IC 的贡献
+        通常比再手搓几个指标更实在。
+
+        单个因子求值失败（数据太短等）只跳过该因子，不影响其余。
+        """
+        if df_daily is None or df_daily.empty:
+            return pd.DataFrame()
+        try:
+            from src.analysis.factor.expression import (
+                evaluate_expression,
+                load_alpha158_config,
+            )
+        except Exception as e:
+            logger.debug(f"Alpha158 引擎不可用，跳过: {type(e).__name__}: {e}")
+            return pd.DataFrame()
+
+        entries = load_alpha158_config()
+        if not entries:
+            return pd.DataFrame()
+
+        out: dict[str, pd.Series] = {}
+        for e in entries:
+            name, expr = e.get("name"), e.get("expr")
+            if not name or not expr:
+                continue
+            try:
+                series = evaluate_expression(df_daily, expr)
+                # 列名加前缀，避免与手写特征重名
+                out[f"a158_{name}"] = series.reset_index(drop=True)
+            except Exception as ex:
+                logger.debug(f"Alpha158 因子 {name} 求值失败: {type(ex).__name__}: {ex}")
+        if not out:
+            return pd.DataFrame()
+        return pd.DataFrame(out)
 
     # ---------------- 标签（未来超额收益）----------------
 
@@ -435,6 +553,12 @@ class DatasetBuilder:
             feats = self._compute_features(df_daily)
             if feats.empty:
                 continue
+
+            # Alpha158 标准因子（按行拼接：与 feats 同为日线逐行，索引对齐）
+            if self.use_alpha158:
+                a158 = self._compute_alpha158_features(df_daily)
+                if not a158.empty and len(a158) == len(feats):
+                    feats = pd.concat([feats.reset_index(drop=True), a158], axis=1)
 
             val_feats = self._compute_valuation_features(df_val)
             if not val_feats.empty:

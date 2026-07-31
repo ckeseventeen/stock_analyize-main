@@ -240,14 +240,14 @@ def run_monitor(args):
     logger.info(f"========== 监控任务启动：{mtype} ==========")
 
     # 统一构建告警通道（读取 config/alerts.yaml）
-    from src.automation.alert import AlertStateStore, build_channels
+    from src.notify import AlertStateStore, build_channels
     alerts_cfg = load_config(args.alerts_config)
     channels = build_channels(alerts_cfg)
     store = AlertStateStore()
 
     if mtype in ("alerts", "buy_sell", "price"):
         # "price" 保留兼容旧 CLI 命令，新名 alerts / buy_sell
-        from src.automation.monitor.buy_sell_alerts import BuySellAlertMonitor
+        from src.monitors.buy_sell_alerts import BuySellAlertMonitor
         cfg = load_config(args.monitor_config or "./config/price_alerts.yaml")
         buy_alerts = cfg.get("buy_alerts", []) or []
         sell_alerts = cfg.get("sell_alerts", []) or []
@@ -265,7 +265,7 @@ def run_monitor(args):
         )
 
     elif mtype == "earnings":
-        from src.automation.monitor.earnings_monitor import EarningsMonitor
+        from src.monitors.earnings_monitor import EarningsMonitor
         cfg = load_config(args.monitor_config or "./config/earnings_monitor.yaml")
         monitor = EarningsMonitor(
             config=cfg,

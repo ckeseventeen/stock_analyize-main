@@ -33,30 +33,31 @@ def resolve_name(code: str, market: str = "a") -> str:
     if not code:
         return ""
 
+    # 名称统一去内嵌空格（老数据源风格如 "五 粮 液"；含 24h 内的旧磁盘缓存）
     # 1) 关注列表
     try:
         from src.core.config_io import list_stocks_from_market_config
         for s in list_stocks_from_market_config(market) or []:
             if str(s.get("code", "")).strip() == code:
-                return str(s.get("name", ""))
-    except Exception:
-        pass
+                return _compact_name(s.get("name", ""))
+    except Exception as e:
+        logger.debug(f"resolve_name 忽略异常: {type(e).__name__}: {e}")
 
     # 2) 配置聚合 resolver
     try:
         from src.utils.name_resolver import StockNameResolver
         name = StockNameResolver().get_name(code, market)
         if name and name != code:
-            return name
-    except Exception:
-        pass
+            return _compact_name(name)
+    except Exception as e:
+        logger.debug(f"resolve_name 忽略异常: {type(e).__name__}: {e}")
 
     # 3) A 股全市场名称表（走 _a_share_names 的进程级缓存，启动时已预热）
     if market == "a":
         try:
-            return _a_share_names().get(code.zfill(6), "")
-        except Exception:
-            pass
+            return _compact_name(_a_share_names().get(code.zfill(6), ""))
+        except Exception as e:
+            logger.debug(f"resolve_name 忽略异常: {type(e).__name__}: {e}")
     return ""
 
 
@@ -80,42 +81,80 @@ def _names_disk_path():
     return _A_NAME_DISK
 
 
-def _fetch_names_light() -> dict[str, str]:
-    """轻量拉取全 A 股 {code: name}（无行情字段，秒级）"""
-    # 1) akshare 股票列表接口
-    try:
-        import akshare as ak
-        df = ak.stock_info_a_code_name()
-        if df is not None and not df.empty:
-            return dict(zip(df["code"].astype(str).str.zfill(6),
-                            df["name"].astype(str)))
-    except Exception as e:
-        logger.warning(f"akshare 股票列表失败: {e}")
-    # 2) Baostock query_all_stock 兜底（同样秒级，含名称）
-    try:
-        from datetime import date, timedelta
+def _compact_name(name: str) -> str:
+    """去掉股票名称里的对齐空格（老数据源风格如 "五 粮 液"/"万 科Ａ"），
+    否则名称子串搜索"五粮液"永远匹配不上。"""
+    return str(name).replace(" ", "").replace("　", "")
 
-        import baostock as bs
-        bs.login()
-        try:
-            for back in range(0, 10):
-                day = (date.today() - timedelta(days=back)).isoformat()
-                rs = bs.query_all_stock(day=day)
-                rows = []
-                while rs.error_code == "0" and rs.next():
-                    rows.append(rs.get_row_data())
-                if rows:
-                    out = {}
-                    for r in rows:  # [code(sh.600519), tradeStatus, code_name]
-                        code = str(r[0]).split(".")[-1]
-                        if len(code) == 6 and code[0] in "036":
-                            out[code] = str(r[2])
-                    if out:
-                        return out
-        finally:
-            bs.logout()
-    except Exception as e:
-        logger.warning(f"Baostock 股票列表失败: {e}")
+
+# 名称表最少应有的条数：全A 5000+，低于此值说明数据源只回了一部分
+_NAMES_MIN_ROWS = 3000
+
+
+def _validate_names(names: dict) -> tuple[bool, str]:
+    """名称表质量校验（同 spot：残缺的名称表会让搜索/显示大面积失效）"""
+    if not names:
+        return False, "名称表为空"
+    if len(names) < _NAMES_MIN_ROWS:
+        return False, f"仅 {len(names)} 只（全A应 >{_NAMES_MIN_ROWS}），疑似截断"
+    return True, ""
+
+
+def _names_from_akshare() -> dict[str, str]:
+    import akshare as ak
+
+    df = ak.stock_info_a_code_name()
+    if df is None or df.empty:
+        return {}
+    return {str(c).zfill(6): _compact_name(n) for c, n in zip(df["code"], df["name"])}
+
+
+def _names_from_baostock() -> dict[str, str]:
+    from datetime import date, timedelta
+
+    import baostock as bs
+
+    bs.login()
+    try:
+        for back in range(0, 10):
+            day = (date.today() - timedelta(days=back)).isoformat()
+            rs = bs.query_all_stock(day=day)
+            rows = []
+            while rs.error_code == "0" and rs.next():
+                rows.append(rs.get_row_data())
+            if rows:
+                out = {}
+                for r in rows:  # [code(sh.600519), tradeStatus, code_name]
+                    code = str(r[0]).split(".")[-1]
+                    if len(code) == 6 and code[0] in "036":
+                        out[code] = _compact_name(r[2])
+                if out:
+                    return out
+    finally:
+        bs.logout()
+    return {}
+
+
+def _fetch_names_light() -> dict[str, str]:
+    """
+    轻量拉取全 A 股 {code: name}（无行情字段，秒级）。
+
+    走统一的 FallbackChain：残缺的名称表（如只回几百只）会被判为退化并继续
+    降级，而不是直接采用——否则搜索会大面积搜不到股票。
+    """
+    from src.core.fallback import DataSource, FallbackChain
+
+    chain = FallbackChain(
+        name="全A名称表",
+        sources=[
+            DataSource("akshare 股票列表", _names_from_akshare),
+            DataSource("Baostock 股票列表", _names_from_baostock),
+        ],
+        validator=_validate_names,
+    )
+    result = chain.run()
+    if result.usable:
+        return result.unwrap({})
     return {}
 
 
@@ -139,8 +178,8 @@ def _a_share_names() -> dict[str, str]:
                 if time.time() - cached.get("ts", 0) < 24 * 3600 and cached.get("map"):
                     _A_NAME_CACHE.update(ts=time.time(), map=cached["map"])
                     return _A_NAME_CACHE["map"]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"_a_share_names 忽略异常: {type(e).__name__}: {e}")
 
         names = _fetch_names_light()
         if names:
@@ -149,8 +188,8 @@ def _a_share_names() -> dict[str, str]:
                 disk.parent.mkdir(parents=True, exist_ok=True)
                 disk.write_text(json.dumps({"ts": time.time(), "map": names},
                                            ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_a_share_names 忽略异常: {type(e).__name__}: {e}")
         else:
             logger.warning("全市场名称表获取失败（akshare 与 Baostock 均不可用）")
     return _A_NAME_CACHE["map"]
@@ -158,10 +197,10 @@ def _a_share_names() -> dict[str, str]:
 
 def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
     """
-    按代码前缀或名称子串搜索。
+    按代码前缀、名称子串或拼音首字母搜索。
 
     A 股搜全市场（spot 名称表）；港/美股搜关注列表。
-    代码前缀命中排前，名称命中排后。
+    命中优先级：代码前缀 > 名称子串 > 拼音首字母。
     """
     q = str(query).strip()
     if not q:
@@ -177,8 +216,8 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
                 c = str(s.get("code", "")).strip()
                 if c:
                     merged.setdefault(c, str(s.get("name", "")))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"search_stocks 忽略异常: {type(e).__name__}: {e}")
         universe = merged.items()
     else:
         try:
@@ -189,15 +228,37 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
             universe = []
 
     q_upper = q.upper()
-    by_code, by_name = [], []
+    q_lower = q.lower()
+    # 名称匹配双侧去空格：老数据源名称带对齐空格（"五 粮 液"），
+    # 且磁盘名称缓存（24h）里可能仍是旧格式
+    q_compact = _compact_name(q)
+    by_code, by_name, by_pinyin = [], [], []
+
+    # 拼音首字母搜索（仅对纯字母查询启用）
+    _get_initials = None
+    if q.isalpha() and q.isascii():
+        try:
+            from pypinyin import Style, lazy_pinyin
+
+            def _get_initials(name: str) -> str:
+                return "".join(
+                    lazy_pinyin(name, style=Style.FIRST_LETTER, errors="ignore"))
+        except ImportError:
+            pass
+
     for code, name in universe:
+        name_compact = _compact_name(name)
         if code.upper().startswith(q_upper):
-            by_code.append({"code": code, "name": name})
-        elif q in name:
-            by_name.append({"code": code, "name": name})
-        if len(by_code) >= limit:
+            by_code.append({"code": code, "name": name_compact})
+        elif q_compact and q_compact in name_compact:
+            by_name.append({"code": code, "name": name_compact})
+        elif _get_initials is not None:
+            initials = _get_initials(name_compact)
+            if initials and initials.startswith(q_lower):
+                by_pinyin.append({"code": code, "name": name_compact})
+        if len(by_code) + len(by_name) + len(by_pinyin) >= limit * 2:
             break
-    return (by_code + by_name)[:limit]
+    return (by_code + by_name + by_pinyin)[:limit]
 
 
 def current_price(code: str, market: str = "a") -> float:
@@ -313,7 +374,8 @@ def scan_buy_signals(code: str, market: str = "a") -> list[SignalHit]:
             continue
         try:
             cond = cls(**kwargs)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"scan_buy_signals 忽略异常: {type(e).__name__}: {e}")
             continue
         period = getattr(cond, "ohlcv_period", "daily")
         df = weekly_df if period == "weekly" else daily_df

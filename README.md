@@ -8,19 +8,33 @@
 | 功能模块 | 说明 | 运行方式 |
 |----------|------|---------|
 | 📈 **估值分析** | TTM 净利润推演 → PE/PS 三情景目标价 → 历史分位数 → 四格估值图 | CLI / Web |
-| 🔍 **股票筛选** | 8 条「基本面+技术」双层策略、40 种可组合条件，两阶段过滤（向量化 Spot + OHLCV 深度验证） | CLI / Web |
-| 🔬 **因子分析** | FCF 自由现金流评分、动量因子、质量因子、估值因子、技术因子 | Web |
-| 📊 **策略回测** | Backtrader 回测引擎 + 多策略对比 + 历史回测持久化 | Web |
+| 🔍 **股票筛选** | **16 条**策略、**43 种**可组合条件，支持 **AND/OR 嵌套逻辑**与 **TopN 排序**（动量轮动等相对筛选），两阶段过滤（向量化 Spot + OHLCV 深度验证） | CLI / Web |
+| 🔬 **因子分析** | **Alpha158 表达式因子引擎**（31 个 QLib 标准因子 + 15 个时序算子）、IC/ICIR/分层回测/衰减曲线、FCF 现金流评分 | Web |
+| 📊 **策略回测** | Backtrader 事件回测 + **NumPy 向量化引擎**（快 1-2 个数量级）+ 多策略对比 | Web |
+| 🎛️ **参数寻优** | 网格 / 随机 / **optuna 贝叶斯(TPE)** + **Walk-Forward** 过拟合检测（IS vs OOS） | Web |
+| 🤖 **ML 选股** | LightGBM 截面模型预测 20 日超额收益，Purged 时序交叉验证防泄漏，55 特征 | Web / 调度器 |
+| 🕐 **分钟线** | 1m/5m/15m/30m/60m 多周期 K 线（东财主源 + pytdx 兜底） | Web |
+| 🧭 **另类数据** | 龙虎榜 / 北向资金 / 融资融券 / 大宗交易 / 解禁 / 股东人数 / 分红 / 概念成分（9 源） | Web |
+| 📚 **基本面深度** | 三大报表 / 财务指标 / 业绩预告 / 业绩快报（6 源） | Web |
 | 🔔 **价格预警** | 价格阈值 / 涨跌幅 / 相对成本 / 均线突破，推送至手机 | 调度器 |
 | 📅 **财报监控** | A/港/美三市场未来 30 天披露日历 + 业绩预告 | 调度器 |
 | 🌐 **资讯抓取** | 财经新闻 / 公司公告 / 股东持仓 / 研报评级 | CLI / 调度器 |
-| 🖥️ **Web 界面** | 单页应用：个股/策略/回测/持仓体检/模拟交易 5 大视图 + REST API | Web |
+| 🖥️ **Web 界面** | 单页应用：个股/市场/策略/回测/持仓/交易 6 视图 + **38 个** REST 端点 | Web |
 | 🩺 **持仓体检** | 四维健康分（卖出信号/集中度/盈亏结构/大盘环境）+ 问题清单 | Web |
 | 💹 **模拟交易** | 本地模拟盘（A 股费用模型：佣金/印花税/过户费），券商实盘适配层预留 | Web |
 | 📰 **AI 周报** | 持仓体检 + 筛选结果 → Claude 深度解读 → md/html/pdf 导出 | Web |
 | 🏪 **策略市场** | 策略打包（sha256 校验）→ 发布/导入/分享 | Web |
-| ⏰ **定时任务** | APScheduler 长驻进程，自动周期执行监控与抓取（含 Webhook 推送） | 调度器 |
-| 🐳 **Docker 部署** | app / scheduler / webui / db 四服务容器栈 | Docker |
+| ⏰ **定时任务** | APScheduler 长驻进程，YAML 驱动 cron（含 ML 月度重训） | 调度器 |
+| 🐳 **Docker 部署** | app / scheduler / webui 三服务容器栈（纯文件存储，无需数据库） | Docker |
+
+### 工程特性
+
+- **故障可见**：数据获取返回 `DataResult`（OK/DEGRADED/EMPTY/FAILED），"确实没数据"与"拿数据失败"在类型层面区分，退化原因直达前端
+- **多源降级**：统一的 `FallbackChain` 声明式降级链（数据源 + 质量校验 + 熔断），东财直连 → akshare → 问财 → Baostock
+- **数据质量门禁**：全A行情表须过"行数/市值有效率/基准蓝筹"三道校验，残缺数据不会毒害缓存
+- **架构守卫**：**0 循环依赖**，依赖图单向 DAG；分层与文件规模约束由测试强制（`tests/test_architecture.py`）
+- **配置校验**：11 个 YAML 加载期校验，写错条件类型/job 类型/因子表达式会明确报错而非静默失效
+- **747 个测试**，覆盖率 63%
 
 ---
 
@@ -72,124 +86,129 @@ stock_analyize-main/
 │
 ├── main.py                          # CLI 调度入口（估值/筛选/监控/抓取）
 │
-├── config/                          # YAML 驱动全部业务逻辑
+├── config/                          # YAML 驱动全部业务逻辑（加载期有 schema 校验）
 │   ├── stocks/                      # 股票池配置（按市场分）
-│   │   ├── a_stock.yaml            # A 股（科技/消费/高端制造）
-│   │   ├── hk_stock.yaml           # 港股（科技巨头/消费）
-│   │   └── us_stock.yaml           # 美股（科技巨头/消费）
-│   ├── screen_config.yaml           # 8 条双层筛选策略（基本面+技术）
+│   ├── screen_config.yaml           # 16 条筛选策略（支持 AND/OR 嵌套逻辑）
+│   ├── factors.yaml                 # 因子引擎 profile
+│   ├── factors_alpha158.yaml        # 31 个 Alpha158 表达式因子
 │   ├── holdings.yaml                # 持仓记录（持仓监控/体检数据源）
-│   ├── scheduler.yaml               # 定时任务（价格/财报/抓取/每日筛选）
-│   ├── alerts.yaml                  # 告警通道 Server酱/Bark/PushPlus
+│   ├── scheduler.yaml               # 12 个定时任务（含 ML 月度重训）
+│   ├── alerts.yaml                  # 告警通道 Server酱/Bark/PushPlus/Webhook
 │   ├── price_alerts.yaml            # 价格预警规则
 │   ├── earnings_monitor.yaml        # 财报监控 watchlist
 │   ├── scraper.yaml                 # 4 类抓取器配置
-│   ├── factors.yaml                 # 因子引擎配置
 │   ├── indicators.yaml              # 技术指标参数配置
 │   └── backtest_presets.yaml        # 回测预设
 │
 ├── src/
-│   ├── core/                        # 核心层
+│   ├── core/                        # 核心层（不依赖任何业务模块）
 │   │   ├── analyzer.py             # TTM 估值 + 分位数 + 目标价推演
-│   │   ├── data_fetcher.py         # A/HK/US 三市场数据获取器
+│   │   ├── data_health.py          # ★ 数据健康度契约 DataResult/HealthStatus
+│   │   ├── fallback.py             # ★ 统一多源降级链 FallbackChain
+│   │   ├── cache_policy.py         # ★ 缓存 TTL 单点真相（按数据变化频率分档）
+│   │   ├── config_validation.py    # ★ YAML 加载期校验（11 个配置）
+│   │   ├── v8_guard.py             # ★ py_mini_racer FATAL 崩溃守卫
+│   │   ├── columns.py              # 中英文列名映射（跨层数据契约）
 │   │   ├── config_io.py            # YAML 读写 + 路径常量（唯一权威）
 │   │   ├── market_registry.py      # 市场注册中心（加市场只改一处）
-│   │   ├── plugin.py               # 策略/因子/条件插件注册
-│   │   ├── settings.py             # 环境变量集中管理
-│   │   └── visualizer.py           # 估值图表
+│   │   ├── plugin.py / settings.py / visualizer.py
 │   │
 │   ├── analysis/                    # 分析引擎
-│   │   ├── technical/              # 技术指标（MACD/RSI/KDJ/布林带/均线）
-│   │   │   ├── indicators.py       # 指标计算器
-│   │   │   └── divergence.py       # MACD 底背离/顶背离检测
+│   │   ├── technical/              # 技术指标（MACD/RSI/KDJ/布林带/均线 + 背离检测）
 │   │   ├── factor/                 # 因子分析
 │   │   │   ├── engine.py           # 因子引擎（YAML 驱动注册）
+│   │   │   ├── expression.py       # ★ Alpha158 表达式引擎（AST 白名单 + 15 算子）
+│   │   │   ├── ic_analysis.py      # ★ IC/ICIR/分层回测/衰减曲线
 │   │   │   ├── fcf_analyzer.py     # 自由现金流评分（5 维度, 满分 100）
-│   │   │   ├── momentum.py         # 动量因子
-│   │   │   ├── quality.py          # 质量因子
-│   │   │   ├── valuation.py        # 估值因子
-│   │   │   └── technical.py        # 技术因子
+│   │   │   └── momentum.py / quality.py / valuation.py / technical.py
 │   │   └── screening/              # 股票筛选引擎
-│   │       ├── screener.py         # 两阶段过滤（向量化 + 线程池）
-│   │       ├── conditions.py       # 40 种筛选条件（含买卖双向）
-│   │       ├── config_schema.py    # YAML 策略解析器
-│   │       └── data_provider.py    # 筛选数据提供层
+│   │       ├── screener.py         # 两阶段过滤（向量化 Pass1 + 线程/进程池 Pass2）
+│   │       ├── conditions_pkg/     # ★ 43 种条件（按范式分包）
+│   │       │   ├── base.py         #   契约 + RankingCondition + CompositeCondition
+│   │       │   ├── fundamental.py  #   基本面/快照条件
+│   │       │   ├── entry.py        #   买入向（形态/突破/背离）
+│   │       │   ├── exit.py         #   卖出向（止损/超买/死叉）
+│   │       │   ├── factor.py       #   因子/排序类（ML打分/动量排名/低波动/股息）
+│   │       │   └── meta.py         #   分类表与方向推断
+│   │       ├── conditions.py       # 向后兼容 re-export shim
+│   │       ├── config_schema.py    # YAML 策略解析（支持嵌套 logic 节点）
+│   │       ├── data_provider.py    # 行情数据提供层（spot + 板块）
+│   │       ├── kline_mixin.py      # K 线获取能力（日/周/月 + 分钟线 + 批量预取）
+│   │       ├── spot_quality.py     # ★ 全A行情质量校验（三道门）
+│   │       ├── circuit_breaker.py  # ★ 接口熔断器
+│   │       └── proxy_policy.py     # ★ 代理自适应探测
 │   │
 │   ├── data/                        # 数据获取层
-│   │   ├── providers/              # 数据源（baostock + 缓存）
-│   │   │   ├── baostock_provider.py
-│   │   │   ├── cache_manager.py    # 磁盘缓存（TTL + LRU + 200MB 上限）
-│   │   │   └── earnings_fetcher.py # 财报日历获取器
-│   │   ├── scrapers/              # 资讯抓取器
-│   │   │   ├── base.py             # 抓取器基类
-│   │   │   ├── news_scraper.py     # 财经新闻
-│   │   │   ├── announcement_scraper.py # 公司公告
-│   │   │   ├── holdings_scraper.py # 股东持仓
-│   │   │   └── research_scraper.py # 研报评级
-│   │   └── fcf_data_fetcher.py     # 自由现金流数据获取器
+│   │   ├── fetchers.py             # A/HK/US 三市场数据获取器
+│   │   ├── providers/
+│   │   │   ├── eastmoney_spot.py   # ★ 东财全A直连（分页并发，5888 只/1.5 秒）
+│   │   │   ├── alternative_data.py # ★ 另类数据 9 源
+│   │   │   ├── fundamental_data.py # ★ 基本面深度 6 源
+│   │   │   ├── baostock_provider.py / pytdx_provider.py / wencai_provider.py
+│   │   │   ├── cache_manager.py    # 磁盘缓存（TTL + LRU + 容量上限）
+│   │   │   ├── earnings_fetcher.py / index_kline.py
+│   │   └── scrapers/               # 资讯抓取器（新闻/公告/持仓/研报）
 │   │
 │   ├── strategy/backtest/           # 回测模块
-│   │   ├── runner.py               # Backtrader Cerebro 封装
-│   │   ├── report.py               # 报告生成 + CSV/JSON 持久化 + 多策略对比
-│   │   ├── base_strategy.py        # 策略基类
-│   │   ├── ma_crossover.py         # 双均线策略
-│   │   ├── factor_strategy.py      # 因子轮动策略
-│   │   ├── rule_based.py           # 规则引擎策略
-│   │   └── screener_rule.py        # 筛选器条件桥接回测
+│   │   ├── runner.py               # Backtrader Cerebro 封装（事件驱动）
+│   │   ├── vector_engine.py        # ★ NumPy 向量化回测（快 1-2 个数量级）
+│   │   ├── optimizer.py            # ★ 参数寻优（grid/random/optuna）+ Walk-Forward
+│   │   ├── report.py / compare.py  # 报告生成 + 多策略对比
+│   │   └── ma_crossover.py / factor_strategy.py / rule_based.py / screener_rule.py
 │   │
-│   ├── automation/                  # 自动化
+│   ├── ml/                          # 机器学习（LightGBM 截面模型）
+│   │   ├── dataset_builder.py      # 数据集构建（55 特征 + 未来 20 日超额收益标签）
+│   │   ├── trainer.py              # 训练 + Purged 时序 CV（防标签泄漏）
+│   │   ├── predictor.py            # 推理
+│   │   └── cli.py                  # 命令行入口
+│   │
+│   ├── notify/                      # ★ 告警通道（横切能力，不依赖业务层）
+│   │   ├── base.py / state.py      # AlertChannel 基类 + 去重冷却
+│   │   └── serverchan.py / bark.py / pushplus.py / webhook.py / console.py
+│   │
+│   ├── monitors/                    # ★ 监控业务（与调度解耦）
+│   │   ├── buy_sell_alerts.py      # 买卖信号预警
+│   │   ├── earnings_monitor.py     # 财报披露监控
+│   │   └── holding_monitor.py      # 持仓预警
+│   │
+│   ├── automation/                  # 调度编排（只管"何时跑"）
 │   │   ├── scheduler.py            # APScheduler 入口（YAML 驱动 cron）
-│   │   ├── scheduler_manager.py    # 调度管理器
-│   │   ├── alert/                  # 告警通道
-│   │   │   ├── base.py             # AlertChannel 基类
-│   │   │   ├── serverchan.py       # Server酱（微信）
-│   │   │   ├── bark.py             # Bark（iOS）
-│   │   │   ├── pushplus.py         # PushPlus（微信）
-│   │   │   ├── console.py          # 控制台
-│   │   │   ├── webhook.py          # Webhook（HMAC-SHA256 签名）
-│   │   │   └── state.py            # 告警去重 + 冷却
-│   │   └── monitor/                # 监控器
-│   │       ├── base.py             # BaseMonitor
-│   │       ├── price_monitor.py    # 价格预警（4 种规则类型）
-│   │       └── earnings_monitor.py # 财报披露监控
+│   │   └── scheduler_manager.py    # 调度管理器
 │   │
-│   ├── services/                    # 无头服务层（API 与调度器共用）
-│   │   ├── screening_service.py    # 策略 CRUD + 条件 schema + 筛选执行
-│   │   ├── valuation_service.py    # 估值 / FCF 编排
-│   │   ├── backtest_service.py     # 单策略/多策略/按策略回测
-│   │   ├── stock_service.py        # 个股聚合（搜索/名称/信号/财报/资讯/预警）
-│   │   ├── portfolio_service.py    # 持仓行情/评估编排
-│   │   ├── alert_service.py        # 预警试跑与全量扫描
-│   │   └── strategy_market.py      # 策略包 打包/校验/发布/导入
+│   ├── services/                    # 无头服务层（API 与调度器共用的唯一入口）
+│   │   ├── screening_service.py    # 策略 CRUD（含新建）+ 条件 schema + 筛选执行
+│   │   ├── backtest_service.py     # 回测 + 参数寻优
+│   │   ├── market_data_service.py  # ★ 另类/基本面数据
+│   │   ├── ml_service.py           # ★ ML 训练编排与状态
+│   │   ├── factor_service.py       # ★ 因子清单与体检
+│   │   ├── market_monitor_service.py # 市场情绪六维面板
+│   │   ├── valuation_service.py / stock_service.py / portfolio_service.py
+│   │   └── alert_service.py / strategy_market.py
 │   │
 │   ├── portfolio/                   # 持仓域（卖出引擎/大盘状态/组合诊断）
 │   ├── trading/                     # 交易域（模拟盘 + 券商适配层）
 │   ├── report/                      # AI 周报（Claude + 模板降级 + 导出）
-│   ├── ml/                          # 机器学习（数据集构建 + 训练）
 │   │
 │   ├── api/                         # Web 界面（FastAPI + SPA）
-│   │   ├── main.py                 # REST API（25+ 端点，/docs 自动文档）
-│   │   └── static/index.html       # 单页前端（个股/策略/回测/持仓/交易）
+│   │   ├── main.py                 # REST API（38 端点，/docs 自动文档）
+│   │   └── static/index.html       # 单页前端（6 视图）
 │   │
-│   └── utils/                       # 工具模块
-│       ├── logger.py                # 日志（按天轮转保留30天）
-│       ├── config_parser.py         # 通用配置解析
-│       ├── exception_handler.py     # 异常处理
-│       └── name_resolver.py         # 股票名称解析
+│   └── utils/                       # 工具（日志/配置解析/异常/名称解析/文件锁）
 │
-├── tests/                           # 440+ 单元测试（pytest）
-├── output/                          # 自动生成的输出
-│   ├── reports/                     # 估值分析 PNG 图
-│   ├── screens/                     # 筛选结果 CSV
-│   ├── backtest_history/            # 回测历史记录
-│   └── scrapers/                    # 抓取数据 CSV
+├── scripts/vps_preflight.py         # ★ VPS 部署前置体检（纯标准库）
+├── tests/                           # 747 个测试（含架构守卫与分层约束）
+├── output/                          # 估值图 / 筛选 CSV / 回测历史 / 抓取数据
+├── cache/                           # ML 数据集与模型、行情缓存
 │
 ├── .github/workflows/test.yml       # GitHub Actions CI
-├── .pre-commit-config.yaml          # 代码规范 pre-commit 钩子
 ├── pyproject.toml                   # 项目元数据 + mypy/ruff/pytest 配置
 ├── Dockerfile                       # Docker 构建
-└── docker-compose.yml               # 四容器部署
+└── docker-compose.yml               # 三容器部署（app / scheduler / webui）
 ```
+
+> ★ 标记为近期新增/重构的模块。依赖方向严格单向：
+> `api → services → analysis/strategy/ml → data → core/utils`，
+> `notify` 与 `monitors` 为横切/业务层，**无循环依赖**（由 `tests/test_architecture.py` 强制）。
 
 ---
 
@@ -254,6 +273,81 @@ python -m src.automation.scheduler
 
 ---
 
+## 编写筛选策略
+
+策略全部由 `config/screen_config.yaml` 驱动，也可在 Web 界面「策略中心」
+点「➕ 新建策略」后用可视化编辑器配置。
+
+### 基本结构
+
+```yaml
+strategies:
+  my_strategy:
+    name: 我的策略
+    description: 一句话说明这个策略在赌什么
+    conditions:                      # 买入侧：默认 AND 组合
+      - type: market_cap             # 基本面条件（Pass1 向量化，快）
+        min: 100                     # 单位：亿元
+        max: 5000
+      - type: price_above_ma         # 技术条件（Pass2 逐只算 K 线）
+        ma_period: 60
+    backtest:                        # 可选：配了才能回测
+      default_stock: "600519"
+      days_back: 750
+      position_size: 0.9
+      sell_conditions:
+        - type: trailing_stop
+          drawdown_pct: 10
+```
+
+### 嵌套逻辑（AND / OR）
+
+用 `logic` + `conditions` 表达组合节点，可任意嵌套。下例是
+"基本面达标 **且**（超跌 **或** 底背离 **或** 金叉）"：
+
+```yaml
+conditions:
+  - type: market_cap
+    min: 100
+  - logic: any                       # all/and · any/or · none/not
+    conditions:
+      - type: rsi_oversold
+        threshold: 32
+      - type: daily_macd_divergence
+      - type: ma_gold_cross
+```
+
+### 排序型条件（取前 N 名）
+
+普通条件只回答"通过/不通过"，无法表达"全市场最强的 20 只"。排序型条件
+（`momentum_rank` / `ml_top_k`）会在筛选结束后做全局排序截断：
+
+```yaml
+conditions:
+  - type: momentum_rank
+    period: 60                       # 按 60 日涨幅排序
+    top_k: 20                        # 取最强 20 只
+    skip_recent_days: 5              # 跳过最近 5 日，规避短期反转
+```
+
+### 内置策略一览（16 条）
+
+| 类型 | 策略 |
+|------|------|
+| 价值 | 质量价值白马、红利价值、低估值底背离反转 |
+| 成长/动量 | 成长动量多头、动量轮动TOP20、周日线多周期共振 |
+| 突破 | 质量箱体突破、双均线趋势跟踪 |
+| 反转 | 超跌质优反弹、均值回归（布林下轨）、日线底背离反弹 |
+| 因子 | 低波动质优、ML增强选股 |
+| 其他 | 小市值活跃金叉、北向流入低估值、多信号择一入场（嵌套示例） |
+
+> **0 命中不等于故障**：底背离/突破/金叉等技术触发条件只在"当天出现信号"
+> 时命中，多数交易日为 0 属正常，换个交易日再跑即可。真正的数据故障会在
+> 筛选结果的 `warnings` 里给出明确提示（如"⚠️ 行情数据源退化"）。
+> 想验证链路是否正常，跑基本面型策略 `quality_value`（通常命中数十只）。
+
+---
+
 ## 告警通道配置
 
 1. 复制 `.env.example` → `.env`，填入密钥：
@@ -298,11 +392,54 @@ profiles:
 
 | 市场 | 实时行情 | 财务数据 | 历史估值 | 披露日历 |
 |------|----------|----------|----------|----------|
-| A 股 | akshare(东方财富) / Baostock | akshare | akshare(百度) | akshare 预告/报告/预约披露 |
-| 港股 | akshare(东方财富) | akshare(东方财富) | akshare(百度) | akshare 财报推导 |
-| 美股 | akshare(东方财富) / yfinance | akshare(东方财富) | akshare(百度) | yfinance Ticker.calendar |
+| A 股 | **东财直连** → akshare → 问财 → Baostock | akshare | akshare(百度) | akshare 预告/报告/预约披露 |
+| 港股 | akshare(东方财富/新浪) | akshare(东方财富) | akshare(百度) | akshare 财报推导 |
+| 美股 | akshare(东方财富/新浪) / yfinance | akshare(东方财富) | akshare(百度) | yfinance Ticker.calendar |
+
+**K 线**：akshare(东财) → akshare(新浪) → pytdx 直连 → Baostock，其中 pytdx
+不限频、并发安全，是全市场批量取数的主力（约 22ms/只）。
+
+### 降级与质量保障
+
+数据源不稳定是本项目最大的现实约束（东财对 IP 有**动态限流**，问财分页会
+返回半份数据）。因此：
+
+- 全A行情必须通过 `spot_quality` 三道校验才被采用——**行数 ≥4000**、
+  **总市值有效率 ≥80%**、**必含基准蓝筹**。历史事故：问财返回 2649/5300 只
+  且 97.9% 市值为 NaN、缺全部蓝筹，被当作正常数据缓存 12 小时，导致所有
+  指数成分股筛选恒 0 命中
+- 全链路失败时返回**最完整的一份**并标记退化，原因经 `warnings` 直达前端，
+  用户能分清"数据源出问题"与"策略当天无信号"
+- 熔断器：接口连续失败进入冷却窗口，避免每次请求都空等超时
+- 代理策略**自适应探测**（直连/代理择优），可用 `STOCK_ANALYZE_KEEP_PROXY=1` 固定
 
 > 百度接口不支持市销率(PS)历史数据，配置 `valuation: ps` 时历史估值使用市净率(PB)替代。
+
+---
+
+## ML 选股模型
+
+**单一截面模型**（非一股一模型）：所有股票的所有交易日拉平成一张表，
+`code` 排除在特征外，标签是**未来 20 日相对沪深300 的超额收益**。
+
+```bash
+# 训练（首次约 20 分钟，主要耗在建数据集；训练本身仅数秒）
+python -m src.ml.cli train
+
+# 或从 Web 界面「回测」页点「🔧 训练 ML 模型」
+```
+
+| 项 | 说明 |
+|---|---|
+| 特征 | 55 个 = 24 手写（动量/波动/均线偏离/RSI/MACD/估值）+ 31 个 Alpha158 |
+| 标签 | `y_excess_ret_20d`（未来 20 交易日超额收益 %） |
+| 验证 | `PurgedWalkForwardSplit`（purge 20 天 + embargo 5 天，防标签区间重叠泄漏） |
+| 评估 | 横截面 IC（Spearman）；参考线：>0.03 可用，>0.05 较好 |
+| 重训 | `scheduler.yaml` 的 `ml_retrain` job，每月 1 日自动执行 |
+
+模型产出后，`ml_top_k` 条件即可用于筛选（见策略 `ml_enhanced`）。
+**注意**：IC 会随市场风格切换而衰减，训练日志里的分折 IC 若出现负值，
+说明近期模型有效性下降，应考虑重训或调整特征。
 
 ---
 
@@ -322,7 +459,7 @@ mypy src/ --ignore-missing-imports
 pre-commit install
 ```
 
-### 测试覆盖（440+ 用例）
+### 测试覆盖（747 个用例，覆盖率 63%）
 
 | 领域 | 测试文件 | 关注点 |
 |------|---------|-------|
@@ -331,6 +468,15 @@ pre-commit install
 | 交易 | test_trading.py | 费用模型、限价撮合、状态持久化 |
 | 组合 | test_portfolio.py / test_diagnostics.py | 卖出引擎、四维诊断 |
 | 报告 | test_report.py | 上下文组装、LLM 降级、导出 |
+| **架构** | test_architecture.py | **依赖图无环、分层方向、模块位置、文件规模预算** |
+| **分层** | test_service_layering.py | **API 只依赖 services（防越层腐化）** |
+| 数据健康 | test_data_health.py | EMPTY 与 FAILED 可区分、降级链语义 |
+| 数据质量 | test_screener.py | 全A行情三道门校验（含两个线上事故值回归） |
+| 稳定性 | test_v8_guard.py | V8 FATAL 守卫（曾导致服务进程猝死） |
+| 因子 | test_expression_factor.py | 表达式 AST 白名单安全、IC/分层/衰减 |
+| 回测 | test_vector_engine.py / test_optimizer.py | 无未来函数、成交口径、寻优与 Walk-Forward |
+| 条件 | test_composite_conditions.py | AND/OR 嵌套语义、两轮筛选配合 |
+| 配置 | test_config_validation.py | 用真实配置错误驱动（未知条件/非法表达式） |
 | 引擎 | test_screener/factors/technical/divergence.py | 筛选、因子、指标、背离 |
 | 监控 | test_alert/price_monitor/earnings_monitor/scheduler.py | 通道、去重、cron |
 
@@ -376,12 +522,13 @@ docker-compose 默认启动：
 | 数据源 | akshare, Baostock, pytdx, yfinance |
 | 数据处理 | pandas, numpy, scipy |
 | 技术分析 | ta (MACD/RSI/布林带), 手工实现 KDJ |
-| 回测 | backtrader |
+| 回测 | backtrader (事件驱动) + NumPy 向量化引擎 |
 | Web | FastAPI + 原生单页前端（ECharts 图表） |
 | 可视化 | matplotlib (静态), ECharts (交互) |
 | 调度 | APScheduler (cron/interval) |
 | 告警 | Server酱 / Bark / PushPlus / Webhook(HMAC) |
-| 测试 | pytest (440+ 用例), ruff (代码规范), mypy (类型检查) |
+| 机器学习 | LightGBM (截面模型), optuna (参数寻优) |
+| 测试 | pytest (747 用例), ruff (代码规范), mypy (类型检查) |
 | CI/CD | GitHub Actions, pre-commit |
 | 部署 | Docker, docker-compose |
 

@@ -108,7 +108,6 @@ class TestScanStrategySignals:
         import yaml
 
         from src.analysis.screening.data_provider import ScreenerDataProvider
-        from src.services import screening_service as svc
 
         cfg = tmp_path / "screen.yaml"
         cfg.write_text(yaml.safe_dump({"strategies": {
@@ -193,3 +192,20 @@ class TestSearchStocks:
 
     def test_limit(self):
         assert len(ssvc.search_stocks("0", limit=1)) == 1
+
+    def test_spaced_name_matches_compact_query(self, monkeypatch):
+        """老数据源名称带对齐空格（"五 粮 液"）时，搜"五粮液"必须命中
+        且返回的名称已去空格（2026-07 用户报"按名称搜不到"回归）"""
+        monkeypatch.setattr(ssvc, "_a_share_names", lambda: {
+            "000858": "五 粮 液", "000002": "万 科Ａ", "600519": "贵州茅台",
+        })
+        res = ssvc.search_stocks("五粮液")
+        assert res == [{"code": "000858", "name": "五粮液"}]
+        assert ssvc.search_stocks("万科")[0]["code"] == "000002"
+
+    def test_concept_word_returns_empty(self, monkeypatch):
+        """概念词（如"白酒"）不在任何股票名称里 → 返回空，由前端明确报错"""
+        monkeypatch.setattr(ssvc, "_a_share_names", lambda: {
+            "600519": "贵州茅台", "000858": "五粮液",
+        })
+        assert ssvc.search_stocks("白酒") == []

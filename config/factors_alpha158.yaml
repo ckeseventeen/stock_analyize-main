@@ -1,0 +1,142 @@
+# config/factors_alpha158.yaml — Alpha 158 表达式因子集（QLib/VeighNa 标准子集）
+#
+# 表达式字段: open / high / low / close / volume / amount / vwap(典型价代理)
+# 可用算子: delay mean std sum ts_max ts_min ts_rank slope corr quantile
+#           abs log sign maximum minimum
+#
+# 说明：
+#   - K 线形态族（KMID/KLEN/...）：单根 K 线的实体/影线结构，QLib Alpha158 原版
+#   - 价格相对族（OPEN0/...）：当期价格 vs 前收，衡量跳空与日内位置
+#   - 滚动统计族（ROC/MA/STD/RSV/...）：QLib 原版按 [5,10,20,30,60] 窗口展开，
+#     此处取代表性窗口，控制在 31 个（后续可按需扩窗）
+version: 1
+
+alpha_factors:
+  # ── K 线形态族（9）──
+  - name: KMID
+    expr: "(close - open) / (open + 1e-12)"
+    description: "K线实体涨幅"
+  - name: KLEN
+    expr: "(high - low) / (open + 1e-12)"
+    description: "K线全长（振幅）"
+  - name: KMID2
+    expr: "(close - open) / (high - low + 1e-12)"
+    description: "实体占全长比例"
+  - name: KUP
+    expr: "(high - maximum(open, close)) / (open + 1e-12)"
+    description: "上影线长度"
+  - name: KUP2
+    expr: "(high - maximum(open, close)) / (high - low + 1e-12)"
+    description: "上影线占全长比例"
+  - name: KLOW
+    expr: "(minimum(open, close) - low) / (open + 1e-12)"
+    description: "下影线长度"
+  - name: KLOW2
+    expr: "(minimum(open, close) - low) / (high - low + 1e-12)"
+    description: "下影线占全长比例"
+  - name: KSFT
+    expr: "(2 * close - high - low) / (open + 1e-12)"
+    description: "收盘在振幅中的偏移"
+  - name: KSFT2
+    expr: "(2 * close - high - low) / (high - low + 1e-12)"
+    description: "收盘在振幅中的相对位置"
+
+  # ── 价格相对族（4）──
+  - name: OPEN0
+    expr: "open / (delay(close, 1) + 1e-12)"
+    description: "开盘价/前收（跳空）"
+  - name: HIGH0
+    expr: "high / (delay(close, 1) + 1e-12)"
+    description: "最高价/前收"
+  - name: LOW0
+    expr: "low / (delay(close, 1) + 1e-12)"
+    description: "最低价/前收"
+  - name: VWAP0
+    expr: "vwap / (delay(close, 1) + 1e-12)"
+    description: "典型价/前收"
+
+  # ── 动量/反转族 ROC（4）：QLib 定义为 delay(close,n)/close，值<1 表示上涨 ──
+  - name: ROC5
+    expr: "delay(close, 5) / (close + 1e-12)"
+    description: "5日价格动量（倒数形式）"
+    higher_is_better: false
+  - name: ROC10
+    expr: "delay(close, 10) / (close + 1e-12)"
+    description: "10日价格动量（倒数形式）"
+    higher_is_better: false
+  - name: ROC20
+    expr: "delay(close, 20) / (close + 1e-12)"
+    description: "20日价格动量（倒数形式）"
+    higher_is_better: false
+  - name: ROC60
+    expr: "delay(close, 60) / (close + 1e-12)"
+    description: "60日价格动量（倒数形式）"
+    higher_is_better: false
+
+  # ── 均线位置族 MA（4）──
+  - name: MA5
+    expr: "mean(close, 5) / (close + 1e-12)"
+    description: "MA5/收盘"
+    min_bars: 10
+  - name: MA10
+    expr: "mean(close, 10) / (close + 1e-12)"
+    description: "MA10/收盘"
+    min_bars: 15
+  - name: MA20
+    expr: "mean(close, 20) / (close + 1e-12)"
+    description: "MA20/收盘"
+    min_bars: 25
+  - name: MA60
+    expr: "mean(close, 60) / (close + 1e-12)"
+    description: "MA60/收盘"
+    min_bars: 65
+
+  # ── 波动族 STD（4）──
+  - name: STD5
+    expr: "std(close, 5) / (close + 1e-12)"
+    description: "5日收盘波动率"
+    higher_is_better: false
+    min_bars: 10
+  - name: STD10
+    expr: "std(close, 10) / (close + 1e-12)"
+    description: "10日收盘波动率"
+    higher_is_better: false
+    min_bars: 15
+  - name: STD20
+    expr: "std(close, 20) / (close + 1e-12)"
+    description: "20日收盘波动率"
+    higher_is_better: false
+    min_bars: 25
+  - name: STD60
+    expr: "std(close, 60) / (close + 1e-12)"
+    description: "60日收盘波动率"
+    higher_is_better: false
+    min_bars: 65
+
+  # ── 随机指标族 RSV（3）──
+  - name: RSV5
+    expr: "(close - ts_min(low, 5)) / (ts_max(high, 5) - ts_min(low, 5) + 1e-12)"
+    description: "5日 RSV（KDJ 原料）"
+    min_bars: 10
+  - name: RSV10
+    expr: "(close - ts_min(low, 10)) / (ts_max(high, 10) - ts_min(low, 10) + 1e-12)"
+    description: "10日 RSV"
+    min_bars: 15
+  - name: RSV20
+    expr: "(close - ts_min(low, 20)) / (ts_max(high, 20) - ts_min(low, 20) + 1e-12)"
+    description: "20日 RSV"
+    min_bars: 25
+
+  # ── 趋势/量价族（3）──
+  - name: BETA20
+    expr: "slope(close, 20) / (close + 1e-12)"
+    description: "20日价格趋势斜率（归一化）"
+    min_bars: 25
+  - name: CORR20
+    expr: "corr(close, log(volume + 1), 20)"
+    description: "20日量价相关系数"
+    min_bars: 25
+  - name: VMA20
+    expr: "mean(volume, 20) / (volume + 1e-12)"
+    description: "20日均量/当日量（缩量程度）"
+    min_bars: 25

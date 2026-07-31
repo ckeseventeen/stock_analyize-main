@@ -1,5 +1,5 @@
 """
-src/automation/monitor/base.py — 监控任务抽象基类
+src/monitors/base.py — 监控任务抽象基类
 
 所有 Monitor（价格预警、财报监控等）均继承 BaseMonitor，
 统一的 run() 流程：
@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.automation.alert import AlertChannel, AlertEvent, AlertStateStore, dispatch
+from src.notify import AlertChannel, AlertEvent, AlertStateStore, dispatch
 from src.utils.file_lock import file_lock
 from src.utils.logger import get_logger
 

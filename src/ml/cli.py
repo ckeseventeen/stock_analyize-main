@@ -80,8 +80,10 @@ def _notify_training_done(metadata: dict) -> None:
     """训练完成发推送（alerts.yaml 未配置或无通道时静默跳过）"""
     try:
         from pathlib import Path
+
         import yaml as _yaml
-        from src.automation.alert import AlertEvent, build_channels
+
+        from src.notify import AlertEvent, build_channels
 
         alerts_path = Path("./config/alerts.yaml")
         if not alerts_path.exists():

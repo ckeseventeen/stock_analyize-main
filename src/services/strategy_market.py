@@ -28,9 +28,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from src.core.config_io import PROJECT_ROOT
 from src.services import screening_service as svc
 from src.utils.logger import get_logger
-from src.core.config_io import PROJECT_ROOT
 
 logger = get_logger("strategy_market")
 

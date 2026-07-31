@@ -31,7 +31,10 @@ def client(tmp_path, monkeypatch):
 @pytest.mark.unit
 class TestBasics:
     def test_health(self, client):
-        assert client.get("/api/health").json() == {"status": "ok"}
+        body = client.get("/api/health").json()
+        assert body["status"] == "ok"
+        # 健康检查会带上 V8 守卫状态（它决定问财数据源是否可用）
+        assert "v8_guard" in body
 
     def test_index_serves_spa(self, client):
         r = client.get("/")

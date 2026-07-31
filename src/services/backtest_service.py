@@ -22,17 +22,37 @@ logger = get_logger("backtest_service")
 # 数据获取
 # ============================================================================
 
+# 模块级 provider 单例：磁盘缓存共享，无需每次请求重建（构造含 mkdir 等 I/O）
+_PROVIDER = None
+
+
+def _get_provider():
+    global _PROVIDER
+    if _PROVIDER is None:
+        from src.analysis.screening.data_provider import ScreenerDataProvider
+        _PROVIDER = ScreenerDataProvider()
+    return _PROVIDER
+
+
 def fetch_ohlcv(code: str, market: str, days_back: int,
                 frequency: str = "d") -> pd.DataFrame:
     """
-    按周期拉 OHLCV。frequency ∈ {d, w, m, y}。
+    按周期拉 OHLCV。frequency ∈ {d, w, m, y} 或分钟周期 {1m, 5m, 15m, 30m, 60m}。
+
+    分钟周期时 days_back 仍指日历天数（东财 1m 只保留最近 ~5 个交易日）。
 
     Returns:
         原始 DataFrame（可能为空，调用方自行判断）
     """
     from src.analysis.screening.data_provider import ScreenerDataProvider
 
-    provider = ScreenerDataProvider()
+    provider = _get_provider()
+    if frequency in ScreenerDataProvider.MINUTE_FREQ_MAP:
+        df = provider.get_minute_ohlcv(
+            code.strip(), freq=frequency, days_back=int(days_back), market=market,
+        )
+        return df if df is not None else pd.DataFrame()
+
     fetchers = {
         "d": provider.get_daily_ohlcv,
         "w": provider.get_weekly_ohlcv,
@@ -215,6 +235,94 @@ def run_strategy_backtest(
     if single is None:
         return None, f"未能获取 {code} 的行情数据"
     return single.report, ""
+
+
+# ============================================================================
+# 参数寻优（向量化引擎 + optuna）
+# ============================================================================
+
+OPTIMIZE_METHODS = ("grid", "random", "bayesian")
+_OPTIMIZE_MAX_TRIALS = 500
+_WALK_FORWARD_MAX_TRIALS = 100
+
+
+def list_optimizable_strategies() -> list[dict]:
+    """可寻优策略清单：[{key, label, space}]"""
+    from src.strategy.backtest.optimizer import OPTIMIZABLE_STRATEGIES
+
+    return [{"key": k, "label": v["label"],
+             "space": {p: list(s) for p, s in v["space"].items()}}
+            for k, v in OPTIMIZABLE_STRATEGIES.items()]
+
+
+def is_optimizable_strategy(key: str) -> bool:
+    from src.strategy.backtest.optimizer import OPTIMIZABLE_STRATEGIES
+
+    return key in OPTIMIZABLE_STRATEGIES
+
+
+def run_optimization(
+    strategy: str,
+    code: str,
+    market: str = "a",
+    days: int = 750,
+    *,
+    method: str = "bayesian",
+    n_trials: int = 100,
+    metric: str = "总收益率(%)",
+    walk_forward: bool = False,
+) -> dict:
+    """
+    策略参数寻优（跑在向量化引擎上，秒级数百 trial）+ 可选 Walk-Forward 验证。
+
+    Returns:
+        {strategy, method, metric, n_trials, elapsed, best_params, best_score,
+         top_trials: [...], walk_forward: {...} | None}
+
+    Raises:
+        KeyError: 未知策略
+        ValueError: 未知寻优方法 / 参数非法 / 数据不足
+        LookupError: 未能获取行情数据
+    """
+    import time as _time
+
+    from src.strategy.backtest.optimizer import OPTIMIZABLE_STRATEGIES, ParamOptimizer
+
+    spec = OPTIMIZABLE_STRATEGIES.get(strategy)
+    if spec is None:
+        raise KeyError(f"未知可寻优策略: {strategy}，可选 {sorted(OPTIMIZABLE_STRATEGIES)}")
+    if method not in OPTIMIZE_METHODS:
+        raise ValueError(f"未知寻优方法: {method}，支持 {'/'.join(OPTIMIZE_METHODS)}")
+
+    df = fetch_ohlcv(code, market, days)
+    if df is None or df.empty:
+        raise LookupError("未能获取行情数据")
+
+    opt = ParamOptimizer(spec["func"], spec["space"],
+                         metric=metric, constraint=spec.get("constraint"))
+    t0 = _time.perf_counter()
+    result = opt.optimize(
+        df, method=method,
+        n_trials=max(10, min(int(n_trials), _OPTIMIZE_MAX_TRIALS)))
+
+    wf = None
+    if walk_forward:
+        wf_res = opt.walk_forward(
+            df, method=method,
+            n_trials=max(10, min(int(n_trials), _WALK_FORWARD_MAX_TRIALS)))
+        wf = {"summary": wf_res.summary, "folds": wf_res.folds}
+
+    return {
+        "strategy": strategy,
+        "method": result.method,
+        "metric": result.metric,
+        "n_trials": result.n_trials,
+        "elapsed": round(_time.perf_counter() - t0, 2),
+        "best_params": result.best_params,
+        "best_score": result.best_score,
+        "top_trials": result.trials.head(10),
+        "walk_forward": wf,
+    }
 
 
 # ============================================================================

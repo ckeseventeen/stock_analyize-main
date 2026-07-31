@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 
+from src.core.cache_policy import ttl_for
 from src.data.providers.cache_manager import CacheManager
 from src.utils.exception_handler import retry
 from src.utils.logger import get_logger
@@ -39,9 +40,12 @@ class EarningsFetcher:
         us_df = fetcher.get_us_upcoming(["AAPL", "TSLA"], days_ahead=30)
     """
 
-    def __init__(self, cache_dir: str = ".cache/earnings", ttl_hours: int = 12):
+    def __init__(self, cache_dir: str = ".cache/earnings",
+                 ttl_hours: int | None = None):
         # 披露日历变动不频繁，TTL 默认 12 小时
-        self._cache = CacheManager(cache_dir=cache_dir, ttl_hours=ttl_hours)
+        self._cache = CacheManager(cache_dir=cache_dir,
+                                    ttl_hours=ttl_hours if ttl_hours is not None
+                                    else ttl_for("earnings"))
         self._name_map: dict[str, str] = {}
         self._config_loaded = False
 
@@ -153,7 +157,8 @@ class EarningsFetcher:
                     tk = yf.Ticker(c)
                     cal = tk.calendar
                     return cal if cal else None
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"_fetch_cal 忽略异常: {type(e).__name__}: {e}")
                     return None
 
             cal = self._cache.get_or_fetch(cache_key, _fetch_cal)
@@ -179,7 +184,8 @@ class EarningsFetcher:
                         ed = dt_val.date()
                 else:
                     ed = dt_val
-            except Exception:
+            except Exception as e:
+                logger.debug(f"_fetch_cal 忽略异常: {type(e).__name__}: {e}")
                 continue
 
             if ed is None:
@@ -228,7 +234,8 @@ class EarningsFetcher:
                     if isinstance(cal, pd.DataFrame) and not cal.empty:
                         return cal.to_dict()
                     return None
-                except Exception:
+                except Exception as e:
+                    logger.debug(f"_fetch_cal 忽略异常: {type(e).__name__}: {e}")
                     return None
 
             cal = self._cache.get_or_fetch(cache_key, _fetch_cal)
@@ -303,8 +310,8 @@ class EarningsFetcher:
                 if name:
                     self._name_map[cache_key] = name
                     return name
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_get_friendly_name 忽略异常: {type(e).__name__}: {e}")
 
         return code_str
 

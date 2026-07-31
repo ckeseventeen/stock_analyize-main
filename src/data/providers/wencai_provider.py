@@ -11,7 +11,6 @@ vs Baostock 串行 5500 只 20 分钟 → 同花顺 NLP 一次拉取 ~40 秒，�
 from __future__ import annotations
 
 import re
-from typing import Optional
 
 import pandas as pd
 
@@ -74,6 +73,9 @@ class WencaiProvider:
             df = wp.get_all_a_shares()
     """
 
+    # py_mini_racer(V8) 可用性探测结果缓存（进程级，None=未探测）
+    _V8_PROBE_RESULT: bool | None = None
+
     def __init__(self, query: str = _DEFAULT_QUERY):
         self.query = query
         self._pywencai = self._lazy_import()
@@ -88,10 +90,40 @@ class WencaiProvider:
             logger.info("pywencai 未安装，WencaiProvider 不可用。pip install pywencai")
             return None
 
-    def is_available(self) -> bool:
-        return self._pywencai is not None
+    @classmethod
+    def _probe_mini_racer(cls) -> bool:
+        """
+        在**子进程**里探测 py_mini_racer(V8) 能否初始化。
 
-    def get_all_a_shares(self, query: Optional[str] = None) -> pd.DataFrame:
+        背景：pywencai 依赖 py_mini_racer 执行同花顺 JS 加密；某些环境下
+        V8 初始化会直接 FATAL（partition_address_space Check failed），
+        **杀死整个 Python 进程且无法 try/except 捕获**。必须隔离到子进程
+        探测一次，失败则永久禁用问财兜底（走 Baostock）。
+        """
+        if cls._V8_PROBE_RESULT is not None:
+            return cls._V8_PROBE_RESULT
+        import subprocess
+        import sys
+        try:
+            proc = subprocess.run(
+                [sys.executable, "-c",
+                 "import py_mini_racer; py_mini_racer.MiniRacer().eval('1+1')"],
+                capture_output=True, timeout=30,
+            )
+            cls._V8_PROBE_RESULT = proc.returncode == 0
+        except Exception:
+            cls._V8_PROBE_RESULT = False
+        if not cls._V8_PROBE_RESULT:
+            logger.warning(
+                "py_mini_racer(V8) 在本机无法初始化（会 FATAL 崩进程），"
+                "问财兜底已禁用，spot 数据将走 Baostock"
+            )
+        return cls._V8_PROBE_RESULT
+
+    def is_available(self) -> bool:
+        return self._pywencai is not None and self._probe_mini_racer()
+
+    def get_all_a_shares(self, query: str | None = None) -> pd.DataFrame:
         """
         一次性查询全A股 spot 数据（含总市值/PE/PB/换手率）
 

@@ -313,6 +313,7 @@ def run_screening(
     request_delay: float = 0.0,
     clear_cache: bool = False,
     config_path: Path | str | None = None,
+    use_processes: bool = False,
 ) -> ScreeningRunResult:
     """
     执行筛选（原 pages/3 内嵌的编排逻辑）。
@@ -322,6 +323,7 @@ def run_screening(
         scope_keys: 板块/指数 key 列表；None 或含 "all" = 全市场
         scope_labels: 对应显示名（仅用于结果记录）
         clear_cache: 强制清 K 线缓存
+        use_processes: Pass2 用进程池并行（CPU 密集条件多时提速；小候选集自动退回线程池）
     """
     from src.analysis.screening import ScreenerDataProvider, StockScreener
 
@@ -343,6 +345,7 @@ def run_screening(
         data_provider=provider,
         request_delay=float(request_delay),
         max_workers=int(max_workers),
+        use_processes=bool(use_processes),
     )
     t0 = time.perf_counter()
     df = screener.run_from_config(
@@ -351,6 +354,10 @@ def run_screening(
         stock_scope=stock_scope,
     )
     elapsed = time.perf_counter() - t0
+
+    # 行情数据源退化时把原因带给用户（否则 0 命中会被误读成策略太严）
+    if getattr(screener, "data_warning", ""):
+        warnings.append(screener.data_warning)
 
     return ScreeningRunResult(
         df=df if df is not None else pd.DataFrame(),

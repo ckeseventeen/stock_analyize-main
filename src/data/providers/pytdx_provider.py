@@ -28,11 +28,16 @@ logger = get_logger("pytdx_provider")
 
 # K 线周期映射：pytdx category
 # 0=5分,1=15分,2=30分,3=60分,4=日,5=周,6=月,7=1分,8=1分,9=日,10=周,11=月,13=年
-# 用 9/10/11 系列（更稳定的版本号）
+# 日/周/月用 9/10/11 系列（更稳定的版本号）；分钟线用 8/0/1/2/3
 _PERIOD_CATEGORY = {
     "d": 9,
     "w": 10,
     "m": 11,
+    "1m": 8,
+    "5m": 0,
+    "15m": 1,
+    "30m": 2,
+    "60m": 3,
 }
 
 # 通达信服务器（同 core/data_fetcher.py 内的默认列表）
@@ -113,11 +118,11 @@ class PytdxProvider:
                 if ok:
                     try:
                         api.disconnect()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug(f"_try 忽略异常: {type(e).__name__}: {e}")
                     return (ip, port)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"_try 忽略异常: {type(e).__name__}: {e}")
             return None
 
         t0 = time.perf_counter()
@@ -167,7 +172,8 @@ class PytdxProvider:
                 if api.connect(ip, port, time_out=self._connect_timeout):
                     self._tlocal.api = api
                     return api
-            except Exception:
+            except Exception as e:
+                logger.debug(f"_get_thread_api 忽略异常: {type(e).__name__}: {e}")
                 continue
         return None
 
@@ -179,7 +185,7 @@ class PytdxProvider:
         Args:
             code: 6 位股票代码（无市场前缀）
             days_back: 拉取的 K 线数量（不是日历天数；pytdx 单次最多 800）
-            frequency: "d"/"w"/"m"
+            frequency: "d"/"w"/"m" 或分钟周期 "1m"/"5m"/"15m"/"30m"/"60m"
 
         Returns:
             DataFrame，列: 日期/开盘/最高/最低/收盘/成交量/成交额
@@ -208,8 +214,8 @@ class PytdxProvider:
                 # 销毁旧连接，下次 _get_thread_api 会重建
                 try:
                     api.disconnect()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"get_k_data 忽略异常: {type(e).__name__}: {e}")
                 self._tlocal.api = None
                 if attempt == 0:
                     api = self._get_thread_api()

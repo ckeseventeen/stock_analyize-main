@@ -251,7 +251,7 @@ def run_all_strategies(
         except RuntimeError as e:
             # ML 模型未训练等可恢复错误
             msg = str(e)
-            is_skip = "训练" in msg or "lgbm_latest" in msg
+            is_skip = any(kw in msg for kw in ("训练", "lgbm_latest", "ML 模型未训练", "模型未训练"))
             results.append(StrategyResult(
                 key=key, label=label, success=False, category=category,
                 skipped=is_skip,

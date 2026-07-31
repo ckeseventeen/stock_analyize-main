@@ -62,9 +62,8 @@ class MLRebalanceStrategy(BaseStrategy):
         self._predictor = get_predictor()
         if self._predictor is None and self.p.skip_if_no_model:
             raise RuntimeError(
-                "MLRebalanceStrategy 需要训练好的 ML 模型，但 cache/ml_models/lgbm_latest.joblib 不存在。\n"
-                "请先训练：python -m src.ml.cli train\n"
-                "调试期可加 skip_if_no_model=False 让策略跳过预测（不会有交易）。"
+                "ML 模型未训练（cache/ml_models/lgbm_latest.joblib 不存在）。"
+                "请在回测页面点击「训练 ML 模型」按钮，或运行 python -m src.ml.cli train"
             )
         if self._predictor is not None:
             cv_ic = self._predictor.metadata.get("cv_ic_mean", "N/A")

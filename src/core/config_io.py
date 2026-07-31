@@ -43,9 +43,8 @@ PATH_BACKTEST_PRESETS = CONFIG_DIR / "backtest_presets.yaml"
 ALERT_STATE_PATH = CACHE_DIR / "alert_state.json"
 ALERT_LOG_PATH = LOGS_DIR / "alerts.log"
 
-# 市场元数据（向后兼容入口）
-# 实际数据来源已迁移到 src/core/market_registry.py，
-# 这里只是 re-export 让旧代码 `from src.web.utils import MARKET_LABELS` 继续工作。
+# 市场元数据（re-export 入口）
+# 实际数据来源是 src/core/market_registry.py；此处仅做 re-export 供各层引用。
 # 加新市场请到 market_registry.py，不要改这里。
 try:
     from src.core.market_registry import list_markets as _list_markets

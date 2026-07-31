@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
@@ -81,6 +82,75 @@ def _df_records(df) -> list[dict]:
     return _jsonable(df.replace({pd.NA: None}).to_dict(orient="records"))
 
 
+def _build_valuation_charts(result: dict, run, val_type: str) -> dict:
+    """从估值分析结果中提取图表就绪数据（供前端 ECharts 渲染四幅图）"""
+    import numpy as np
+    import pandas as pd
+
+    charts = {}
+
+    # ── 图1：年度营收与净利润 + 毛利率 ──
+    annual_df = result.get("annual_df")
+    if annual_df is not None and not annual_df.empty:
+        years = [str(d.year) if hasattr(d, "year") else str(d)[:4]
+                 for d in annual_df.index]
+        revenue = [round(float(v) / 1e8, 2) for v in annual_df.get("营业总收入", [])]
+        net_profit = [round(float(v) / 1e8, 2) for v in annual_df.get("归母净利润", [])]
+        gross_margin = []
+        gm_col = annual_df.get("毛利率", None)
+        if gm_col is not None:
+            gross_margin = [round(float(v) * 100, 2) if v else 0 for v in gm_col]
+        charts["annual"] = {"years": years, "revenue": revenue,
+                            "net_profit": net_profit, "gross_margin": gross_margin}
+    else:
+        charts["annual"] = None
+
+    # ── 图2：历史估值走势 ──
+    hist_val = result.get("hist_val")
+    val_col = "pe_ttm" if val_type == "pe" else "ps_ttm"
+    current_val = result.get("current_pe" if val_type == "pe" else "current_ps", 0)
+    if hist_val is not None and not hist_val.empty and val_col in hist_val.columns:
+        hist_series = pd.to_numeric(hist_val[val_col], errors="coerce").dropna()
+        if not hist_series.empty:
+            # 降采样：超过 500 个点时按月取均值，避免前端渲染卡顿
+            if len(hist_series) > 500:
+                try:
+                    hist_series = hist_series.resample("ME").mean().dropna()
+                except Exception:
+                    try:
+                        hist_series = hist_series.resample("1M").mean().dropna()
+                    except Exception:
+                        pass  # 保留原始数据
+            dates = [str(d)[:10] for d in hist_series.index]
+            values = [round(float(v), 2) for v in hist_series.values]
+            median_val = round(float(hist_series.median()), 2)
+            charts["hist_val"] = {
+                "dates": dates, "values": values,
+                "current": round(float(current_val), 2) if current_val and not (isinstance(current_val, float) and np.isnan(current_val)) else None,
+                "median": median_val,
+                "val_name": val_type.upper(),
+            }
+        else:
+            charts["hist_val"] = None
+    else:
+        charts["hist_val"] = None
+
+    # ── 图3：情景假设估值推演 ──
+    scenarios = result.get("scenarios", [0, 0, 0])
+    price = result.get("price", 0)
+    val_range = run.stock_config.get(f"{val_type}_range", [0, 0, 0])
+    charts["scenarios"] = {
+        "labels": [f"保守({val_type.upper()}={val_range[0]})",
+                   f"中性({val_type.upper()}={val_range[1]})",
+                   f"乐观({val_type.upper()}={val_range[2]})"],
+        "values": [round(float(v), 2) for v in scenarios],
+        "current_price": round(float(price), 2) if price else 0,
+        "val_name": val_type.upper(),
+    }
+
+    return charts
+
+
 # ============================================================================
 # 个股
 # ============================================================================
@@ -88,6 +158,25 @@ def _df_records(df) -> list[dict]:
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config/validate")
+def config_validate():
+    """
+    配置自检：返回各 YAML 的 schema 问题清单。
+
+    配置写错（未知条件类型、未知 job type、非法因子表达式…）过去只会静默
+    失效，用户看到的是"结果不对"却无从定位；这里把问题显式暴露出来。
+    """
+    from src.core.config_validation import validate_all
+
+    report = validate_all()
+    return {
+        "ok": not report,
+        "files_with_issues": len(report),
+        "total_issues": sum(len(v) for v in report.values()),
+        "issues": report,
+    }
 
 
 @app.get("/api/stocks/search")
@@ -101,8 +190,11 @@ def stocks_search(q: str, market: str = "a", limit: int = 10):
 def stock_basic(market: str, code: str):
     """代码 → 名称 + 最新价"""
     from src.services import stock_service as ssvc
-    name = ssvc.resolve_name(code, market)
-    price = ssvc.current_price(code, market)
+    try:
+        name = ssvc.resolve_name(code, market)
+        price = ssvc.current_price(code, market)
+    except Exception as e:
+        raise HTTPException(502, f"基本信息获取失败: {e}")
     return {"code": code, "market": market, "name": name, "price": price}
 
 
@@ -125,6 +217,10 @@ def stock_valuation(market: str, code: str,
         raise HTTPException(404, "分析结果为空，请检查代码")
     r = run.result
     label, level = vsvc.percentile_badge(r.get("hist_percentile", 0))
+
+    # ── 图表就绪数据 ──
+    charts = _build_valuation_charts(r, run, valuation)
+
     return {
         "core": _jsonable({k: r.get(k) for k in (
             "price", "current_pe", "current_ps", "hist_percentile",
@@ -132,20 +228,48 @@ def stock_valuation(market: str, code: str,
         "badge": {"label": label, "level": level},
         "targets": vsvc.target_price_rows(r),
         "summary": vsvc.summary_rows(r, run.fin_df, valuation),
+        "charts": _jsonable(charts),
     }
 
 
+# /kline days 缺省（days<=0）时按周期自动选择的回溯天数：
+# 周线/月线需要足够长的窗口，否则 MA60 全为 null
+_KLINE_AUTO_DAYS = {"d": 250, "w": 1095, "m": 1825, "y": 3650}
+
+
 @app.get("/api/stocks/{market}/{code}/kline")
-def stock_kline(market: str, code: str, days: int = 250):
-    """日线 K 线 + MA20/60 + 成交量（ECharts 蜡烛图格式 [开,收,低,高]）"""
+def stock_kline(market: str, code: str, days: int = 0, freq: str = "d"):
+    """K 线 + MA20/60 + 成交量（ECharts 蜡烛图格式 [开,收,低,高]）
+
+    freq: d/w/m/y 或分钟周期 1m/5m/15m/30m/60m。
+    days 缺省（<=0）时按周期自动取合理窗口（日 250 / 周 1095 / 月 1825 / 分钟 30 或 5）。
+    """
     from src.services import backtest_service as btsvc
-    df = btsvc.fetch_ohlcv(code, market, days)
-    if df is None or df.empty:
-        raise HTTPException(404, "未能获取 K 线数据")
-    df = btsvc._normalize_for_charts(df)
+    from src.services import market_data_service as mdsvc
+
+    is_minute = mdsvc.is_minute_freq(freq)
+    if not is_minute and freq not in _KLINE_AUTO_DAYS:
+        raise HTTPException(422, f"未知周期: {freq}")
+    minute_cap = 30 if freq != "1m" else 5
+    if days <= 0:
+        days = minute_cap if is_minute else _KLINE_AUTO_DAYS[freq]
+    elif is_minute:
+        # 东财分钟接口历史深度有限，限制回溯窗口防止空转
+        days = min(days, minute_cap)
+    try:
+        df = btsvc.fetch_ohlcv(code, market, days, frequency=freq)
+        if df is None or df.empty:
+            raise HTTPException(404, "未能获取 K 线数据")
+        df = btsvc._normalize_for_charts(df)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"K线数据获取失败: {e}")
     close = df["close"]
+    # 分钟周期保留时分（MM-DD HH:MM），日线以上只保留日期
+    date_fmt = (lambda d: str(d)[5:16]) if is_minute else (lambda d: str(d)[:10])
     return {
-        "dates": [str(d)[:10] for d in df.index],
+        "dates": [date_fmt(d) for d in df.index],
         "k": _jsonable([[float(o), float(c), float(lo), float(h)]
                         for o, c, lo, h in zip(df["open"], close, df["low"], df["high"])]),
         "volume": _jsonable([float(v) for v in df.get("volume", [0] * len(df))]),
@@ -193,8 +317,11 @@ def stock_strategy_signals(market: str, code: str):
 def stock_signals(market: str, code: str):
     """买点条件扫描 + 卖出引擎判定"""
     from src.services import stock_service as ssvc
-    hits = ssvc.scan_buy_signals(code, market)
-    ev = ssvc.sell_verdict_for_code(code, "", market)
+    try:
+        hits = ssvc.scan_buy_signals(code, market)
+        ev = ssvc.sell_verdict_for_code(code, "", market)
+    except Exception as e:
+        raise HTTPException(502, f"信号扫描失败: {e}")
     return {
         "buy": [{"type": h.cond_type, "label": h.label,
                  "period": h.period, "hit": h.hit} for h in hits],
@@ -305,6 +432,13 @@ def strategy_backtest(sid: str, req: StrategyBacktestRequest):
     return out
 
 
+@app.get("/api/factors/alpha158")
+def factors_alpha158():
+    """Alpha 158 表达式因子清单（名称/表达式/说明/方向）"""
+    from src.services import factor_service as fsvc
+    return fsvc.list_alpha158()
+
+
 @app.get("/api/conditions")
 def conditions_schema():
     """条件 schema：分类 → [{type,label,params:[{key,kind,choices,default}]}]（编辑器用）"""
@@ -350,6 +484,7 @@ class ScreeningRequest(BaseModel):
     strategy_ids: list[str] = Field(min_length=1)
     scope_keys: Optional[list[str]] = None
     max_workers: int = 8
+    use_processes: bool = False   # Pass2 进程池并行（CPU 密集条件多时提速）
 
 
 @app.post("/api/screening/run")
@@ -358,7 +493,7 @@ def screening_run(req: ScreeningRequest):
     try:
         run = svc.run_screening(
             req.strategy_ids, scope_keys=req.scope_keys,
-            max_workers=req.max_workers)
+            max_workers=req.max_workers, use_processes=req.use_processes)
     except Exception as e:
         raise HTTPException(502, f"筛选失败: {e}")
     return {
@@ -407,15 +542,89 @@ def backtest_compare(req: CompareRequest):
     return {"results": rows, "curves": curves}
 
 
+class OptimizeRequest(BaseModel):
+    code: str
+    market: str = "a"
+    days: int = 750
+    strategy: str = "ma_crossover"
+    method: str = "bayesian"          # grid | random | bayesian
+    n_trials: int = 100
+    metric: str = "总收益率(%)"
+    walk_forward: bool = False         # 附带 Walk-Forward 过拟合检测
+
+
+@app.post("/api/backtest/optimize")
+def backtest_optimize(req: OptimizeRequest):
+    """策略参数寻优（向量化引擎，秒级数百 trial）+ 可选 Walk-Forward 验证"""
+    from src.services import backtest_service as btsvc
+
+    try:
+        r = btsvc.run_optimization(
+            req.strategy, req.code, req.market, req.days,
+            method=req.method, n_trials=req.n_trials,
+            metric=req.metric, walk_forward=req.walk_forward)
+    except KeyError as e:
+        raise HTTPException(404, str(e).strip("'"))
+    except LookupError as e:
+        raise HTTPException(404, str(e))
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"寻优失败: {e}")
+
+    wf = r.get("walk_forward")
+    return {
+        "strategy": r["strategy"],
+        "method": r["method"],
+        "metric": r["metric"],
+        "n_trials": r["n_trials"],
+        "elapsed": r["elapsed"],
+        "best_params": _jsonable(r["best_params"]),
+        "best_score": _jsonable(r["best_score"]),
+        "top_trials": _df_records(r["top_trials"]),
+        "walk_forward": ({"summary": _jsonable(wf["summary"]),
+                          "folds": _df_records(wf["folds"])} if wf else None),
+    }
+
+
+@app.get("/api/backtest/optimizable")
+def backtest_optimizable():
+    """可寻优策略清单：[{key, label, space}]"""
+    from src.services import backtest_service as btsvc
+    return btsvc.list_optimizable_strategies()
+
+
+# ============================================================================
+# ML 模型（B 路径自学习）
+# ============================================================================
+
+@app.get("/api/ml/status")
+def ml_status():
+    """检查 ML 模型是否已训练"""
+    from src.services import ml_service
+
+    return ml_service.model_status()
+
+
+@app.post("/api/ml/train")
+def ml_train():
+    """触发 ML 模型训练（后台异步执行）"""
+    from src.services import ml_service
+
+    started, message = ml_service.start_training()
+    return {"message": message, "started": started,
+            "status": ml_service.training_status()}
+
+
 # ============================================================================
 # 持仓
 # ============================================================================
 
 @app.get("/api/portfolio/diagnosis")
 def portfolio_diagnosis():
-    from src.portfolio.diagnostics import run_diagnosis
+    from src.services import portfolio_service as pfsvc
     try:
-        return _jsonable(run_diagnosis().to_report_dict())
+        return _jsonable(pfsvc.run_portfolio_diagnosis())
     except Exception as e:
         raise HTTPException(502, f"体检失败: {e}")
 
@@ -463,6 +672,122 @@ def cancel_order(order_id: str):
     if not _broker.cancel_order(order_id):
         raise HTTPException(404, "订单不存在或不可撤销")
     return {"cancelled": order_id}
+
+
+# ============================================================================
+# 市场监控
+# ============================================================================
+
+@app.get("/api/market/sentiment")
+def market_sentiment():
+    """市场情绪面板 — 六大维度实时数据"""
+    from src.services import market_monitor_service as mms
+    try:
+        return _jsonable(mms.get_full_panel())
+    except Exception as e:
+        raise HTTPException(502, f"市场情绪面板获取失败: {e}")
+
+
+@app.get("/api/market/us-summary")
+def market_us_summary():
+    """美股盘前总结 — 三大指数最近交易日表现"""
+    from src.services import market_monitor_service as mms
+    try:
+        return _jsonable(mms.us_market_summary())
+    except Exception as e:
+        raise HTTPException(502, f"美股数据获取失败: {e}")
+
+
+@app.get("/api/altdata/sources")
+def altdata_sources():
+    """另类数据源清单：[{key, label, params, optional}]"""
+    from src.services import market_data_service as mdsvc
+    return mdsvc.list_alt_sources()
+
+
+@app.get("/api/altdata/{source}")
+def altdata_query(source: str, code: str = "", symbol: str = "",
+                  date: str = "", days: int = 5, limit: int = 200):
+    """通用另类数据查询：龙虎榜/北向/融资融券/大宗/解禁/股东人数/分红/概念成分"""
+    from src.services import market_data_service as mdsvc
+
+    if not mdsvc.is_alt_source(source):
+        raise HTTPException(404, f"未知数据源: {source}")
+    params: dict = {}
+    if code:
+        params["code"] = code.strip()
+    if symbol:
+        params["symbol"] = symbol.strip()
+    if date:
+        params["date"] = date.strip()
+    if source == "lhb":
+        params["days"] = max(1, min(int(days), 30))
+    try:
+        df = mdsvc.fetch_alt(source, **params)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"另类数据获取失败: {e}")
+    if df is None or df.empty:
+        return {"count": 0, "columns": [], "rows": []}
+    df = df.tail(int(limit)) if source in ("northbound_stock", "holder_number",
+                                           "block_trade") else df.head(int(limit))
+    return {
+        "count": int(len(df)),
+        "columns": [str(c) for c in df.columns],
+        "rows": _df_records(df),
+    }
+
+
+@app.get("/api/fundamental/sources")
+def fundamental_sources():
+    """基本面深度数据源清单：[{key, label, params, optional}]"""
+    from src.services import market_data_service as mdsvc
+    return mdsvc.list_fundamental_sources()
+
+
+@app.get("/api/fundamental/{source}")
+def fundamental_query(source: str, code: str = "", period: str = "",
+                      start_year: str = "", limit: int = 200):
+    """通用基本面查询：三大报表 / 财务指标 / 业绩预告 / 业绩快报"""
+    from src.services import market_data_service as mdsvc
+
+    if not mdsvc.is_fundamental_source(source):
+        raise HTTPException(404, f"未知数据源: {source}")
+    params: dict = {}
+    if code:
+        params["code"] = code.strip()
+    if period:
+        params["period"] = period.strip()
+    if start_year:
+        params["start_year"] = start_year.strip()
+    try:
+        df = mdsvc.fetch_fundamental(source, **params)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    except Exception as e:
+        raise HTTPException(502, f"基本面数据获取失败: {e}")
+    if df is None or df.empty:
+        return {"count": 0, "columns": [], "rows": []}
+    df = df.head(int(limit))
+    return {
+        "count": int(len(df)),
+        "columns": [str(c) for c in df.columns],
+        "rows": _df_records(df),
+    }
+
+
+@app.get("/api/market/trading-status")
+def market_trading_status():
+    """当前交易时段状态（是否交易时间 / 是否盘前）"""
+    from src.services import market_monitor_service as mms
+    now = datetime.now()
+    return {
+        "is_trading": mms.is_a_share_trading_time(now),
+        "is_pre_market": mms.is_pre_market_time(now),
+        "now": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "weekday": now.weekday(),
+    }
 
 
 # ============================================================================

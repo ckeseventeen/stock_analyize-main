@@ -81,7 +81,7 @@ def _notify_training_done(metadata: dict) -> None:
     try:
         from pathlib import Path
         import yaml as _yaml
-        from src.automation.alert import AlertEvent, build_channels
+        from src.notify import AlertEvent, build_channels
 
         alerts_path = Path("./config/alerts.yaml")
         if not alerts_path.exists():

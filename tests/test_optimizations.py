@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from src.core.visualizer import Visualizer
 from src.data.providers.cache_manager import CacheManager
-from src.core.data_fetcher import retry_on_exception
+from src.data.fetchers import retry_on_exception
 
 def test_visualizer_plotly():
     # Mock data

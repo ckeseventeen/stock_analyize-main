@@ -19,7 +19,7 @@ import pytest
 # 将项目根目录加入 sys.path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.automation.alert import (
+from src.notify import (
     AlertEvent,
     AlertStateStore,
     BarkChannel,
@@ -125,7 +125,7 @@ class TestServerChanChannel:
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             ok = ch.send(sample_event)
             assert ok is True
             # 验证 URL 正确
@@ -155,7 +155,7 @@ class TestServerChanChannel:
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp):
+        with patch("src.notify.base.requests.post", return_value=mock_resp):
             assert ch.send(sample_event) is False
 
 
@@ -168,7 +168,7 @@ class TestBarkChannel:
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is True
             _, kwargs = mock_post.call_args
             payload = kwargs["json"]
@@ -186,7 +186,7 @@ class TestPushPlusChannel:
         mock_resp.status_code = 200
         mock_resp.raise_for_status = MagicMock()
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is True
             _, kwargs = mock_post.call_args
             payload = kwargs["json"]
@@ -199,13 +199,13 @@ class TestPushPlusChannel:
 class TestWebhookChannel:
     def test_send_posts_json_payload(self, sample_event):
         """应向配置 URL POST 完整 JSON 事件体"""
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({"enable": True, "url": "https://example.com/hooks/alert"})
 
         mock_resp = MagicMock()
         mock_resp.status_code = 200
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is True
             args, kwargs = mock_post.call_args
             assert args[0] == "https://example.com/hooks/alert"
@@ -223,7 +223,7 @@ class TestWebhookChannel:
         import hashlib
         import hmac as _hmac
 
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({
             "enable": True,
             "url": "https://example.com/hooks/alert",
@@ -232,7 +232,7 @@ class TestWebhookChannel:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is True
             _, kwargs = mock_post.call_args
             raw_body = kwargs["data"]
@@ -242,7 +242,7 @@ class TestWebhookChannel:
 
     def test_custom_headers_merged(self, sample_event):
         """headers 配置应合并进请求头（如 Authorization）"""
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({
             "enable": True,
             "url": "https://example.com/hooks/alert",
@@ -251,33 +251,33 @@ class TestWebhookChannel:
         mock_resp = MagicMock()
         mock_resp.status_code = 204
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is True
             _, kwargs = mock_post.call_args
             assert kwargs["headers"]["Authorization"] == "Bearer tok123"
 
     def test_missing_url_disables_channel(self):
         """无 url 时应自动禁用"""
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({"enable": True, "url": ""})
         assert ch.enabled is False
 
     def test_4xx_returns_false_without_retry(self, sample_event):
         """4xx 配置类错误应直接失败，不触发重试"""
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({"enable": True, "url": "https://example.com/hooks/alert"})
         mock_resp = MagicMock()
         mock_resp.status_code = 403
         mock_resp.text = "forbidden"
 
-        with patch("src.automation.alert.base.requests.post", return_value=mock_resp) as mock_post:
+        with patch("src.notify.base.requests.post", return_value=mock_resp) as mock_post:
             assert ch.send(sample_event) is False
             assert mock_post.call_count == 1
 
     def test_env_secret_overrides_config(self, sample_event, monkeypatch):
         """环境变量 WEBHOOK_SECRET 应优先于 YAML secret"""
         monkeypatch.setenv("WEBHOOK_SECRET", "ENV_SECRET")
-        from src.automation.alert import WebhookChannel
+        from src.notify import WebhookChannel
         ch = WebhookChannel({"enable": True, "url": "https://example.com/h", "secret": "YAML"})
         assert ch.secret == "ENV_SECRET"
 
@@ -299,7 +299,7 @@ class TestRetry:
             call_count["n"] += 1
             raise ConnectionError("network down")
 
-        with patch("src.automation.alert.base.requests.post", side_effect=raising_post):
+        with patch("src.notify.base.requests.post", side_effect=raising_post):
             ok = ch.send(sample_event)
             assert ok is False
             assert call_count["n"] == 3  # 重试 3 次

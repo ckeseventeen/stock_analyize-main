@@ -15,8 +15,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.automation.alert import AlertStateStore, ConsoleChannel
-from src.automation.monitor.earnings_monitor import EarningsMonitor
+from src.notify import AlertStateStore, ConsoleChannel
+from src.monitors.earnings_monitor import EarningsMonitor
 from src.data.providers.earnings_fetcher import COLUMNS
 
 

@@ -134,3 +134,24 @@ jobs:
     num_boost_round: 500
     n_splits: 5
     # max_codes: 100             # 可选：调试时限制股票数
+
+  # ---------- 美股盘前总结 ----------
+  # 每个交易日 08:30 生成美股三大指数总结，通过告警通道推送
+  - id: us_market_summary
+    type: market_monitor
+    enable: true
+    cron: "30 8 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    monitor_type: us_summary       # 生成美股盘前总结
+    alerts_config: "./config/alerts.yaml"
+
+  # ---------- A股交易时段情绪监控（每30分钟） ----------
+  # 交易时段 9:30-11:30, 13:00-15:00 每 30 分钟刷新情绪面板
+  - id: market_sentiment_refresh
+    type: market_monitor
+    enable: true
+    cron: "0,30 9-11,13-14 * * MON-FRI"
+    timezone: "Asia/Shanghai"
+    monitor_type: sentiment_panel  # 刷新六大情绪维度
+    alerts_config: "./config/alerts.yaml"
+    misfire_grace_time: 300

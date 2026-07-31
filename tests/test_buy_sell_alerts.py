@@ -20,7 +20,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from src.automation.monitor.buy_sell_alerts import (
+from src.monitors.buy_sell_alerts import (
     BuySellAlertMonitor,
     resolve_scope_codes,
 )

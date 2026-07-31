@@ -179,7 +179,7 @@ class TestB4FCFAnnualization:
 @pytest.mark.unit
 class TestB2B9AlertState:
     def test_utc_timestamp_format(self, tmp_path):
-        from src.automation.alert.state import AlertStateStore
+        from src.notify.state import AlertStateStore
 
         path = tmp_path / "state.json"
         store = AlertStateStore(path=path)
@@ -194,7 +194,7 @@ class TestB2B9AlertState:
         assert parsed.tzinfo is not None, f"时间戳应带时区: {ts}"
 
     def test_was_fired_within_cooldown(self, tmp_path):
-        from src.automation.alert.state import AlertStateStore
+        from src.notify.state import AlertStateStore
 
         store = AlertStateStore(path=tmp_path / "state.json")
         store.mark_fired("ev")
@@ -202,7 +202,7 @@ class TestB2B9AlertState:
 
     def test_thread_safe(self, tmp_path):
         """同进程多线程并发写入不丢条目"""
-        from src.automation.alert.state import AlertStateStore
+        from src.notify.state import AlertStateStore
 
         store = AlertStateStore(path=tmp_path / "state.json")
 
@@ -284,29 +284,29 @@ class TestB5PathTraversal:
 @pytest.mark.unit
 class TestSEC3SSRF:
     def test_block_localhost(self):
-        from src.automation.alert.base import _validate_url
+        from src.notify.base import _validate_url
 
         assert _validate_url("http://127.0.0.1:8080/api") is False
         assert _validate_url("http://localhost/api") is False
 
     def test_block_aws_metadata(self):
-        from src.automation.alert.base import _validate_url
+        from src.notify.base import _validate_url
 
         assert _validate_url("http://169.254.169.254/latest/meta-data/") is False
 
     def test_block_private_ip(self):
-        from src.automation.alert.base import _validate_url
+        from src.notify.base import _validate_url
 
         # 10.0.0.0/8 私网
         assert _validate_url("http://10.0.0.5/webhook") is False
 
     def test_allow_official_serverchan(self):
-        from src.automation.alert.base import _validate_url
+        from src.notify.base import _validate_url
 
         assert _validate_url("https://sctapi.ftqq.com/SCT123.send") is True
 
     def test_allow_private_when_explicit(self):
-        from src.automation.alert.base import _validate_url
+        from src.notify.base import _validate_url
 
         # 用户显式 allow_private=True（自建 Bark）
         assert _validate_url("http://10.0.0.5/webhook", allow_private=True) is True

@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -65,8 +66,8 @@ def _build_buy_sell_alerts_callable(job_cfg: dict) -> Callable[[], Any]:
     """
 
     def _run():
-        from src.automation.alert import AlertStateStore, build_channels
-        from src.automation.monitor.buy_sell_alerts import BuySellAlertMonitor
+        from src.notify import AlertStateStore, build_channels
+        from src.monitors.buy_sell_alerts import BuySellAlertMonitor
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         rules_cfg = _load_yaml(job_cfg.get("rules_config", "./config/price_alerts.yaml"))
@@ -96,8 +97,8 @@ def _build_earnings_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
     """构造 earnings_monitor 可调用对象"""
 
     def _run():
-        from src.automation.alert import AlertStateStore, build_channels
-        from src.automation.monitor.earnings_monitor import EarningsMonitor
+        from src.notify import AlertStateStore, build_channels
+        from src.monitors.earnings_monitor import EarningsMonitor
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         earnings_cfg = _load_yaml(
@@ -121,8 +122,8 @@ def _build_holding_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
     """构造 holding_monitor 可调用对象（Phase 4 持仓预警推送）"""
 
     def _run():
-        from src.automation.alert import AlertStateStore, build_channels
-        from src.automation.monitor.holding_monitor import HoldingMonitor
+        from src.notify import AlertStateStore, build_channels
+        from src.monitors.holding_monitor import HoldingMonitor
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         channels = build_channels(alerts_cfg)
@@ -198,7 +199,7 @@ def _build_screener_callable(job_cfg: dict) -> Callable[[], Any]:
 
     def _run():
         from src.analysis.screening.screener import StockScreener
-        from src.automation.alert import AlertEvent, AlertStateStore, build_channels
+        from src.notify import AlertEvent, AlertStateStore, build_channels
 
         alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
         channels = build_channels(alerts_cfg)
@@ -313,6 +314,120 @@ def _build_ml_retrain_callable(job_cfg: dict) -> Callable[[], Any]:
     return _run
 
 
+def _build_market_monitor_callable(job_cfg: dict) -> Callable[[], Any]:
+    """
+    市场监控 Job —— 支持两种子类型：
+
+    monitor_type=us_summary:
+        每个交易日 08:30 生成美股三大指数盘前总结，推送告警
+    monitor_type=sentiment_panel:
+        A 股交易时段每 30 分钟刷新六大情绪维度面板，推送告警
+    """
+    monitor_type = job_cfg.get("monitor_type", "sentiment_panel")
+
+    def _run_us_summary():
+        from src.notify import AlertEvent, build_channels
+        from src.services.market_monitor_service import us_market_summary
+
+        logger.info("[market_monitor] 生成美股盘前总结...")
+        try:
+            data = us_market_summary()
+            indices = data.get("indices", [])
+            if not indices:
+                logger.warning("[market_monitor] 美股数据为空，跳过推送")
+                return
+
+            # 构建推送内容
+            title = "🇺🇸 美股盘前总结"
+            lines = [data.get("summary", "")]
+            lines.append("")
+            for idx in indices:
+                arrow = "🔴" if idx["change_pct"] > 0 else "🟢" if idx["change_pct"] < 0 else "⚪"
+                lines.append(f"{arrow} {idx['name']} {idx['close']:,.0f} "
+                           f"({'+' if idx['change_pct']>0 else ''}{idx['change_pct']}%)")
+            lines.append(f"\n📅 数据日期: {indices[0].get('date','')}")
+
+            alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
+            channels = build_channels(alerts_cfg)
+            event = AlertEvent(
+                title=title,
+                body="\n".join(lines),
+                event_key=f"us_summary:{datetime.now().strftime('%Y%m%d')}",
+                event_type="us_market_summary",
+            )
+            for ch in channels:
+                ch.send(event)
+            logger.info(f"[market_monitor] 美股盘前总结推送完成: {data.get('summary','')}")
+        except Exception as e:
+            logger.error(f"[market_monitor] 美股盘前总结异常: {e}", exc_info=True)
+
+    def _run_sentiment_panel():
+        from src.notify import AlertEvent, build_channels
+        from src.services.market_monitor_service import get_full_panel
+
+        logger.info("[market_monitor] 刷新市场情绪面板...")
+        try:
+            d = get_full_panel()
+            errors = d.get("errors", [])
+
+            # 构建推送内容
+            title = "📊 市场情绪快报"
+            lines = []
+            lines.append(f"🕐 {d.get('updated_at','')}")
+            lines.append("")
+            lines.append("━━━ 综合评分 ━━━")
+            lines.append(f"市场情绪: {d['market_sentiment_score']} {d['market_sentiment_label']}")
+            lines.append(f"投机情绪: {d['speculation_sentiment_score']} {d['speculation_sentiment_label']}")
+            lines.append(f"板块情绪: {d['sector_sentiment_score']} {d['sector_sentiment_label']}")
+            lines.append("")
+            lines.append("━━━ 投机情绪 ━━━")
+            lines.append(f"涨停{d['limit_up_count']}家 | 跌停{d['limit_down_count']}家 | "
+                        f"连板{d['consecutive_boards']}家 | 最高{d['max_board_height']}板 | "
+                        f"炸板率{d['failed_limit_rate']}%")
+            lines.append("")
+            lines.append("━━━ 市场情绪 ━━━")
+            lines.append(f"上涨{d['up_count']} | 下跌{d['down_count']} | "
+                        f"涨跌比{d['up_down_ratio']}")
+            # 主要指数
+            for name, idx in d.get("index_strength", {}).items():
+                arrow = "🔴" if idx["change_pct"] > 0 else "🟢" if idx["change_pct"] < 0 else "⚪"
+                lines.append(f"{arrow} {name} {'+' if idx['change_pct']>0 else ''}{idx['change_pct']}%")
+            lines.append("")
+            lines.append("━━━ 板块情绪 ━━━")
+            concepts = d.get("top_concepts", [])[:5]
+            if concepts:
+                lines.append("热门概念:")
+                for c in concepts:
+                    arrow = "🔴" if c["change_pct"] > 0 else "🟢"
+                    lines.append(f"  {arrow} {c['name']} {'+' if c['change_pct']>0 else ''}{c['change_pct']}% — {c.get('leader','')}")
+
+            if errors:
+                lines.append(f"\n⚠️ {len(errors)}个子项出错: {'; '.join(errors[:2])}")
+
+            alerts_cfg = _load_yaml(job_cfg.get("alerts_config", "./config/alerts.yaml"))
+            channels = build_channels(alerts_cfg)
+            event = AlertEvent(
+                title=title,
+                body="\n".join(lines),
+                event_key=f"sentiment:{datetime.now().strftime('%Y%m%d%H%M')}",
+                event_type="market_sentiment",
+            )
+            for ch in channels:
+                ch.send(event)
+            logger.info(f"[market_monitor] 情绪面板推送完成: 涨停{d['limit_up_count']}家, "
+                       f"市场情绪{d['market_sentiment_score']}")
+        except Exception as e:
+            logger.error(f"[market_monitor] 情绪面板异常: {e}", exc_info=True)
+
+    def _run():
+        if monitor_type == "us_summary":
+            _run_us_summary()
+        else:
+            _run_sentiment_panel()
+
+    return _run
+
+
 # Job 类型 → (可调用工厂, 默认触发方式)
 JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
     "buy_sell_alerts": _build_buy_sell_alerts_callable,
@@ -321,6 +436,7 @@ JOB_BUILDERS: dict[str, Callable[[dict], Callable[[], Any]]] = {
     "scraper": _build_scraper_callable,
     "screener": _build_screener_callable,
     "ml_retrain": _build_ml_retrain_callable,
+    "market_monitor": _build_market_monitor_callable,
 }
 
 
@@ -415,7 +531,7 @@ def build_scheduler(config: dict, scheduler_cls=None):
             # TRIG-3：跳过非交易日（默认 buy_sell_alerts/screener 开启）
             skip_non_trading = job_cfg.get(
                 "skip_non_trading_day",
-                job_type in ("buy_sell_alerts", "screener"),
+                job_type in ("buy_sell_alerts", "screener", "market_monitor"),
             )
             func = _wrap_with_timing(
                 raw_func, job_id or job_type, warn_threshold,

@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.core.cache_policy import ttl_for
 from src.data.providers.cache_manager import CacheManager
 from src.utils.logger import get_logger
 
@@ -90,18 +91,31 @@ class DatasetBuilder:
         cache_ttl_hours: int = 24 * 7,  # 数据缓存一周
         label_horizon_days: int = DEFAULT_LABEL_HORIZON_DAYS,
         sample_freq: str = "W-FRI",  # 每周五采样
+        data_provider=None,
     ):
+        """
+        Args:
+            data_provider: 行情数据源（需提供 get_scope_codes / get_daily_ohlcv 等）。
+                缺省时按需自建 ScreenerDataProvider。**显式注入是解开
+                analysis↔ml 循环依赖的关键**：ml 不再在模块层依赖 analysis。
+        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.cache = CacheManager(cache_dir=cache_dir, ttl_hours=cache_ttl_hours, max_mb=2048)
         self.label_horizon = int(label_horizon_days)
         self.sample_freq = sample_freq
+        self._screener_provider = data_provider
 
     # ---------------- 数据源 ----------------
 
     def _get_screener_provider(self):
-        """延迟创建 ScreenerDataProvider 单例（akshare→pytdx→Baostock 三级 fallback）"""
-        if not hasattr(self, "_screener_provider"):
+        """
+        取行情数据源：优先用注入的实例；未注入时才按需自建。
+
+        自建路径是**函数内**导入 analysis 层，属运行期依赖而非模块级依赖，
+        因此 `import src.ml.*` 不会拉起 analysis，静态依赖图上无环。
+        """
+        if self._screener_provider is None:
             from src.analysis.screening.data_provider import ScreenerDataProvider
             self._screener_provider = ScreenerDataProvider()
         return self._screener_provider
@@ -122,7 +136,7 @@ class DatasetBuilder:
                 logger.error(f"拉取沪深 300 成分股失败: {e}", exc_info=True)
                 return []
 
-        codes = self.cache.get_or_fetch(cache_key, _fetch, ttl_hours=24 * 30)
+        codes = self.cache.get_or_fetch(cache_key, _fetch, ttl_hours=ttl_for("ml_dataset"))
         logger.info(f"沪深 300 成分股: {len(codes)} 只")
         return codes or []
 

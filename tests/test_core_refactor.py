@@ -158,7 +158,7 @@ class TestMarketRegistry:
         spec = MarketSpec(
             key="a", label="X",
             config_path=Path("./x.yaml"),
-            fetcher_class_path="src.core.data_fetcher:AStockDataFetcher",
+            fetcher_class_path="src.data.fetchers:AStockDataFetcher",
             analyzer_class_path="src.core.analyzer:AStockAnalyzer",
         )
         with pytest.raises(ValueError, match="已存在"):

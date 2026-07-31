@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from src.analysis.screening.conditions_pkg.base import (
     BaseCondition,
+    RankingCondition,
     _MACrossCondition,
 )
 from src.analysis.screening.conditions_pkg.entry import (
@@ -27,9 +28,7 @@ from src.analysis.screening.conditions_pkg.entry import (
     KDJGoldCrossCondition,
     MACDHistPositiveCondition,
     MAGoldCrossCondition,
-    MLTopKCondition,
     MultiMABullCondition,
-    NorthboundFlowCondition,
     PriceAboveMACondition,
     PriceChangeCondition,
     RSIOversoldCondition,
@@ -52,6 +51,13 @@ from src.analysis.screening.conditions_pkg.exit import (
     VolumeBlowoffCondition,
     VolumePriceDivergenceCondition,
     WeeklyMACDTopDivergenceCondition,
+)
+from src.analysis.screening.conditions_pkg.factor import (
+    DividendYieldCondition,
+    LowVolatilityCondition,
+    MLTopKCondition,
+    MomentumRankCondition,
+    NorthboundFlowCondition,
 )
 from src.analysis.screening.conditions_pkg.fundamental import (
     ExcludeRiskCondition,
@@ -115,6 +121,9 @@ CONDITION_REGISTRY: dict[str, type] = {
     "bias": BIASCondition,
     "break_below_ma": BreakBelowMACondition,
     "volume_blowoff": VolumeBlowoffCondition,
+    "momentum_rank": MomentumRankCondition,
+    "low_volatility": LowVolatilityCondition,
+    "dividend_yield": DividendYieldCondition,
     "atr_trailing_stop": ATRTrailingStopCondition,
 }
 
@@ -148,6 +157,10 @@ __all__ = [
     "BoxBreakoutWithVolumeCondition",
     "MLTopKCondition",
     "NorthboundFlowCondition",
+    "LowVolatilityCondition",
+    "MomentumRankCondition",
+    "RankingCondition",
+    "DividendYieldCondition",
     "MADeathCrossCondition",
     "RSIOverboughtCondition",
     "StopLossCondition",

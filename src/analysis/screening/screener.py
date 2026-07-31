@@ -17,7 +17,11 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 
 import pandas as pd
 
-from src.analysis.screening.conditions import BaseCondition, ExcludeRiskCondition
+from src.analysis.screening.conditions import (
+    BaseCondition,
+    ExcludeRiskCondition,
+    RankingCondition,
+)
 from src.analysis.screening.config_schema import parse_screen_config
 from src.analysis.screening.data_provider import ScreenerDataProvider
 from src.utils.logger import get_logger
@@ -124,11 +128,14 @@ def _evaluate_row(
         try:
             if not cond.evaluate_full(row, ohlcv_df):
                 return False, name, code, f"cond_failed:{cond.name}", ml_score
-            # B 路径：捕获 ml_top_k 条件计算出的预测分
+            # 捕获打分类条件算出的分数（ml_top_k 用 _ml_score；
+            # RankingCondition 子类统一用 _rank_score），供全局 top-K 截断
             if getattr(cond, "name", "") == "ml_top_k":
                 score = row.get("_ml_score")
-                if score is not None and pd.notna(score):
-                    ml_score = float(score)
+            else:
+                score = row.get("_rank_score")
+            if score is not None and pd.notna(score):
+                ml_score = float(score)
         except Exception as e:
             logger.debug(f"{code} 条件 {cond.name} 异常: {e}")
             return False, name, code, f"error:{cond.name}:{type(e).__name__}", ml_score
@@ -288,20 +295,26 @@ class StockScreener:
             logger.info("筛选结果为空")
             return pd.DataFrame()
 
-        # B 路径：若包含 ml_top_k 条件，做 top-K 截断（按 ml_score 排序）
-        ml_top_k_cond = next(
-            (c for c in self._conditions if getattr(c, "name", "") == "ml_top_k"),
+        # 打分类条件的 top-K 截断（ml_top_k / momentum_rank 等）。
+        # 排序是**全局**的，必须等 Pass2 全部候选算完才能截断，故放在这里。
+        rank_cond = next(
+            (c for c in self._conditions
+             if getattr(c, "name", "") == "ml_top_k" or isinstance(c, RankingCondition)),
             None,
         )
-        if ml_top_k_cond is not None and self._ml_scores:
+        if rank_cond is not None and self._ml_scores:
             code_col = "代码" if "代码" in candidates.columns else "code"
             candidates = candidates.copy()
-            candidates["ml_score"] = candidates[code_col].astype(str).map(self._ml_scores)
-            # 按 ml_score 降序取 top_k
-            top_k = int(getattr(ml_top_k_cond, "top_k", 50))
+            score_col = "ml_score" if getattr(rank_cond, "name", "") == "ml_top_k" \
+                else "rank_score"
+            candidates[score_col] = candidates[code_col].astype(str).map(self._ml_scores)
+            top_k = int(getattr(rank_cond, "top_k", 50))
+            ascending = not getattr(rank_cond, "higher_is_better", True)
             before = len(candidates)
-            candidates = candidates.sort_values("ml_score", ascending=False, na_position="last").head(top_k)
-            logger.info(f"ml_top_k 截断: {before} → {len(candidates)} (top_k={top_k})")
+            candidates = candidates.sort_values(
+                score_col, ascending=ascending, na_position="last").head(top_k)
+            logger.info(
+                f"{rank_cond.name} 排序截断: {before} → {len(candidates)} (top_k={top_k})")
 
         # 整理输出列
         result = self._format_output(candidates)

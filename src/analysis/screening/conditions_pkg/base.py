@@ -152,3 +152,54 @@ class _MACrossCondition(BaseCondition):
             return False
 
 
+
+
+class RankingCondition(BaseCondition):
+    """
+    **打分排序条件**基类——把"取前 N 名"从 ml_top_k 的专属能力泛化出来。
+
+    与普通条件的区别：普通条件只回答"通过/不通过"，无法表达
+    "全市场动量最强的 20 只"这类**相对**筛选（动量轮动、因子选股都需要）。
+
+    子类实现 `score()` 返回打分，筛选器会：
+      1. 先用 evaluate_full 做硬性初筛（可选，默认全通过）
+      2. 收集所有候选的分数，降序取前 `top_k`
+
+    注意：排序是**全局**的，因此该条件必然要等所有候选都算完才能截断，
+    由 StockScreener 在 Pass2 结束后统一处理。
+    """
+
+    #: 取分数最高的前 N 名
+    top_k: int = 50
+    #: 分数低于此值直接淘汰（None 表示不限制）
+    min_score: float | None = None
+    #: True=分数越大越好
+    higher_is_better: bool = True
+
+    def score(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> float:
+        """返回该股票的打分；无法计算时返回 NaN（会被排到最后）"""
+        raise NotImplementedError
+
+    def evaluate_spot(self, spot_row: pd.Series) -> bool:
+        return True
+
+    def evaluate_full(self, spot_row: pd.Series, ohlcv_df: pd.DataFrame) -> bool:
+        """
+        硬性初筛：算出分数并暂存到 spot_row，供筛选器收集。
+        分数算不出（NaN）或低于 min_score 时直接淘汰。
+        """
+        try:
+            value = self.score(spot_row, ohlcv_df)
+        except Exception as e:
+            logger.debug(f"[{self.name}] 打分异常，按不通过处理: {type(e).__name__}: {e}")
+            return False
+        if value is None or pd.isna(value):
+            return False
+        if self.min_score is not None and value < self.min_score:
+            return False
+        # 借 spot_row 回传分数（与 ml_top_k 的既有约定一致）
+        try:
+            spot_row["_rank_score"] = float(value)
+        except Exception:
+            pass
+        return True

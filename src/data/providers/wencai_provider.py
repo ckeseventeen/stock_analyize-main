@@ -102,6 +102,19 @@ class WencaiProvider:
         """
         if cls._V8_PROBE_RESULT is not None:
             return cls._V8_PROBE_RESULT
+
+        # v8_guard 已在进程启动时禁用 MiniRacer（见 src/__init__.py）：
+        # 此时子进程探测即使通过也没意义——本进程用不了，直接判定不可用，
+        # 顺带省掉一次 ~2s 的子进程启动
+        try:
+            from src.core.v8_guard import guard_status
+            if guard_status().get("applied"):
+                cls._V8_PROBE_RESULT = False
+                logger.info("v8_guard 已禁用 V8，问财兜底不可用（走 Baostock）")
+                return False
+        except Exception:
+            pass
+
         import subprocess
         import sys
         try:

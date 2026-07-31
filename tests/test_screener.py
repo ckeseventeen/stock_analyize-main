@@ -279,16 +279,35 @@ class TestWencaiV8Guard:
         assert WencaiProvider._V8_PROBE_RESULT is False
 
     def test_probe_success_enables_provider(self, monkeypatch):
+        """V8 守卫未生效时（如显式 STOCK_ANALYZE_ENABLE_V8=1），探测通过则可用"""
         import subprocess as sp
 
+        import src.core.v8_guard as v8g
         from src.data.providers.wencai_provider import WencaiProvider
 
+        # 守卫在进程启动时已装（见 src/__init__.py），此处模拟"未装"的场景
+        monkeypatch.setattr(v8g, "guard_status",
+                            lambda: {"applied": False, "reason": "", "env_override": True})
         monkeypatch.setattr(
             sp, "run",
             lambda *a, **k: SimpleNamespaceReturn(returncode=0))
         wp = WencaiProvider()
         wp._pywencai = object()
         assert wp.is_available() is True
+
+    def test_guard_short_circuits_probe(self, monkeypatch):
+        """守卫生效时直接判不可用，不必再花 ~2s 起子进程探测"""
+        import subprocess as sp
+
+        from src.data.providers.wencai_provider import WencaiProvider
+
+        def should_not_run(*a, **k):
+            raise AssertionError("守卫生效时不应再启动探测子进程")
+
+        monkeypatch.setattr(sp, "run", should_not_run)
+        wp = WencaiProvider()
+        wp._pywencai = object()
+        assert wp.is_available() is False
 
 
 class SimpleNamespaceReturn:

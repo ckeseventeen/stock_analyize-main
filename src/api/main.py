@@ -157,7 +157,10 @@ def _build_valuation_charts(result: dict, run, val_type: str) -> dict:
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok"}
+    """健康检查（含 V8 守卫状态——它决定问财数据源是否可用）"""
+    from src.core.v8_guard import guard_status
+
+    return {"status": "ok", "v8_guard": guard_status()}
 
 
 @app.get("/api/config/validate")

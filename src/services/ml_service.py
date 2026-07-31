@@ -73,13 +73,28 @@ def model_status() -> dict:
             meta_data = json.loads(MODEL_META_PATH.read_text(encoding="utf-8"))
         except Exception as e:
             logger.warning(f"读取模型元信息失败: {type(e).__name__}: {e}")
+
+    # 键名对齐 trainer 实际写入的字段（n_samples/feature_cols/label_col）。
+    # 历史上读的是 train_samples/features/label_horizon_days——三个都不存在，
+    # 于是"已训练"的模型在前端显示样本数与特征数为空
+    features = meta_data.get("feature_cols") or meta_data.get("features") or []
+    label_col = meta_data.get("label_col", "")
+    horizon = DEFAULT_LABEL_HORIZON_DAYS
+    if label_col.endswith("d") and "_" in label_col:      # y_excess_ret_20d → 20
+        tail = label_col.rsplit("_", 1)[-1].rstrip("d")
+        horizon = int(tail) if tail.isdigit() else horizon
+
     return {
         "trained": True,
         "model_path": str(MODEL_PATH),
         "cv_ic_mean": meta_data.get("cv_ic_mean"),
-        "train_samples": meta_data.get("train_samples"),
-        "features": meta_data.get("features", []),
-        "label_horizon": meta_data.get("label_horizon_days", DEFAULT_LABEL_HORIZON_DAYS),
+        "cv_ic_std": meta_data.get("cv_ic_std"),
+        "cv_rmse_mean": meta_data.get("cv_rmse_mean"),
+        "train_samples": meta_data.get("n_samples") or meta_data.get("train_samples"),
+        "n_features": meta_data.get("n_features") or len(features),
+        "features": features,
+        "label_col": label_col,
+        "label_horizon": horizon,
         "trained_at": meta_data.get("trained_at"),
     }
 

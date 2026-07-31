@@ -1,0 +1,13 @@
+"""
+src/monitors/ — 监控模块包
+
+包含：
+  - BaseMonitor          : 监控任务抽象基类
+  - BuySellAlertMonitor  : 买入/卖出信号预警（统一入口）
+  - EarningsMonitor      : 财报披露监控
+"""
+from src.monitors.base import BaseMonitor
+from src.monitors.buy_sell_alerts import BuySellAlertMonitor
+from src.monitors.earnings_monitor import EarningsMonitor
+
+__all__ = ["BaseMonitor", "BuySellAlertMonitor", "EarningsMonitor"]

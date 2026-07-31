@@ -23,6 +23,7 @@ ta>=0.11.0                # 技术指标（MA/MACD/RSI/布林带）
 scipy>=1.11.0             # 信号处理（背离极值检测等）
 backtrader>=1.9.78.123    # 回测引擎
 matplotlib>=3.8.0         # CLI 估值图输出（main.py）
+optuna>=4.0.0             # 参数寻优（TPE 贝叶斯，strategy/backtest/optimizer.py）
 
 # ── 机器学习（ML 因子自学习）──
 lightgbm>=4.1.0           # GBDT 模型（原生 API，无需 sklearn）

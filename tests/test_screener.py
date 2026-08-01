@@ -254,65 +254,53 @@ class TestRequiredDailyBars:
 
 @pytest.mark.unit
 class TestWencaiV8Guard:
-    """pywencai 的 py_mini_racer 在部分环境 FATAL 崩进程 → 必须子进程探测"""
+    """
+    pywencai 的 py_mini_racer 在部分环境 FATAL 崩进程 → 必须隔离子进程探测。
+
+    探测逻辑统一收在 src/core/v8_guard；这里只验证问财**跟随**探测结论，
+    不再自己重复探测一遍（探测本身的用例见 tests/test_v8_guard.py）。
+    """
 
     @pytest.fixture(autouse=True)
     def _reset_probe_cache(self):
+        from src.core import v8_guard
         from src.data.providers.wencai_provider import WencaiProvider
 
         WencaiProvider._V8_PROBE_RESULT = None
+        v8_guard._reset_probe_for_tests()
         yield
         WencaiProvider._V8_PROBE_RESULT = None
+        v8_guard._reset_probe_for_tests()
 
-    def test_probe_failure_disables_provider(self, monkeypatch):
-        import subprocess as sp
-
+    def test_unsafe_v8_disables_provider(self, monkeypatch):
+        import src.data.providers.wencai_provider as wp_mod
         from src.data.providers.wencai_provider import WencaiProvider
 
-        monkeypatch.setattr(
-            sp, "run",
-            lambda *a, **k: SimpleNamespaceReturn(returncode=1))
+        monkeypatch.setattr("src.core.v8_guard.v8_usable", lambda: False)
         wp = WencaiProvider()
         wp._pywencai = object()   # 假装 pywencai 已安装
         assert wp.is_available() is False
-        # 结果缓存：第二次不再探测
+        # 结论缓存到类上，第二次不再重新判定
         assert WencaiProvider._V8_PROBE_RESULT is False
+        assert wp_mod is not None
 
-    def test_probe_success_enables_provider(self, monkeypatch):
-        """V8 守卫未生效时（如显式 STOCK_ANALYZE_ENABLE_V8=1），探测通过则可用"""
-        import subprocess as sp
-
-        import src.core.v8_guard as v8g
+    def test_safe_v8_enables_provider(self, monkeypatch):
+        """V8 探测通过时问财应可用——一刀切禁用会白白丢掉一个兜底源"""
         from src.data.providers.wencai_provider import WencaiProvider
 
-        # 守卫在进程启动时已装（见 src/__init__.py），此处模拟"未装"的场景
-        monkeypatch.setattr(v8g, "guard_status",
-                            lambda: {"applied": False, "reason": "", "env_override": True})
-        monkeypatch.setattr(
-            sp, "run",
-            lambda *a, **k: SimpleNamespaceReturn(returncode=0))
+        monkeypatch.setattr("src.core.v8_guard.v8_usable", lambda: True)
         wp = WencaiProvider()
         wp._pywencai = object()
         assert wp.is_available() is True
 
-    def test_guard_short_circuits_probe(self, monkeypatch):
-        """守卫生效时直接判不可用，不必再花 ~2s 起子进程探测"""
-        import subprocess as sp
-
+    def test_missing_pywencai_is_unavailable_regardless(self, monkeypatch):
+        """没装 pywencai 时，V8 再安全也不可用"""
         from src.data.providers.wencai_provider import WencaiProvider
 
-        def should_not_run(*a, **k):
-            raise AssertionError("守卫生效时不应再启动探测子进程")
-
-        monkeypatch.setattr(sp, "run", should_not_run)
+        monkeypatch.setattr("src.core.v8_guard.v8_usable", lambda: True)
         wp = WencaiProvider()
-        wp._pywencai = object()
+        wp._pywencai = None
         assert wp.is_available() is False
-
-
-class SimpleNamespaceReturn:
-    def __init__(self, returncode):
-        self.returncode = returncode
 
 
 @pytest.mark.unit

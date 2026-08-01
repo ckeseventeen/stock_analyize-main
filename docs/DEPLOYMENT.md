@@ -88,7 +88,8 @@ docker compose logs -f webui  # 看日志
 | `SCHEDULER_DISABLED` | — | 设 `1` 时进程内不启动调度器（webui/app 容器用） |
 | `SCHEDULER_ENABLED` | — | 设 `true` 时启用调度器（scheduler 容器用） |
 | `STOCK_ANALYZE_KEEP_PROXY` | — | 设 `1` 保留系统代理；默认会自适应探测直连/代理择优 |
-| `STOCK_ANALYZE_ENABLE_V8` | — | 设 `1` 关闭 V8 崩溃守卫（见下节） |
+| `STOCK_ANALYZE_ENABLE_V8` | — | 设 `1` 完全不装 V8 守卫，直通（见下节） |
+| `STOCK_ANALYZE_DISABLE_V8` | — | 设 `1` 跳过探测直接硬禁用 V8（已知会崩的环境） |
 | `STOCK_ANALYZE_BAOSTOCK_BUDGET` | `300` | Baostock 全A兜底的时间预算（秒） |
 | `STOCK_ANALYZE_TTL_SCALE` | `1.0` | 缓存 TTL 整体缩放，调试时可设 `0.5` |
 | `SCREENER_STRICT` | — | 设 `1` 时未知筛选条件直接抛错（CI 用） |
@@ -108,16 +109,44 @@ docker compose logs -f webui  # 看日志
 这是 **py_mini_racer(V8) 初始化 FATAL 中止**——不是异常，`try/except` 拦不住，
 进程被当场杀死。akshare **自身依赖** mini-racer（用于部分数据源的 JS 解密）。
 
-项目已内置守卫（`src/core/v8_guard.py`），在任何模块导入前把 `MiniRacer`
-换成"实例化即抛异常"的桩，使其降级为可捕获的失败并走多源降级链。
-确认守卫是否生效：
+项目已内置守卫（`src/core/v8_guard.py`）。它**不是**一律禁用 V8——那样会误伤
+美股：`ak.stock_us_daily`（新浪）必须靠 V8 解密，而东财美股接口在国内网络常年
+不通，新浪一断美股就彻底没数据源。
+
+而 V8 是否 FATAL **因环境而异**，所以守卫采用**隔离子进程懒探测**：首次真正
+用到 V8 时，先起一个独立子进程初始化一次 V8——
+
+- 子进程正常退出 → 本机 V8 安全，放行真实 `MiniRacer`（美股、问财照常可用）
+- 子进程被 FATAL 杀死（非零退出码）→ 后续实例化抛可捕获异常，走多源降级链，
+  主进程不受影响
+
+探测结果按 (解释器路径, mini-racer 版本) 落盘缓存 7 天，只有第一次付 ~1-2s
+子进程启动成本；从不碰 V8 的进程完全不付费。
+
+确认守卫状态与探测结论：
 
 ```bash
 curl http://localhost:8600/api/health
-# {"status":"ok","v8_guard":{"applied":true,...}}
+# {"status":"ok","v8_guard":{"applied":true,"mode":"lazy",
+#  "probe":{"probed":true,"safe":true,"reason":"子进程 V8 初始化成功（缓存）"}}}
 ```
 
-若你的环境 V8 正常，可设 `STOCK_ANALYZE_ENABLE_V8=1` 关闭守卫以恢复问财数据源。
+`probe.safe` 为 `false` 说明本机 V8 确实会崩，此时问财与新浪美股不可用属预期行为。
+
+**这是强信号而非证明**：子进程能初始化，不代表主进程在任意并发时序下都安全。
+若线上仍观测到 FATAL，设 `STOCK_ANALYZE_DISABLE_V8=1` 硬禁用（跳过探测）。
+反之若确信本机 V8 无恙、想省掉探测开销，设 `STOCK_ANALYZE_ENABLE_V8=1` 直通。
+
+### 美股查不到 / 港美股按名称搜不到
+
+美股行情走「新浪（需 V8）→ 东财（105./106./107. 前缀轮询）」。若两者都失败：
+
+1. 先看 `/api/health` 的 `v8_guard.probe.safe`——`false` 则新浪这条路是断的
+2. 再看东财是否可达（国内直连常被拒、走代理也常不通）：
+   `curl 'https://63.push2his.eastmoney.com/api/qt/stock/kline/get?secid=105.AAPL&klt=101&fqt=1&fields1=f1&fields2=f51,f52,f53,f54,f55,f56'`
+
+港美股的**搜索池只来自关注列表配置**（`config/us_stocks.yaml` 等），不是全市场
+名称表——没配进去的标的按名称搜不到，但直接输代码仍可分析。
 
 ### 筛选结果为 0
 

@@ -93,43 +93,26 @@ class WencaiProvider:
     @classmethod
     def _probe_mini_racer(cls) -> bool:
         """
-        在**子进程**里探测 py_mini_racer(V8) 能否初始化。
+        py_mini_racer(V8) 在本环境能否安全初始化。
 
         背景：pywencai 依赖 py_mini_racer 执行同花顺 JS 加密；某些环境下
         V8 初始化会直接 FATAL（partition_address_space Check failed），
-        **杀死整个 Python 进程且无法 try/except 捕获**。必须隔离到子进程
-        探测一次，失败则永久禁用问财兜底（走 Baostock）。
+        **杀死整个 Python 进程且无法 try/except 捕获**。
+
+        探测逻辑统一收在 src/core/v8_guard（隔离子进程 + 落盘缓存），
+        这里只取结论，避免两处各探测一遍。
         """
         if cls._V8_PROBE_RESULT is not None:
             return cls._V8_PROBE_RESULT
-
-        # v8_guard 已在进程启动时禁用 MiniRacer（见 src/__init__.py）：
-        # 此时子进程探测即使通过也没意义——本进程用不了，直接判定不可用，
-        # 顺带省掉一次 ~2s 的子进程启动
         try:
-            from src.core.v8_guard import guard_status
-            if guard_status().get("applied"):
-                cls._V8_PROBE_RESULT = False
-                logger.info("v8_guard 已禁用 V8，问财兜底不可用（走 Baostock）")
-                return False
-        except Exception:
-            pass
-
-        import subprocess
-        import sys
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-c",
-                 "import py_mini_racer; py_mini_racer.MiniRacer().eval('1+1')"],
-                capture_output=True, timeout=30,
-            )
-            cls._V8_PROBE_RESULT = proc.returncode == 0
+            from src.core.v8_guard import v8_usable
+            cls._V8_PROBE_RESULT = v8_usable()
         except Exception:
             cls._V8_PROBE_RESULT = False
         if not cls._V8_PROBE_RESULT:
             logger.warning(
-                "py_mini_racer(V8) 在本机无法初始化（会 FATAL 崩进程），"
-                "问财兜底已禁用，spot 数据将走 Baostock"
+                "py_mini_racer(V8) 在本机不可用（会 FATAL 崩进程），"
+                "问财兜底已禁用，spot 数据将走其他源"
             )
         return cls._V8_PROBE_RESULT
 

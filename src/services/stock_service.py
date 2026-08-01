@@ -232,6 +232,9 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
     # 名称匹配双侧去空格：老数据源名称带对齐空格（"五 粮 液"），
     # 且磁盘名称缓存（24h）里可能仍是旧格式
     q_compact = _compact_name(q)
+    # 名称匹配大小写不敏感：中文名无大小写之分，但港美股名称是英文
+    # （搜 "roblox" 必须能命中 "Roblox"），故双侧 casefold 后再比
+    q_fold = q_compact.casefold()
     by_code, by_name, by_pinyin = [], [], []
 
     # 拼音首字母搜索（仅对纯字母查询启用）
@@ -250,7 +253,7 @@ def search_stocks(query: str, market: str = "a", limit: int = 10) -> list[dict]:
         name_compact = _compact_name(name)
         if code.upper().startswith(q_upper):
             by_code.append({"code": code, "name": name_compact})
-        elif q_compact and q_compact in name_compact:
+        elif q_fold and q_fold in name_compact.casefold():
             by_name.append({"code": code, "name": name_compact})
         elif _get_initials is not None:
             initials = _get_initials(name_compact)

@@ -165,6 +165,20 @@ class TestStockSearchApi:
         assert r.status_code == 200
         assert r.json() == [{"code": "600519", "name": "贵州茅台"}]
 
+    def test_us_name_search_is_case_insensitive(self, client, monkeypatch):
+        """线上报障：搜 "roblox" 查不到 Roblox。
+
+        中文名无大小写之分，所以 A 股一直没暴露这个 bug；港美股名称是英文，
+        原实现拿原样子串比对，大小写不一致就永远搜不到。
+        """
+        import src.core.config_io as cio
+        monkeypatch.setattr(
+            cio, "list_stocks_from_market_config",
+            lambda m: [{"code": "RBLX", "name": "Roblox"}] if m == "us" else [])
+        for q in ("roblox", "ROBLOX", "Roblox", "blox"):
+            r = client.get("/api/stocks/search", params={"q": q, "market": "us"})
+            assert r.json() == [{"code": "RBLX", "name": "Roblox"}], f"查询 {q!r} 落空"
+
     def test_search_not_shadowed_by_market_route(self, client):
         # /api/stocks/search 不应被 /{market}/{code} 吞掉
         r = client.get("/api/stocks/search", params={"q": "x", "market": "hk"})

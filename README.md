@@ -107,7 +107,7 @@ stock_analyize-main/
 │   │   ├── fallback.py             # ★ 统一多源降级链 FallbackChain
 │   │   ├── cache_policy.py         # ★ 缓存 TTL 单点真相（按数据变化频率分档）
 │   │   ├── config_validation.py    # ★ YAML 加载期校验（11 个配置）
-│   │   ├── v8_guard.py             # ★ py_mini_racer FATAL 崩溃守卫
+│   │   ├── v8_guard.py             # ★ V8 崩溃守卫（子进程探测，崩才拦）
 │   │   ├── columns.py              # 中英文列名映射（跨层数据契约）
 │   │   ├── config_io.py            # YAML 读写 + 路径常量（唯一权威）
 │   │   ├── market_registry.py      # 市场注册中心（加市场只改一处）
@@ -472,7 +472,7 @@ pre-commit install
 | **分层** | test_service_layering.py | **API 只依赖 services（防越层腐化）** |
 | 数据健康 | test_data_health.py | EMPTY 与 FAILED 可区分、降级链语义 |
 | 数据质量 | test_screener.py | 全A行情三道门校验（含两个线上事故值回归） |
-| 稳定性 | test_v8_guard.py | V8 FATAL 守卫（曾导致服务进程猝死） |
+| 稳定性 | test_v8_guard.py | V8 守卫双向契约：会崩必拦、不崩必放行（两次事故回归） |
 | 因子 | test_expression_factor.py | 表达式 AST 白名单安全、IC/分层/衰减 |
 | 回测 | test_vector_engine.py / test_optimizer.py | 无未来函数、成交口径、寻优与 Walk-Forward |
 | 条件 | test_composite_conditions.py | AND/OR 嵌套语义、两轮筛选配合 |

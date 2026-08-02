@@ -75,6 +75,28 @@ def _jsonable(v: Any) -> Any:
     return v
 
 
+# stock_valuation 的 low/mid/high 缺省值。用于判断"调用方是否自定义过区间"——
+# 没自定义时把 PE 档位套到 PS 上是错的量纲，需要按标的自身 PS 重算
+_PE_RANGE_DEFAULT = (10.0, 20.0, 30.0)
+
+
+def _unusable_multiple(v: Any) -> bool:
+    """
+    估值倍数是否不可用（None / NaN / 非正）。
+
+    必须显式判 NaN：分析器对亏损股给出的 current_pe 是 **NaN 而非 None**，
+    而 `NaN <= 0` 恒为 False——只写 `v is None or v <= 0` 会漏掉全部亏损股，
+    页面于是显示一排负目标价。
+    """
+    if v is None:
+        return True
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return True
+    return math.isnan(f) or f <= 0
+
+
 def _df_records(df) -> list[dict]:
     import pandas as pd
     if df is None or df.empty:
@@ -217,20 +239,52 @@ def stock_valuation(market: str, code: str,
     except Exception as e:
         raise HTTPException(502, f"数据源失败: {e}")
     if not run.result:
-        raise HTTPException(404, "分析结果为空，请检查代码")
+        # 区分"数据源没给财务数据"与"确实查不到这只股票"——
+        # 一律说"请检查代码"会让用户以为是自己输错了，实际多是数据源限流
+        if run.fin_df is None or run.fin_df.empty:
+            raise HTTPException(
+                502, f"{code} 的财务数据暂时取不到（数据源限流或不可达），请稍后重试")
+        raise HTTPException(404, f"{code} 分析结果为空，请确认代码与市场是否匹配")
+
+    # 亏损股用 PE 估值毫无意义（负 EPS 会推出负目标价），自动改用 PS。
+    # 美股成长股大量处于这种状态，不回退的话页面只能显示一排负数。
+    basis, basis_note = valuation, ""
+    if valuation == "pe" and _unusable_multiple(run.result.get("current_pe")):
+        try:
+            cur_ps = run.result.get("current_ps")
+            # 调用方没自定义区间时，PE 的 10/20/30 套到 PS 上是错的量纲
+            # （Roblox 当前 PS 仅 5，会推出 2x/4x/6x 现价的假目标），
+            # 改成围绕该股自身当前 PS 取档
+            if (low, mid, high) == _PE_RANGE_DEFAULT and not _unusable_multiple(cur_ps):
+                ps_range = [round(cur_ps * k, 2) for k in (0.7, 1.0, 1.3)]
+            else:
+                ps_range = [low, mid, high]
+            run_ps = vsvc.run_valuation(market, vsvc.build_stock_config(
+                code, cfg["name"], market, "ps", ps_range))
+            if run_ps.result and not _unusable_multiple(run_ps.result.get("current_ps")):
+                run, basis = run_ps, "ps"
+                basis_note = (f"该股 TTM 净利润为负，PE 估值不适用，已自动改用 PS（市销率）；"
+                              f"情景区间取自当前 PS 的 {ps_range[0]}/{ps_range[1]}/{ps_range[2]} 倍档")
+            else:
+                basis_note = "该股 TTM 净利润为负且无有效 PS，估值指标暂不适用"
+        except Exception as e:
+            basis_note = f"该股 TTM 净利润为负，PE 估值不适用；PS 回退亦失败：{e}"
+
     r = run.result
     label, level = vsvc.percentile_badge(r.get("hist_percentile", 0))
 
     # ── 图表就绪数据 ──
-    charts = _build_valuation_charts(r, run, valuation)
+    charts = _build_valuation_charts(r, run, basis)
 
     return {
         "core": _jsonable({k: r.get(k) for k in (
             "price", "current_pe", "current_ps", "hist_percentile",
             "ttm_revenue", "ttm_net_profit", "scenarios")}),
         "badge": {"label": label, "level": level},
+        "basis": basis,
+        "basis_note": basis_note,
         "targets": vsvc.target_price_rows(r),
-        "summary": vsvc.summary_rows(r, run.fin_df, valuation),
+        "summary": vsvc.summary_rows(r, run.fin_df, basis),
         "charts": _jsonable(charts),
     }
 
@@ -290,7 +344,11 @@ def stock_fcf(market: str, code: str, annual: bool = True):
     except Exception as e:
         raise HTTPException(502, f"FCF 数据源失败: {e}")
     if run.analyzed_df.empty or not run.score_res:
-        raise HTTPException(404, "FCF 财务数据为空（新股/数据源无记录）")
+        # 数据源故障（Yahoo 限流/不可达）不能报成"新股/无记录"——
+        # 那会让用户以为代码输错了，实际上过几秒重试就有数据
+        if run.fetch_status == "failed":
+            raise HTTPException(502, run.fetch_reason or "FCF 数据源暂时不可用，请稍后重试")
+        raise HTTPException(404, run.fetch_reason or "FCF 财务数据为空（新股/已退市/数据源无记录）")
     df = run.analyzed_df
     series = {}
     for col in ("operating_cash_flow", "capex", "fcf", "net_profit"):
@@ -627,12 +685,26 @@ def ml_status():
 
 @app.post("/api/ml/train")
 def ml_train():
-    """触发 ML 模型训练（后台异步执行）"""
+    """触发 ML 模型训练/重训（后台异步执行）"""
     from src.services import ml_service
 
     started, message = ml_service.start_training()
     return {"message": message, "started": started,
             "status": ml_service.training_status()}
+
+
+@app.get("/api/ml/training-status")
+def ml_training_status():
+    """
+    训练进度轮询端点。
+
+    训练要跑 5-15 分钟且是后台线程，前端只拿到"已启动"就没了下文——
+    用户无从判断是在跑还是挂了。这里把进程级训练状态暴露出去供轮询。
+    """
+    from src.services import ml_service
+
+    return {"training": ml_service.training_status(),
+            "model": ml_service.model_status()}
 
 
 # ============================================================================

@@ -106,6 +106,7 @@ tr:hover td{background:rgba(99,102,241,.05)}
     <span id="s-status" class="hint"></span>
   </div></div>
   <div class="metrics" id="s-metrics"></div>
+  <div id="s-basis-note"></div>
   <div class="card"><b>📊 估值分析图谱</b> <span class="hint">四格图 · 营收利润 / 历史估值 / 情景推演 / 指标总览</span>
     <div class="grid2" style="margin-top:10px">
       <div><div class="hint" style="margin:4px 0">📈 营收与净利润 + 毛利率</div><div class="chart" id="s-chart-revenue" style="height:220px"></div></div>
@@ -287,7 +288,8 @@ tr:hover td{background:rgba(99,102,241,.05)}
     <span id="ml-badge" class="hint">ML 模型: 检查中...</span>
     <button id="ml-train-btn" class="ghost" style="display:none">🔧 训练 ML 模型</button>
     <span id="ml-train-status" class="hint"></span>
-  </div></div>
+  </div>
+  <div id="ml-detail"></div></div>
   <div class="card"><div class="chart" id="bt-chart"></div></div>
   <div class="card"><div class="scroll" id="bt-table"></div></div>
 
@@ -515,6 +517,7 @@ async function analyzeStock(){
       <div class="metric" id="s-m-price"><div class="k">最新价</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pe"><div class="k">PE(TTM)</div><div class="v">…</div></div>
       <div class="metric" id="s-m-pct"><div class="k">历史分位</div><div class="v">…</div></div>`;
+    $('#s-basis-note').innerHTML='';   // 换标的时清掉上一只的估值基准说明
     busy($('#s-targets'));busy($('#s-summary'));busy($('#s-buy'));busy($('#s-sell'));
     busy($('#s-strat'));busy($('#s-fcf-score'));
     const pBasic=api(`/api/stocks/${mkt}/${code}`).then(b=>{
@@ -578,9 +581,14 @@ async function analyzeStock(){
         </tr>`).join('')+'</table>':'<span class="hint">无可判定策略</span>';
     }else{$('#s-strat').innerHTML=`<div class="err">${strat.reason}</div>`}
     if(val.status==='fulfilled'){const v=val.value;
-      $('#s-m-pe').innerHTML=`<div class="k">PE(TTM)</div><div class="v">${fmt(v.core.current_pe)}</div>`;
+      // 亏损股后端会自动把估值基准从 PE 切到 PS——指标卡跟着换标题，
+      // 否则用户只看到 "PE(TTM) —" 会以为是取数失败
+      const isPS=v.basis==='ps';
+      $('#s-m-pe').innerHTML=`<div class="k">${isPS?'PS(TTM)':'PE(TTM)'}</div>
+        <div class="v">${fmt(isPS?v.core.current_ps:v.core.current_pe)}</div>`;
       $('#s-m-pct').innerHTML=`<div class="k">历史分位</div><div class="v">${fmt(v.core.hist_percentile,1)}%
         <span class="badge b-${v.badge.level}">${v.badge.label}</span></div>`;
+      $('#s-basis-note').innerHTML=v.basis_note?`<div class="hint">ℹ️ ${v.basis_note}</div>`:'';
       $('#s-targets').innerHTML=table(v.targets);
       $('#s-summary').innerHTML=table(v.summary);
       // ── 四格估值分析图 ──
@@ -851,23 +859,84 @@ attachStockSearch('sc-bt-code','sc-bt-suggest','sc-bt-mkt');
 async function checkMLStatus(){
   try{
     const s=await api('/api/ml/status');
+    const btn=$('#ml-train-btn');
+    // 按钮常驻：原先只在"未训练"时显示，模型一旦训好按钮就永远消失，
+    // 特征管线改了想重训都没入口
+    btn.style.display='inline-block';
     if(s.trained){
       $('#ml-badge').innerHTML=`✅ ML 模型已训练 (IC=${fmt(s.cv_ic_mean,3)}, 样本=${s.train_samples})`;
+      btn.textContent='🔄 重新训练';
+      renderMLDetail(s);
     }else{
       $('#ml-badge').innerHTML='⚠️ ML 模型未训练（回测中 ML 策略将跳过）';
-      $('#ml-train-btn').style.display='inline-block';
+      btn.textContent='🔧 训练 ML 模型';
+      $('#ml-detail').innerHTML='';
     }
   }catch(e){$('#ml-badge').textContent='ML 状态未知'}
 }
 checkMLStatus();
 
+/* 模型详情：接口早就返回了特征名/IC 标准差/RMSE，之前一个都没展示 */
+function renderMLDetail(s){
+  // trainer 写的是 [{feature, gain}, ...]；也容忍 {name: gain} 形式
+  const imp=s.feature_importance||[];
+  const pairs=Array.isArray(imp)
+    ?imp.map(x=>[x.feature,x.gain])
+    :Object.entries(imp);
+  const top=pairs.filter(p=>p[0]!=null).sort((a,b)=>b[1]-a[1]).slice(0,12);
+  const max=top.length?top[0][1]:1;
+  $('#ml-detail').innerHTML=`
+    <div class="metrics" style="margin:10px 0">
+      <div class="metric"><div class="k">CV IC 均值</div><div class="v">${fmt(s.cv_ic_mean,4)}</div></div>
+      <div class="metric"><div class="k">IC 标准差</div><div class="v">${fmt(s.cv_ic_std,4)}</div></div>
+      <div class="metric"><div class="k">CV RMSE</div><div class="v">${fmt(s.cv_rmse_mean,2)}</div></div>
+      <div class="metric"><div class="k">特征数</div><div class="v">${s.n_features??'—'}</div></div>
+      <div class="metric"><div class="k">训练样本</div><div class="v">${s.train_samples??'—'}</div></div>
+    </div>
+    ${top.length?`<div class="hint" style="margin-bottom:6px">特征重要性 Top ${top.length}</div>`+
+      top.map(([k,v])=>`<div style="display:flex;align-items:center;gap:8px;margin:3px 0">
+        <span class="hint" style="width:150px;flex:none">${k}</span>
+        <span style="flex:1;background:var(--panel2);border-radius:4px;height:12px">
+          <span style="display:block;height:12px;border-radius:4px;width:${(100*v/max).toFixed(1)}%;
+            background:linear-gradient(90deg,var(--pri),var(--pri2))"></span></span>
+        <span class="hint" style="width:56px;text-align:right;flex:none">${fmt(v,0)}</span>
+      </div>`).join(''):'<span class="hint">该模型未记录特征重要性</span>'}`;
+}
+
+let mlPollTimer=null;
+async function pollTraining(){
+  try{
+    const r=await api('/api/ml/training-status');
+    const t=r.training||{};
+    if(t.running){
+      $('#ml-train-status').innerHTML=`<span class="spin"></span>训练中…（${t.started_at||''} 启动，通常 5-15 分钟）`;
+      return;
+    }
+    clearInterval(mlPollTimer);mlPollTimer=null;
+    $('#ml-train-btn').disabled=false;
+    if(t.error){
+      $('#ml-train-status').innerHTML=`<span class="err">训练失败：${t.error}</span>`;
+    }else{
+      $('#ml-train-status').textContent=`✅ 训练完成${t.finished_at?'（'+t.finished_at+'）':''}`;
+      checkMLStatus();   // 拉新指标刷新徽章与详情
+    }
+  }catch(e){/* 轮询失败不打断，下个周期重试 */}
+}
+
 $('#ml-train-btn').onclick=async()=>{
   $('#ml-train-btn').disabled=true;
-  busy($('#ml-train-status'),'训练中（5-15 分钟）...');
+  busy($('#ml-train-status'),'正在启动训练...');
   try{
     const r=await api('/api/ml/train',{method:'POST'});
     $('#ml-train-status').textContent=r.message;
-  }catch(e){$('#ml-train-status').innerHTML=`<span class="err">${e.message}</span>`}
+    // 训练是后台线程，不轮询的话用户看不到进度也不知道何时结束
+    if(mlPollTimer)clearInterval(mlPollTimer);
+    mlPollTimer=setInterval(pollTraining,5000);
+    pollTraining();
+  }catch(e){
+    $('#ml-train-btn').disabled=false;
+    $('#ml-train-status').innerHTML=`<span class="err">${e.message}</span>`;
+  }
 };
 
 $('#bt-go').onclick=async()=>{

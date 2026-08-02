@@ -93,6 +93,9 @@ def model_status() -> dict:
         "train_samples": meta_data.get("n_samples") or meta_data.get("train_samples"),
         "n_features": meta_data.get("n_features") or len(features),
         "features": features,
+        # 特征重要性一直写在 meta 里却从没往外暴露，页面因此只有一行 IC 摘要。
+        # 它是判断"模型到底学到了什么"最直接的依据，前端画 Top-N 条形图
+        "feature_importance": meta_data.get("feature_importance") or {},
         "label_col": label_col,
         "label_horizon": horizon,
         "trained_at": meta_data.get("trained_at"),

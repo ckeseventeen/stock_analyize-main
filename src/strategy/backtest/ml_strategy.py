@@ -45,6 +45,7 @@ class MLRebalanceStrategy(BaseStrategy):
         ("position_size", 0.95),
         ("warmup_bars", 250),
         ("skip_if_no_model", True),     # True 时 init 阶段就报错
+        ("stock_code", ""),             # 用于拉估值序列(PE/PB/PS/换手率)；空则这 9 维缺失
     )
 
     def __init__(self):
@@ -68,6 +69,30 @@ class MLRebalanceStrategy(BaseStrategy):
         if self._predictor is not None:
             cv_ic = self._predictor.metadata.get("cv_ic_mean", "N/A")
             logger.info(f"[MLRebalance] 加载模型: {self._predictor.model_path.name}, CV IC={cv_ic}")
+
+        # 估值序列(PE/PB/PS/换手率)只在开局拉一次——它占 9/55 维特征，
+        # 且换手率还决定 turnover_ma20 的量纲。放到 next() 里逐 bar 拉会拖垮回测。
+        self._val_df = self._load_valuation_series()
+
+    def _load_valuation_series(self):
+        """开局一次性拉估值序列；失败返回 None（那 9 维按缺失处理，不影响其余 46 维）"""
+        code = str(self.p.stock_code or "").strip()
+        if not code:
+            logger.info("[MLRebalance] 未提供 stock_code，估值类特征(9/55)将缺失")
+            return None
+        try:
+            from src.ml.dataset_builder import DatasetBuilder
+            start = bt.num2date(self.data.datetime[-(len(self.data) - 1)]).strftime("%Y-%m-%d")
+            end = bt.num2date(self.data.datetime[0]).strftime("%Y-%m-%d")
+            df = DatasetBuilder().fetch_valuation_history(code, start, end)
+            if df is None or df.empty:
+                logger.warning(f"[MLRebalance] {code} 估值序列为空，9/55 维特征缺失")
+                return None
+            logger.info(f"[MLRebalance] {code} 估值序列 {len(df)} 行已加载")
+            return df
+        except Exception as e:
+            logger.warning(f"[MLRebalance] 估值序列加载失败({type(e).__name__}: {e})，按缺失处理")
+            return None
 
     def _build_features_df(self) -> pd.DataFrame:
         """
@@ -113,7 +138,7 @@ class MLRebalanceStrategy(BaseStrategy):
         # 算预测分
         try:
             df = self._build_features_df()
-            score = self._predictor.predict_from_daily_df(df)
+            score = self._predictor.predict_from_daily_df(df, df_val=self._val_df)
         except Exception as e:
             self._failures += 1
             self.log(f"[MLRebalance] 预测异常: {type(e).__name__}: {e}")

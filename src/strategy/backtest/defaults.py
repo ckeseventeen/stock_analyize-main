@@ -80,6 +80,7 @@ STRATEGY_DEFAULTS: dict[str, dict[str, Any]] = {
         "position_size": 0.95,
         "warmup_bars": 250,
         "skip_if_no_model": True,     # 模型未训练时直接跳过，在对比结果中显示明确提示
+        "stock_code": "",             # 由 compare 层按回测标的透传（拉估值序列用）
     },
 }
 

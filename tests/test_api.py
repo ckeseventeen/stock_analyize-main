@@ -243,3 +243,127 @@ class TestKlineAndFcfApi:
         fake = vsvc.FCFRun(analyzed_df=pd.DataFrame(), score_res={}, market_cap=0)
         monkeypatch.setattr(vsvc, "run_fcf", lambda *a, **k: fake)
         assert client.get("/api/stocks/a/999999/fcf").status_code == 404
+
+
+@pytest.mark.unit
+class TestValuationBasisFallback:
+    """
+    线上报障：美股 Roblox 的估值面板显示 "PE(TTM) …" + 一排负目标价。
+
+    根因是亏损股（TTM 净利润为负）仍按 PE 估值，负 EPS 推出负目标价；
+    且分析器对亏损股给出的 current_pe 是 **NaN 而非 None**，
+    `v is None or v <= 0` 恒判 False，自动回退逻辑整个被绕过。
+    """
+
+    def _run(self, pe_value, ps_value=5.0):
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        fin = pd.DataFrame({"x": [1]})
+
+        def _fake_run(market, cfg):
+            is_ps = cfg.get("valuation") == "ps"
+            return vsvc.ValuationRun(
+                result={"price": 35.6, "current_pe": pe_value, "current_ps": ps_value,
+                        "hist_percentile": 10.0, "ttm_net_profit": -1e9,
+                        "scenarios": [1.0, 2.0, 3.0] if is_ps else [-15.4, -30.8, -46.2]},
+                fin_df=fin, hist_val_df=None, market_data={}, stock_config=cfg)
+
+        return _fake_run
+
+    def test_nan_pe_triggers_ps_fallback(self, client, monkeypatch):
+        """NaN 才是亏损股的真实取值——这条断言就是那个 bug 的回归"""
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_valuation", self._run(float("nan")))
+        monkeypatch.setattr(vsvc, "target_price_rows", lambda r: [])
+        monkeypatch.setattr(vsvc, "summary_rows", lambda *a: [])
+        j = client.get("/api/stocks/us/RBLX/valuation").json()
+        assert j["basis"] == "ps"
+        assert "PS" in j["basis_note"]
+
+    def test_none_pe_triggers_ps_fallback(self, client, monkeypatch):
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_valuation", self._run(None))
+        monkeypatch.setattr(vsvc, "target_price_rows", lambda r: [])
+        monkeypatch.setattr(vsvc, "summary_rows", lambda *a: [])
+        assert client.get("/api/stocks/us/RBLX/valuation").json()["basis"] == "ps"
+
+    def test_profitable_stock_keeps_pe(self, client, monkeypatch):
+        """盈利股不许被误切到 PS"""
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_valuation", self._run(15.0))
+        monkeypatch.setattr(vsvc, "target_price_rows", lambda r: [])
+        monkeypatch.setattr(vsvc, "summary_rows", lambda *a: [])
+        j = client.get("/api/stocks/a/600519/valuation").json()
+        assert j["basis"] == "pe"
+        assert j["basis_note"] == ""
+
+    def test_empty_findata_reports_source_failure_not_bad_code(self, client, monkeypatch):
+        """数据源限流不能报成"请检查代码"——用户会以为是自己输错了"""
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_valuation", lambda *a, **k: vsvc.ValuationRun(
+            result={}, fin_df=pd.DataFrame(), hist_val_df=None,
+            market_data={}, stock_config={}))
+        r = client.get("/api/stocks/us/RBLX/valuation")
+        assert r.status_code == 502
+        assert "稍后重试" in r.json()["detail"]
+
+
+@pytest.mark.unit
+class TestFcfErrorAttribution:
+    """FCF 取数失败与"确实无记录"必须给不同状态码与文案"""
+
+    def test_source_failure_is_502(self, client, monkeypatch):
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_fcf", lambda *a, **k: vsvc.FCFRun(
+            analyzed_df=pd.DataFrame(), score_res={}, market_cap=0.0,
+            fetch_status="failed", fetch_reason="yfinance 连续 3 次取数失败"))
+        r = client.get("/api/stocks/us/RBLX/fcf")
+        assert r.status_code == 502
+        assert "yfinance" in r.json()["detail"]
+
+    def test_genuinely_empty_is_404(self, client, monkeypatch):
+        import pandas as pd
+
+        from src.services import valuation_service as vsvc
+        monkeypatch.setattr(vsvc, "run_fcf", lambda *a, **k: vsvc.FCFRun(
+            analyzed_df=pd.DataFrame(), score_res={}, market_cap=0.0,
+            fetch_status="empty", fetch_reason="可能是新股/已退市"))
+        assert client.get("/api/stocks/us/RBLX/fcf").status_code == 404
+
+
+@pytest.mark.unit
+class TestMlPanelEndpoints:
+    """
+    线上缺口：模型训练完后前端「训练」按钮被隐藏（只在未训练时显示），
+    想重训没有入口；训练是 5-15 分钟的后台线程，也没有进度可轮询。
+    """
+
+    def test_training_status_is_pollable(self, client):
+        """必须有独立的轮询端点，否则前端只知道"已启动"，不知何时结束"""
+        r = client.get("/api/ml/training-status")
+        assert r.status_code == 200
+        body = r.json()
+        assert "training" in body and "model" in body
+        assert "running" in body["training"]
+
+    def test_status_exposes_feature_importance(self, client, monkeypatch):
+        """特征重要性一直写在 meta 里却没往外暴露，页面因此只有一行 IC 摘要"""
+        from src.services import ml_service
+        monkeypatch.setattr(ml_service, "model_status", lambda: {
+            "trained": True,
+            "feature_importance": [{"feature": "pe_ttm", "gain": 992867.0}],
+            "cv_ic_mean": 0.028, "n_features": 55, "train_samples": 48409,
+        })
+        j = client.get("/api/ml/status").json()
+        assert j["feature_importance"][0]["feature"] == "pe_ttm"
+
+    def test_untrained_status_has_no_crash(self, client, monkeypatch):
+        from src.services import ml_service
+        monkeypatch.setattr(ml_service, "model_status",
+                            lambda: {"trained": False, "message": "ML 模型未训练"})
+        assert client.get("/api/ml/status").json()["trained"] is False

@@ -1,6 +1,5 @@
 import akshare as ak
 import pandas as pd
-import yfinance as yf
 
 from src.utils.logger import get_logger
 
@@ -81,22 +80,21 @@ class FCFDataFetcher:
         """
         通过 yfinance 获取港股/美股的 FCF 数据。
         """
-        try:
-            logger.info(f"正在获取 {yf_symbol} yfinance 报表...")
-            tk = yf.Ticker(yf_symbol)
-            if is_annual:
-                cf = tk.cashflow.T
-                inc = tk.financials.T
-            else:
-                cf = tk.quarterly_cashflow.T
-                inc = tk.quarterly_financials.T
-        except Exception as e:
-            logger.error(f"获取 {yf_symbol} yfinance FCF 数据失败: {e}")
-            return pd.DataFrame()
+        # 走带重试的统一客户端：Yahoo 限流时会返回空表且不抛异常，
+        # 直接当"无数据"会把限流误报成"新股/代码不存在"（线上实测同一标的
+        # 首次全空、隔几秒重试就 4 年齐全）
+        from src.data.providers.yfinance_client import fetch_statements
 
-        if cf.empty or inc.empty:
-            logger.warning(f"{yf_symbol} yfinance FCF 数据为空")
-            return pd.DataFrame()
+        logger.info(f"正在获取 {yf_symbol} yfinance 报表...")
+        res = fetch_statements(yf_symbol, is_annual)
+        if not res.is_ok:
+            logger.warning(f"{yf_symbol} yfinance FCF 取数未成功: {res.reason}")
+            empty = pd.DataFrame()
+            # 让上层能区分"数据源故障（可重试）"与"确实无记录"
+            empty.attrs["fetch_status"] = res.status.value
+            empty.attrs["fetch_reason"] = res.reason
+            return empty
+        cf, inc = res.data
 
         # 合并基于索引（Date）
         merged = pd.concat([cf, inc], axis=1, join='inner')

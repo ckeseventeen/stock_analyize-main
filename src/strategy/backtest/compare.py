@@ -220,6 +220,10 @@ def run_all_strategies(
 
         # 合并参数：默认 + 用户 override
         params = get_default_params(key)
+        # ML 策略要靠代码去拉估值序列（占 9/55 维特征，且决定换手率量纲）。
+        # 不透传的话这些特征全缺失，预测会系统性偏负 → 0 笔交易。
+        if "stock_code" in params:
+            params["stock_code"] = stock_code
         params.update(overrides.get(key, {}))
 
         try:

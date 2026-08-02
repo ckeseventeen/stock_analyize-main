@@ -153,6 +153,10 @@ class FCFRun:
     analyzed_df: pd.DataFrame
     score_res: dict
     market_cap: float
+    # 取数未成功时的健康度：""=正常，"failed"=数据源故障（可重试），
+    # "empty"=确实无记录（新股/退市）。上层据此给准确文案而非一律"请检查代码"
+    fetch_status: str = ""
+    fetch_reason: str = ""
 
 
 def fetch_market_cap(market: str, code: str) -> float:
@@ -177,7 +181,10 @@ def run_fcf(market: str, code: str, *, is_annual: bool = True) -> FCFRun:
 
     raw_df = FCFDataFetcher.fetch(market, code, is_annual=is_annual)
     if raw_df is None or raw_df.empty:
-        return FCFRun(analyzed_df=pd.DataFrame(), score_res={}, market_cap=0.0)
+        attrs = getattr(raw_df, "attrs", {}) or {}
+        return FCFRun(analyzed_df=pd.DataFrame(), score_res={}, market_cap=0.0,
+                      fetch_status=attrs.get("fetch_status", "empty"),
+                      fetch_reason=attrs.get("fetch_reason", ""))
 
     market_cap = fetch_market_cap(market, code)
     analyzer = FCFAnalyzer(raw_df, market_cap)

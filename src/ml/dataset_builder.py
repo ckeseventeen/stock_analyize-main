@@ -231,6 +231,60 @@ class DatasetBuilder:
         return self.cache.get_or_fetch(cache_key, _fetch)
 
     @staticmethod
+    def build_feature_frame(df_daily: pd.DataFrame,
+                            df_val: pd.DataFrame | None = None,
+                            use_alpha158: bool = True) -> pd.DataFrame:
+        """
+        **特征装配的唯一入口**：日线（+可选估值序列）→ 完整特征表。
+
+        训练与推理必须共用这一个函数。曾出过一次 train/serve skew 事故：
+        训练侧把 Alpha158 与估值特征拼进了 55 维，推理侧却只调
+        `_compute_features`（15 维），另外 40 维全成 NaN——LightGBM 对 NaN
+        走默认分支，预测整体塌向一个偏负的常数，ML 策略于是**永远不建仓**
+        （回测 0 笔交易）。把拼装收敛到一处，这类漂移才不会再悄悄发生。
+
+        Args:
+            df_daily: 日线 OHLCV（列名为中文，见 _compute_features）
+            df_val:   可选的日频估值序列（PE/PB/PS）；缺省则估值类特征留空，
+                      由 LightGBM 按缺失值处理（只影响 9/55 维，远好于缺 40 维）
+            use_alpha158: 是否并入 31 个 Alpha158 标准因子
+        """
+        # 换手率必须在算特征**之前**并进日线：turnover_ma20 依赖它。
+        # 这一步早先留在训练侧循环里，推理侧没有，导致该特征量纲差 100 倍
+        # （训练 0.612 vs 推理 0.006）——所以一并收进这个唯一入口。
+        if df_val is not None and not df_val.empty and "turn" in df_val.columns:
+            turn_df = df_val[["date", "turn"]].rename(
+                columns={"date": "日期", "turn": "换手率"})
+            if "日期" in df_daily.columns:
+                # 两侧日期 dtype 必须一致：不同取数通道给的是 str / datetime64 /
+                # date 对象，直接 merge 会抛 "object and datetime64" ValueError
+                df_daily = df_daily.copy()
+                df_daily["日期"] = pd.to_datetime(df_daily["日期"]).dt.normalize()
+                turn_df = turn_df.copy()
+                turn_df["日期"] = pd.to_datetime(turn_df["日期"]).dt.normalize()
+                # 部分日线通道自带「换手率」（口径与 Baostock 的 turn 未必一致）。
+                # 直接 merge 会撞成 换手率_x/_y，_compute_features 找不到原名，
+                # turnover_ma20 静默变 NaN。训练用的是 Baostock turn，
+                # 这里统一以它为准，先丢掉本地同名列。
+                df_daily = df_daily.drop(columns=["换手率"], errors="ignore")
+                df_daily = df_daily.merge(turn_df, on="日期", how="left")
+
+        feats = DatasetBuilder._compute_features(df_daily)
+        if feats.empty:
+            return feats
+
+        if use_alpha158:
+            a158 = DatasetBuilder._compute_alpha158_features(df_daily)
+            if not a158.empty and len(a158) == len(feats):
+                feats = pd.concat([feats.reset_index(drop=True), a158], axis=1)
+
+        if df_val is not None and not df_val.empty:
+            val_feats = DatasetBuilder._compute_valuation_features(df_val)
+            if not val_feats.empty:
+                feats = feats.merge(val_feats, on="date", how="left")
+        return feats
+
+    @staticmethod
     def _compute_valuation_features(df_val: pd.DataFrame) -> pd.DataFrame:
         """
         在 daily 估值序列上派生 ML 特征。
@@ -541,28 +595,15 @@ class DatasetBuilder:
             if df_daily.empty or len(df_daily) < 250:
                 continue
 
-            # 基本面 + 换手率（Baostock 拉，10s 超时）
-            # 注意：先拉 valuation，把 turn 合并到 daily_df 再算特征
+            # 基本面 + 换手率（Baostock 拉，10s 超时）；
+            # turn 的合并已收进 build_feature_frame，此处只负责取数
             df_val = self.fetch_valuation_history(code, start_date, end_date)
-            if not df_val.empty and "turn" in df_val.columns:
-                turn_df = df_val[["date", "turn"]].rename(
-                    columns={"date": "日期", "turn": "换手率"}
-                )
-                df_daily = df_daily.merge(turn_df, on="日期", how="left")
 
-            feats = self._compute_features(df_daily)
+            # 走统一装配入口——推理侧调的是同一个函数，杜绝 train/serve skew
+            feats = self.build_feature_frame(
+                df_daily, df_val=df_val, use_alpha158=self.use_alpha158)
             if feats.empty:
                 continue
-
-            # Alpha158 标准因子（按行拼接：与 feats 同为日线逐行，索引对齐）
-            if self.use_alpha158:
-                a158 = self._compute_alpha158_features(df_daily)
-                if not a158.empty and len(a158) == len(feats):
-                    feats = pd.concat([feats.reset_index(drop=True), a158], axis=1)
-
-            val_feats = self._compute_valuation_features(df_val)
-            if not val_feats.empty:
-                feats = feats.merge(val_feats, on="date", how="left")
 
             label = self._compute_future_excess_return(df_daily, csi300_close)
             label = label.rename(f"y_excess_ret_{self.label_horizon}d").reset_index()
